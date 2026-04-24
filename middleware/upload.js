@@ -1,12 +1,45 @@
 const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
 
-const storage = multer.memoryStorage();
-const upload = multer({
-  storage,
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype === "application/pdf") cb(null, true);
-    else cb(new Error("Only PDF files allowed"), false);
+// Ensure uploads directory exists
+const uploadDir = path.join(__dirname, "../uploads/programmes");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+// Storage for saving files to disk
+const diskStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, uniqueSuffix + "-" + file.originalname);
   },
 });
 
-module.exports = upload;
+// Memory storage for quick processing
+const memoryStorage = multer.memoryStorage();
+
+const fileFilter = (req, file, cb) => {
+  if (file.mimetype === "application/pdf") {
+    cb(null, true);
+  } else {
+    cb(new Error("Only PDF files allowed"), false);
+  }
+};
+
+const uploadToDisk = multer({
+  storage: diskStorage,
+  fileFilter,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
+});
+
+const uploadToMemory = multer({
+  storage: memoryStorage,
+  fileFilter,
+  limits: { fileSize: 50 * 1024 * 1024 },
+});
+
+module.exports = { uploadToDisk, uploadToMemory };
