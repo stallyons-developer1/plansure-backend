@@ -13,7 +13,7 @@ const {
 } = require("../utils/errorResponse");
 
 // PDF.js for text extraction
-const pdfjsLib = require("pdfjs-dist/legacy/build/pdf.mjs");
+const pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js");
 
 // Helper function to parse date strings like "24-Nov-21" or "22-Apr-24 A"
 const parseDate = (dateStr) => {
