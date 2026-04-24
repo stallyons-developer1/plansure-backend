@@ -2,6 +2,12 @@ const express = require("express");
 const router = express.Router();
 const Project = require("../models/Project");
 const { protect, adminOnly } = require("../middleware/authMiddleware");
+const {
+  sendValidationError,
+  sendError,
+  sendSuccess,
+  validateRequired,
+} = require("../utils/errorResponse");
 
 // @route   POST /api/projects
 // @desc    Create a new project
@@ -11,10 +17,10 @@ router.post("/", protect, adminOnly, async (req, res) => {
     const { name, phase, description, startDate, endDate } = req.body;
 
     // Validate required fields
-    if (!name || !phase || !startDate) {
-      return res.status(400).json({
-        message: "Please provide name, phase, and start date",
-      });
+    const errors = validateRequired({ name, phase, startDate });
+
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
     }
 
     // Create project
@@ -32,13 +38,15 @@ router.post("/", protect, adminOnly, async (req, res) => {
       .populate("createdBy", "name email")
       .populate("team.user", "name email");
 
-    res.status(201).json({
-      message: "Project created successfully",
-      project: populatedProject,
-    });
+    return sendSuccess(
+      res,
+      { project: populatedProject },
+      "Project created successfully",
+      201
+    );
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -60,10 +68,10 @@ router.get("/", protect, adminOnly, async (req, res) => {
       .populate("programmes", "name status")
       .sort({ createdAt: -1 });
 
-    res.json(projects);
+    return sendSuccess(res, { projects });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -81,13 +89,13 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
       });
 
     if (!project) {
-      return res.status(404).json({ message: "Project not found" });
+      return sendError(res, "Project not found", 404);
     }
 
-    res.json(project);
+    return sendSuccess(res, { project });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -100,7 +108,7 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
 
     const project = await Project.findById(req.params.id);
     if (!project) {
-      return res.status(404).json({ message: "Project not found" });
+      return sendError(res, "Project not found", 404);
     }
 
     // Update fields
@@ -117,13 +125,10 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
       .populate("createdBy", "name email")
       .populate("team.user", "name email");
 
-    res.json({
-      message: "Project updated successfully",
-      project: updatedProject,
-    });
+    return sendSuccess(res, { project: updatedProject }, "Project updated successfully");
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -135,15 +140,15 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
     const project = await Project.findById(req.params.id);
 
     if (!project) {
-      return res.status(404).json({ message: "Project not found" });
+      return sendError(res, "Project not found", 404);
     }
 
     await Project.findByIdAndDelete(req.params.id);
 
-    res.json({ message: "Project deleted successfully" });
+    return sendSuccess(res, {}, "Project deleted successfully");
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -154,13 +159,15 @@ router.post("/:id/team", protect, adminOnly, async (req, res) => {
   try {
     const { userId, role } = req.body;
 
-    if (!userId || !role) {
-      return res.status(400).json({ message: "Please provide userId and role" });
+    // Validate required fields
+    const errors = validateRequired({ userId, role });
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
     }
 
     const project = await Project.findById(req.params.id);
     if (!project) {
-      return res.status(404).json({ message: "Project not found" });
+      return sendError(res, "Project not found", 404);
     }
 
     // Check if user already in team
@@ -168,7 +175,9 @@ router.post("/:id/team", protect, adminOnly, async (req, res) => {
       (member) => member.user.toString() === userId
     );
     if (existingMember) {
-      return res.status(400).json({ message: "User already in team" });
+      return sendValidationError(res, [
+        { field: "userId", message: "User already in team" },
+      ]);
     }
 
     project.team.push({ user: userId, role });
@@ -177,13 +186,14 @@ router.post("/:id/team", protect, adminOnly, async (req, res) => {
     const updatedProject = await Project.findById(project._id)
       .populate("team.user", "name email");
 
-    res.json({
-      message: "Team member added successfully",
-      team: updatedProject.team,
-    });
+    return sendSuccess(
+      res,
+      { team: updatedProject.team },
+      "Team member added successfully"
+    );
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -194,7 +204,7 @@ router.delete("/:id/team/:userId", protect, adminOnly, async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
     if (!project) {
-      return res.status(404).json({ message: "Project not found" });
+      return sendError(res, "Project not found", 404);
     }
 
     project.team = project.team.filter(
@@ -202,10 +212,10 @@ router.delete("/:id/team/:userId", protect, adminOnly, async (req, res) => {
     );
     await project.save();
 
-    res.json({ message: "Team member removed successfully" });
+    return sendSuccess(res, {}, "Team member removed successfully");
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -216,18 +226,22 @@ router.post("/:id/programmes", protect, adminOnly, async (req, res) => {
   try {
     const { programmeId } = req.body;
 
-    if (!programmeId) {
-      return res.status(400).json({ message: "Please provide programmeId" });
+    // Validate required fields
+    const errors = validateRequired({ programmeId });
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
     }
 
     const project = await Project.findById(req.params.id);
     if (!project) {
-      return res.status(404).json({ message: "Project not found" });
+      return sendError(res, "Project not found", 404);
     }
 
     // Check if programme already linked
     if (project.programmes.includes(programmeId)) {
-      return res.status(400).json({ message: "Programme already linked" });
+      return sendValidationError(res, [
+        { field: "programmeId", message: "Programme already linked" },
+      ]);
     }
 
     project.programmes.push(programmeId);
@@ -236,13 +250,14 @@ router.post("/:id/programmes", protect, adminOnly, async (req, res) => {
     const updatedProject = await Project.findById(project._id)
       .populate("programmes", "name status");
 
-    res.json({
-      message: "Programme linked successfully",
-      programmes: updatedProject.programmes,
-    });
+    return sendSuccess(
+      res,
+      { programmes: updatedProject.programmes },
+      "Programme linked successfully"
+    );
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 

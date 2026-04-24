@@ -13,21 +13,30 @@ const seedAdmin = async () => {
     const existingAdmin = await Admin.findOne({ email: "admin@plansure.com" });
 
     if (existingAdmin) {
+      // Ensure admin is active (use updateOne to avoid pre-save hook)
+      if (existingAdmin.status !== "active") {
+        await Admin.updateOne(
+          { _id: existingAdmin._id },
+          { status: "active" }
+        );
+        console.log("Admin status updated to active");
+      }
       console.log("Admin already exists:");
       console.log("Email: admin@plansure.com");
-      console.log("Password: admin123");
+      console.log("Password: password");
     } else {
-      // Create admin
+      // Create admin with active status
       const admin = await Admin.create({
         name: "Admin",
         email: "admin@plansure.com",
-        password: "admin123",
+        password: "password",
         role: "admin",
+        status: "active",
       });
 
       console.log("Admin created successfully:");
       console.log("Email: admin@plansure.com");
-      console.log("Password: admin123");
+      console.log("Password: password");
     }
 
     process.exit(0);

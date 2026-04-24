@@ -5,6 +5,14 @@ const Admin = require("../models/Admin");
 const Project = require("../models/Project");
 const { protect, adminOnly } = require("../middleware/authMiddleware");
 const { sendInviteEmail, sendWelcomeEmail } = require("../utils/email");
+const {
+  sendValidationError,
+  sendError,
+  sendSuccess,
+  validateRequired,
+  validateEmail,
+  validatePassword,
+} = require("../utils/errorResponse");
 
 // @route   POST /api/users/invite
 // @desc    Invite a new user
@@ -14,16 +22,24 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
     const { name, email, role, projectId } = req.body;
 
     // Validate required fields
-    if (!name || !email || !role) {
-      return res.status(400).json({
-        message: "Please provide name, email, and role",
-      });
+    const errors = validateRequired({ name, email, role });
+
+    // Validate email format if provided
+    if (email && !errors.find((e) => e.field === "email")) {
+      const emailError = validateEmail(email);
+      if (emailError) errors.push(emailError);
+    }
+
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
     }
 
     // Check if user already exists
     const existingUser = await Admin.findOne({ email });
     if (existingUser) {
-      return res.status(400).json({ message: "User with this email already exists" });
+      return sendValidationError(res, [
+        { field: "email", message: "User with this email already exists" },
+      ]);
     }
 
     // Get project name if projectId provided
@@ -64,19 +80,23 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
       rejectUrl,
     });
 
-    res.status(201).json({
-      message: "Invitation sent successfully",
-      user: {
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        status: user.status,
+    return sendSuccess(
+      res,
+      {
+        user: {
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          status: user.status,
+        },
       },
-    });
+      "Invitation sent successfully",
+      201
+    );
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -87,10 +107,15 @@ router.post("/invite/accept/:token", async (req, res) => {
   try {
     const { password } = req.body;
 
-    if (!password || password.length < 6) {
-      return res.status(400).json({
-        message: "Password must be at least 6 characters",
-      });
+    // Validate password
+    const errors = validateRequired({ password });
+    if (errors.length === 0) {
+      const passwordError = validatePassword(password, 6);
+      if (passwordError) errors.push(passwordError);
+    }
+
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
     }
 
     // Hash the token to compare with stored hash
@@ -107,9 +132,9 @@ router.post("/invite/accept/:token", async (req, res) => {
     });
 
     if (!user) {
-      return res.status(400).json({
-        message: "Invalid or expired invitation token",
-      });
+      return sendValidationError(res, [
+        { field: "token", message: "Invalid or expired invitation token" },
+      ]);
     }
 
     // Set password and activate user
@@ -125,12 +150,10 @@ router.post("/invite/accept/:token", async (req, res) => {
       name: user.name,
     });
 
-    res.json({
-      message: "Account activated successfully. You can now login.",
-    });
+    return sendSuccess(res, {}, "Account activated successfully. You can now login.");
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -150,20 +173,18 @@ router.post("/invite/reject/:token", async (req, res) => {
     });
 
     if (!user) {
-      return res.status(400).json({
-        message: "Invalid invitation token",
-      });
+      return sendValidationError(res, [
+        { field: "token", message: "Invalid invitation token" },
+      ]);
     }
 
     // Delete the user
     await Admin.findByIdAndDelete(user._id);
 
-    res.json({
-      message: "Invitation declined",
-    });
+    return sendSuccess(res, {}, "Invitation declined");
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -184,13 +205,12 @@ router.get("/invite/verify/:token", async (req, res) => {
     });
 
     if (!user) {
-      return res.status(400).json({
-        valid: false,
-        message: "Invalid or expired invitation token",
-      });
+      return sendValidationError(res, [
+        { field: "token", message: "Invalid or expired invitation token" },
+      ]);
     }
 
-    res.json({
+    return sendSuccess(res, {
       valid: true,
       user: {
         name: user.name,
@@ -200,7 +220,7 @@ router.get("/invite/verify/:token", async (req, res) => {
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -248,10 +268,10 @@ router.get("/", protect, adminOnly, async (req, res) => {
         .slice(0, 2),
     }));
 
-    res.json(formattedUsers);
+    return sendSuccess(res, { users: formattedUsers });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -266,13 +286,13 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
       .populate("invitedBy", "name email");
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      return sendError(res, "User not found", 404);
     }
 
-    res.json(user);
+    return sendSuccess(res, { user });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -285,7 +305,7 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
 
     const user = await Admin.findById(req.params.id);
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      return sendError(res, "User not found", 404);
     }
 
     // Update fields
@@ -300,13 +320,10 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
       .select("-password -inviteToken -inviteTokenExpiry")
       .populate("projects", "name");
 
-    res.json({
-      message: "User updated successfully",
-      user: updatedUser,
-    });
+    return sendSuccess(res, { user: updatedUser }, "User updated successfully");
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -318,12 +335,14 @@ router.patch("/:id/block", protect, adminOnly, async (req, res) => {
     const user = await Admin.findById(req.params.id);
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      return sendError(res, "User not found", 404);
     }
 
     // Prevent blocking yourself
     if (user._id.toString() === req.admin._id.toString()) {
-      return res.status(400).json({ message: "You cannot block yourself" });
+      return sendValidationError(res, [
+        { field: "user", message: "You cannot block yourself" },
+      ]);
     }
 
     // Toggle block status
@@ -335,13 +354,14 @@ router.patch("/:id/block", protect, adminOnly, async (req, res) => {
 
     await user.save();
 
-    res.json({
-      message: `User ${user.status === "blocked" ? "blocked" : "unblocked"} successfully`,
-      status: user.status,
-    });
+    return sendSuccess(
+      res,
+      { status: user.status },
+      `User ${user.status === "blocked" ? "blocked" : "unblocked"} successfully`
+    );
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -353,20 +373,22 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
     const user = await Admin.findById(req.params.id);
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      return sendError(res, "User not found", 404);
     }
 
     // Prevent deleting yourself
     if (user._id.toString() === req.admin._id.toString()) {
-      return res.status(400).json({ message: "You cannot delete yourself" });
+      return sendValidationError(res, [
+        { field: "user", message: "You cannot delete yourself" },
+      ]);
     }
 
     await Admin.findByIdAndDelete(req.params.id);
 
-    res.json({ message: "User deleted successfully" });
+    return sendSuccess(res, {}, "User deleted successfully");
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -378,11 +400,13 @@ router.post("/:id/resend-invite", protect, adminOnly, async (req, res) => {
     const user = await Admin.findById(req.params.id).populate("projects", "name");
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      return sendError(res, "User not found", 404);
     }
 
     if (user.status !== "pending") {
-      return res.status(400).json({ message: "User has already accepted the invitation" });
+      return sendValidationError(res, [
+        { field: "status", message: "User has already accepted the invitation" },
+      ]);
     }
 
     // Generate new invite token
@@ -408,10 +432,10 @@ router.post("/:id/resend-invite", protect, adminOnly, async (req, res) => {
       rejectUrl,
     });
 
-    res.json({ message: "Invitation resent successfully" });
+    return sendSuccess(res, {}, "Invitation resent successfully");
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 

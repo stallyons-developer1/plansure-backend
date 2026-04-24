@@ -3,6 +3,12 @@ const router = express.Router();
 const Action = require("../models/Action");
 const Programme = require("../models/Programme");
 const { protect, adminOnly } = require("../middleware/authMiddleware");
+const {
+  sendValidationError,
+  sendError,
+  sendSuccess,
+  validateRequired,
+} = require("../utils/errorResponse");
 
 // @route   POST /api/actions
 // @desc    Create a new action
@@ -21,16 +27,23 @@ router.post("/", protect, adminOnly, async (req, res) => {
     } = req.body;
 
     // Validate required fields
-    if (!programmeId || !linkedActivity || !title || !assignee || !dueDate) {
-      return res.status(400).json({
-        message: "Please provide all required fields",
-      });
+    const errors = validateRequired({ programmeId, title, assignee, dueDate });
+
+    // Validate linkedActivity
+    if (!linkedActivity || !linkedActivity.activityId) {
+      errors.push({ field: "linkedActivity", message: "Linked activity is required" });
+    }
+
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
     }
 
     // Verify programme exists
     const programme = await Programme.findById(programmeId);
     if (!programme) {
-      return res.status(404).json({ message: "Programme not found" });
+      return sendValidationError(res, [
+        { field: "programmeId", message: "Programme not found" },
+      ], 404);
     }
 
     // Create action
@@ -53,13 +66,15 @@ router.post("/", protect, adminOnly, async (req, res) => {
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
-    res.status(201).json({
-      message: "Action created successfully",
-      action: populatedAction,
-    });
+    return sendSuccess(
+      res,
+      { action: populatedAction },
+      "Action created successfully",
+      201
+    );
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -83,10 +98,10 @@ router.get("/", protect, adminOnly, async (req, res) => {
       .populate("programme", "name")
       .sort({ createdAt: -1 });
 
-    res.json(actions);
+    return sendSuccess(res, { actions });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -100,10 +115,10 @@ router.get("/programme/:programmeId", protect, adminOnly, async (req, res) => {
       .populate("createdBy", "name email")
       .sort({ createdAt: -1 });
 
-    res.json(actions);
+    return sendSuccess(res, { actions });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -122,10 +137,10 @@ router.get("/activity/:activityId", protect, adminOnly, async (req, res) => {
       .populate("createdBy", "name email")
       .sort({ createdAt: -1 });
 
-    res.json(actions);
+    return sendSuccess(res, { actions });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -141,13 +156,13 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
       .populate("comments.createdBy", "name email");
 
     if (!action) {
-      return res.status(404).json({ message: "Action not found" });
+      return sendError(res, "Action not found", 404);
     }
 
-    res.json(action);
+    return sendSuccess(res, { action });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -161,7 +176,7 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
 
     const action = await Action.findById(req.params.id);
     if (!action) {
-      return res.status(404).json({ message: "Action not found" });
+      return sendError(res, "Action not found", 404);
     }
 
     // Update fields
@@ -187,13 +202,10 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
-    res.json({
-      message: "Action updated successfully",
-      action: updatedAction,
-    });
+    return sendSuccess(res, { action: updatedAction }, "Action updated successfully");
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -204,13 +216,15 @@ router.post("/:id/comments", protect, adminOnly, async (req, res) => {
   try {
     const { text } = req.body;
 
-    if (!text) {
-      return res.status(400).json({ message: "Comment text is required" });
+    // Validate required fields
+    const errors = validateRequired({ text });
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
     }
 
     const action = await Action.findById(req.params.id);
     if (!action) {
-      return res.status(404).json({ message: "Action not found" });
+      return sendError(res, "Action not found", 404);
     }
 
     action.comments.push({
@@ -225,13 +239,10 @@ router.post("/:id/comments", protect, adminOnly, async (req, res) => {
       .populate("createdBy", "name email")
       .populate("comments.createdBy", "name email");
 
-    res.json({
-      message: "Comment added successfully",
-      action: updatedAction,
-    });
+    return sendSuccess(res, { action: updatedAction }, "Comment added successfully");
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -243,7 +254,7 @@ router.patch("/:id/complete", protect, adminOnly, async (req, res) => {
     const action = await Action.findById(req.params.id);
 
     if (!action) {
-      return res.status(404).json({ message: "Action not found" });
+      return sendError(res, "Action not found", 404);
     }
 
     // Toggle completion status
@@ -261,13 +272,10 @@ router.patch("/:id/complete", protect, adminOnly, async (req, res) => {
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
-    res.json({
-      message: `Action marked as ${action.status}`,
-      action: updatedAction,
-    });
+    return sendSuccess(res, { action: updatedAction }, `Action marked as ${action.status}`);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -279,15 +287,15 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
     const action = await Action.findById(req.params.id);
 
     if (!action) {
-      return res.status(404).json({ message: "Action not found" });
+      return sendError(res, "Action not found", 404);
     }
 
     await Action.findByIdAndDelete(req.params.id);
 
-    res.json({ message: "Action deleted successfully" });
+    return sendSuccess(res, {}, "Action deleted successfully");
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -344,19 +352,19 @@ router.get("/stats/summary", protect, adminOnly, async (req, res) => {
       },
     ]);
 
-    res.json(
-      stats[0] || {
+    return sendSuccess(res, {
+      stats: stats[0] || {
         total: 0,
         open: 0,
         inProgress: 0,
         completed: 0,
         overdue: 0,
         highPriority: 0,
-      }
-    );
+      },
+    });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 

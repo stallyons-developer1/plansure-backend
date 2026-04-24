@@ -5,6 +5,12 @@ const path = require("path");
 const Programme = require("../models/Programme");
 const { protect, adminOnly } = require("../middleware/authMiddleware");
 const { uploadToDisk } = require("../middleware/upload");
+const {
+  sendValidationError,
+  sendError,
+  sendSuccess,
+  validateRequired,
+} = require("../utils/errorResponse");
 
 // PDF.js for text extraction
 const pdfjsLib = require("pdfjs-dist/legacy/build/pdf.mjs");
@@ -148,15 +154,23 @@ router.post(
   uploadToDisk.single("programme"),
   async (req, res) => {
     try {
+      const errors = [];
+
       if (!req.file) {
-        return res.status(400).json({ message: "Please upload a PDF file" });
+        errors.push({ field: "programme", message: "Please upload a PDF file" });
       }
 
-      const { name } = req.body;
-      if (!name) {
-        // Delete uploaded file if name is not provided
-        fs.unlinkSync(req.file.path);
-        return res.status(400).json({ message: "Programme name is required" });
+      const { name, project } = req.body;
+      if (!name || !name.trim()) {
+        errors.push({ field: "name", message: "Programme name is required" });
+      }
+
+      if (errors.length > 0) {
+        // Delete uploaded file if validation fails
+        if (req.file && req.file.path && fs.existsSync(req.file.path)) {
+          fs.unlinkSync(req.file.path);
+        }
+        return sendValidationError(res, errors);
       }
 
       // Read the uploaded PDF file
@@ -317,6 +331,7 @@ router.post(
       // Create programme record with extracted data
       const programme = await Programme.create({
         name,
+        project: project || null,
         originalFileName: req.file.originalname,
         filePath: req.file.path,
         cycleStatus: "Draft",
@@ -333,33 +348,34 @@ router.post(
         status: "processed",
       });
 
-      res.status(201).json({
-        message: "Programme uploaded and processed successfully",
-        programme: {
-          _id: programme._id,
-          name: programme.name,
-          originalFileName: programme.originalFileName,
-          cycleStatus: programme.cycleStatus,
-          pageCount: programme.extractedData.pageCount,
-          totalActivities: programme.extractedData.totalActivities,
-          weekZones: weekZones,
-          summary: summary,
-          status: programme.status,
-          activities: lookaheadActivities.slice(0, 50), // Preview first 50 lookahead activities
-          createdAt: programme.createdAt,
-          lastUpdated: programme.updatedAt,
+      return sendSuccess(
+        res,
+        {
+          programme: {
+            _id: programme._id,
+            name: programme.name,
+            originalFileName: programme.originalFileName,
+            cycleStatus: programme.cycleStatus,
+            pageCount: programme.extractedData.pageCount,
+            totalActivities: programme.extractedData.totalActivities,
+            weekZones: weekZones,
+            summary: summary,
+            status: programme.status,
+            activities: activities, // Return all activities
+            createdAt: programme.createdAt,
+            lastUpdated: programme.updatedAt,
+          },
         },
-      });
+        "Programme uploaded and processed successfully",
+        201
+      );
     } catch (error) {
       console.error("PDF Upload Error:", error);
       // Clean up file if it exists
       if (req.file && req.file.path && fs.existsSync(req.file.path)) {
         fs.unlinkSync(req.file.path);
       }
-      res.status(500).json({
-        message: "Error processing PDF",
-        error: error.message,
-      });
+      return sendError(res, "Error processing PDF");
     }
   }
 );
@@ -373,10 +389,30 @@ router.get("/", protect, adminOnly, async (req, res) => {
       .populate("uploadedBy", "name email")
       .sort({ createdAt: -1 });
 
-    res.json(programmes);
+    return sendSuccess(res, { programmes });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
+  }
+});
+
+// @route   GET /api/programmes/by-project/:projectId
+// @desc    Get programme by project ID
+// @access  Private (Admin only)
+router.get("/by-project/:projectId", protect, adminOnly, async (req, res) => {
+  try {
+    const programme = await Programme.findOne({ project: req.params.projectId })
+      .populate("uploadedBy", "name email")
+      .sort({ createdAt: -1 });
+
+    if (!programme) {
+      return sendSuccess(res, { programme: null });
+    }
+
+    return sendSuccess(res, { programme });
+  } catch (error) {
+    console.error(error);
+    return sendError(res, "Server error");
   }
 });
 
@@ -391,13 +427,13 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
     );
 
     if (!programme) {
-      return res.status(404).json({ message: "Programme not found" });
+      return sendError(res, "Programme not found", 404);
     }
 
-    res.json(programme);
+    return sendSuccess(res, { programme });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -411,7 +447,7 @@ router.get("/:id/lookahead", protect, adminOnly, async (req, res) => {
       .populate("extractedData.activities.owner", "name email");
 
     if (!programme) {
-      return res.status(404).json({ message: "Programme not found" });
+      return sendError(res, "Programme not found", 404);
     }
 
     // Get actions for this programme
@@ -448,10 +484,9 @@ router.get("/:id/lookahead", protect, adminOnly, async (req, res) => {
       };
     });
 
-    // Filter activities within lookahead
-    const lookaheadActivities = activities.filter(
-      (a) => a.weekZone && !["Beyond Lookahead", "Before Lookahead"].includes(a.weekZone)
-    );
+    // Use all activities for display purposes (don't filter by lookahead period)
+    // This ensures activities are shown regardless of their dates relative to today
+    const lookaheadActivities = activities;
 
     // Group by week zone
     const activitiesByWeekZone = {
@@ -526,7 +561,7 @@ router.get("/:id/lookahead", protect, adminOnly, async (req, res) => {
         red: summary.red,
         blocked: summary.blocked,
         openActions: actionStats.open + actionStats.inProgress,
-        overdue: actionStats.overdue,
+        overdue: actionsByStatus.overdue,
         readyToClose: readyToClose ? "Yes" : "No",
       },
       summary,
@@ -538,12 +573,13 @@ router.get("/:id/lookahead", protect, adminOnly, async (req, res) => {
       },
       activitiesByWeekZone,
       blockedRiskActivities: blockedRiskActivities.slice(0, 20),
-      activities: lookaheadActivities,
+      activities: activities, // Return all activities, not just lookahead
+      lookaheadActivities: lookaheadActivities,
       recentActions: actions.slice(0, 10),
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -556,7 +592,7 @@ router.patch("/:id/activity/:activityId", protect, adminOnly, async (req, res) =
 
     const programme = await Programme.findById(req.params.id);
     if (!programme) {
-      return res.status(404).json({ message: "Programme not found" });
+      return sendError(res, "Programme not found", 404);
     }
 
     // Find and update the activity
@@ -565,7 +601,7 @@ router.patch("/:id/activity/:activityId", protect, adminOnly, async (req, res) =
     );
 
     if (activityIndex === -1) {
-      return res.status(404).json({ message: "Activity not found" });
+      return sendError(res, "Activity not found", 404);
     }
 
     const activity = programme.extractedData.activities[activityIndex];
@@ -592,13 +628,14 @@ router.patch("/:id/activity/:activityId", protect, adminOnly, async (req, res) =
 
     await programme.save();
 
-    res.json({
-      message: "Activity updated successfully",
-      activity: programme.extractedData.activities[activityIndex],
-    });
+    return sendSuccess(
+      res,
+      { activity: programme.extractedData.activities[activityIndex] },
+      "Activity updated successfully"
+    );
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -611,7 +648,7 @@ router.get("/:id/overview", protect, adminOnly, async (req, res) => {
       .populate("uploadedBy", "name email");
 
     if (!programme) {
-      return res.status(404).json({ message: "Programme not found" });
+      return sendError(res, "Programme not found", 404);
     }
 
     // Get actions for this programme
@@ -708,7 +745,7 @@ router.get("/:id/overview", protect, adminOnly, async (req, res) => {
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -730,7 +767,7 @@ router.post("/:id/close-cycle", protect, adminOnly, async (req, res) => {
 
     const programme = await Programme.findById(req.params.id);
     if (!programme) {
-      return res.status(404).json({ message: "Programme not found" });
+      return sendError(res, "Programme not found", 404);
     }
 
     const today = new Date();
@@ -796,19 +833,23 @@ router.post("/:id/close-cycle", protect, adminOnly, async (req, res) => {
     programme.cycleStatus = "Closed";
     await programme.save();
 
-    res.status(201).json({
-      message: "Cycle closed successfully",
-      cycleHistory: {
-        weekNumber: cycleHistory.weekNumber,
-        weekLabel: cycleHistory.weekLabel,
-        closeType: cycleHistory.closeType,
-        score: cycleHistory.score,
-        dateRange: `${formatDateShort(cycleHistory.dateRange.startDate)} - ${formatDateShort(cycleHistory.dateRange.endDate)}`,
+    return sendSuccess(
+      res,
+      {
+        cycleHistory: {
+          weekNumber: cycleHistory.weekNumber,
+          weekLabel: cycleHistory.weekLabel,
+          closeType: cycleHistory.closeType,
+          score: cycleHistory.score,
+          dateRange: `${formatDateShort(cycleHistory.dateRange.startDate)} - ${formatDateShort(cycleHistory.dateRange.endDate)}`,
+        },
       },
-    });
+      "Cycle closed successfully",
+      201
+    );
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -823,10 +864,10 @@ router.get("/:id/cycle-history", protect, adminOnly, async (req, res) => {
       .sort({ weekNumber: -1 })
       .populate("closedBy", "name email");
 
-    res.json(history);
+    return sendSuccess(res, { history });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -839,7 +880,7 @@ router.get("/:id/weekly-control", protect, adminOnly, async (req, res) => {
       .populate("uploadedBy", "name email");
 
     if (!programme) {
-      return res.status(404).json({ message: "Programme not found" });
+      return sendError(res, "Programme not found", 404);
     }
 
     // Get actions for this programme
@@ -892,21 +933,20 @@ router.get("/:id/weekly-control", protect, adminOnly, async (req, res) => {
       };
     });
 
-    // Filter lookahead activities
-    const lookaheadActivities = activities.filter(
-      (a) => a.weekZone && !["Beyond Lookahead", "Before Lookahead"].includes(a.weekZone)
-    );
+    // Use all activities (not filtered by lookahead) for display purposes
+    const allActivities = activities;
 
     // RAG Distribution for donut chart
     const ragDistribution = {
-      green: lookaheadActivities.filter((a) => a.ragStatus === "Green").length,
-      amber: lookaheadActivities.filter((a) => a.ragStatus === "Amber").length,
-      red: lookaheadActivities.filter((a) => a.ragStatus === "Red").length,
+      green: allActivities.filter((a) => a.ragStatus === "Green").length,
+      amber: allActivities.filter((a) => a.ragStatus === "Amber").length,
+      red: allActivities.filter((a) => a.ragStatus === "Red").length,
     };
 
     // Blocked/Risk activities with linked actions
-    const blockedRiskActivities = lookaheadActivities
+    const blockedRiskActivities = allActivities
       .filter((a) => a.ragStatus === "Red" || a.ragStatus === "Amber" || a.isBlocked)
+      .slice(0, 20)
       .map((a) => {
         const linkedAction = a.linkedActions[0]; // Get first linked action
         return {
@@ -923,23 +963,65 @@ router.get("/:id/weekly-control", protect, adminOnly, async (req, res) => {
       });
 
     // Calculate stats
-    const blocked = lookaheadActivities.filter(
+    const blocked = allActivities.filter(
       (a) => a.isBlocked || a.activityStatus === "Blocked"
     ).length;
 
     const openActions = actionsByStatus.open + actionsByStatus.inProgress;
 
     const readyToClose =
-      lookaheadActivities.length > 0 &&
+      allActivities.length > 0 &&
       blocked === 0 &&
       ragDistribution.red === 0 &&
       actionsByStatus.overdue === 0;
+
+    // Weekly Plan Preview - activities sorted by start date
+    const weeklyPlanPreview = allActivities
+      .slice(0, 20)
+      .map((a) => ({
+        activityId: a.activityId,
+        activityName: a.activityName,
+        weekZone: a.weekZone || "-",
+        startDate: a.startDate,
+        finishDate: a.finishDate,
+        duration: a.duration,
+        ragStatus: a.ragStatus,
+        owner: a.ownerName || "",
+        activityStatus: a.activityStatus || "Ready",
+      }));
+
+    // Planner To-Do - activities that need attention (blocked, at risk, or with open actions)
+    const plannerToDo = allActivities
+      .filter((a) =>
+        a.isBlocked ||
+        a.activityStatus === "Blocked" ||
+        a.activityStatus === "At Risk" ||
+        a.ragStatus === "Red" ||
+        a.ragStatus === "Amber" ||
+        (a.linkedActions && a.linkedActions.length > 0)
+      )
+      .slice(0, 20)
+      .map((a) => ({
+        activityId: a.activityId,
+        activityName: a.activityName,
+        ragStatus: a.ragStatus,
+        owner: a.ownerName || "",
+        todoItem: a.isBlocked || a.activityStatus === "Blocked"
+          ? "Resolve blocker"
+          : a.ragStatus === "Red"
+            ? "Address critical issue"
+            : a.linkedActions && a.linkedActions.length > 0
+              ? `Complete ${a.linkedActions.length} action(s)`
+              : "Review status",
+        priority: a.ragStatus === "Red" || a.isBlocked ? "High" : "Medium",
+        dueDate: a.finishDate,
+      }));
 
     res.json({
       // Top stats bar
       stats: {
         cycleStatus: programme.cycleStatus,
-        inLookahead: lookaheadActivities.length,
+        inLookahead: allActivities.length,
         green: ragDistribution.green,
         blocked: blocked,
         openActions: openActions,
@@ -961,6 +1043,10 @@ router.get("/:id/weekly-control", protect, adminOnly, async (req, res) => {
       },
       // Blocked/Risk Activities table
       blockedRiskActivities: blockedRiskActivities,
+      // Weekly Plan Preview table
+      weeklyPlanPreview: weeklyPlanPreview,
+      // Planner To-Do table
+      plannerToDo: plannerToDo,
       // Programme info
       programme: {
         _id: programme._id,
@@ -970,7 +1056,7 @@ router.get("/:id/weekly-control", protect, adminOnly, async (req, res) => {
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -981,8 +1067,16 @@ router.patch("/:id/cycle-status", protect, adminOnly, async (req, res) => {
   try {
     const { cycleStatus } = req.body;
 
+    // Validate required field
+    const errors = validateRequired({ cycleStatus });
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
+    }
+
     if (!["Draft", "In Review", "Approved", "Closed"].includes(cycleStatus)) {
-      return res.status(400).json({ message: "Invalid cycle status" });
+      return sendValidationError(res, [
+        { field: "cycleStatus", message: "Invalid cycle status. Must be: Draft, In Review, Approved, or Closed" },
+      ]);
     }
 
     const programme = await Programme.findByIdAndUpdate(
@@ -992,16 +1086,17 @@ router.patch("/:id/cycle-status", protect, adminOnly, async (req, res) => {
     );
 
     if (!programme) {
-      return res.status(404).json({ message: "Programme not found" });
+      return sendError(res, "Programme not found", 404);
     }
 
-    res.json({
-      message: "Cycle status updated successfully",
-      cycleStatus: programme.cycleStatus,
-    });
+    return sendSuccess(
+      res,
+      { cycleStatus: programme.cycleStatus },
+      "Cycle status updated successfully"
+    );
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 
@@ -1013,7 +1108,7 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
     const programme = await Programme.findById(req.params.id);
 
     if (!programme) {
-      return res.status(404).json({ message: "Programme not found" });
+      return sendError(res, "Programme not found", 404);
     }
 
     // Delete the file from disk
@@ -1023,10 +1118,10 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
 
     await Programme.findByIdAndDelete(req.params.id);
 
-    res.json({ message: "Programme deleted successfully" });
+    return sendSuccess(res, {}, "Programme deleted successfully");
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Server error", error: error.message });
+    return sendError(res, "Server error");
   }
 });
 

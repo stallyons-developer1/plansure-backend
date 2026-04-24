@@ -6,6 +6,10 @@ const programmeSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    project: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Project",
+    },
     originalFileName: {
       type: String,
       required: true,
