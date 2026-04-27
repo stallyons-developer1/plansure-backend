@@ -416,6 +416,76 @@ router.get("/by-project/:projectId", protect, adminOnly, async (req, res) => {
   }
 });
 
+// @route   GET /api/programmes/project/:projectId/activities
+// @desc    Get activities for a project with pagination
+// @access  Private
+router.get("/project/:projectId/activities", protect, async (req, res) => {
+  try {
+    const { page = 1, limit = 10, search = "" } = req.query;
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+
+    // Find programme for this project
+    const programme = await Programme.findOne({ project: req.params.projectId });
+
+    if (!programme || !programme.extractedData || !programme.extractedData.activities) {
+      return sendSuccess(res, {
+        activities: [],
+        pagination: {
+          currentPage: pageNum,
+          totalPages: 0,
+          totalActivities: 0,
+          hasNextPage: false,
+          hasPrevPage: false,
+        },
+      });
+    }
+
+    // Get all activities
+    let activities = programme.extractedData.activities.map((a) => ({
+      activityId: a.activityId,
+      activityName: a.activityName,
+      startDate: a.startDate,
+      finishDate: a.finishDate,
+      status: a.status,
+      ragStatus: a.ragStatus,
+    }));
+
+    // Filter by search if provided
+    if (search) {
+      const searchLower = search.toLowerCase();
+      activities = activities.filter(
+        (a) =>
+          a.activityId.toLowerCase().includes(searchLower) ||
+          a.activityName.toLowerCase().includes(searchLower)
+      );
+    }
+
+    // Calculate pagination
+    const totalActivities = activities.length;
+    const totalPages = Math.ceil(totalActivities / limitNum);
+    const startIndex = (pageNum - 1) * limitNum;
+    const endIndex = startIndex + limitNum;
+
+    // Paginate
+    const paginatedActivities = activities.slice(startIndex, endIndex);
+
+    return sendSuccess(res, {
+      activities: paginatedActivities,
+      pagination: {
+        currentPage: pageNum,
+        totalPages,
+        totalActivities,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
 // @route   GET /api/programmes/:id
 // @desc    Get single programme by ID
 // @access  Private (Admin only)

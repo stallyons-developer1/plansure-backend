@@ -18,7 +18,6 @@ const programmeSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
-    // Cycle/Lookahead settings
     cycleStatus: {
       type: String,
       enum: ["Draft", "In Review", "Approved", "Closed"],
@@ -32,11 +31,10 @@ const programmeSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
-    // Week zone definitions
     weekZones: [
       {
         weekNumber: Number,
-        label: String, // "Week 1", "Week 2", etc.
+        label: String,
         category: {
           type: String,
           enum: ["Committed", "Readiness", "Strategic"],
@@ -58,7 +56,13 @@ const programmeSchema = new mongoose.Schema(
           finishDateParsed: Date,
           status: {
             type: String,
-            enum: ["Not Started", "In Progress", "Completed", "Planned", "Forecast"],
+            enum: [
+              "Not Started",
+              "In Progress",
+              "Completed",
+              "Planned",
+              "Forecast",
+            ],
             default: "Planned",
           },
           activityStatus: {
@@ -72,7 +76,7 @@ const programmeSchema = new mongoose.Schema(
             default: "Grey",
           },
           weekZone: {
-            type: String, // "Weeks 1-2", "Weeks 3-4", "Weeks 5-6"
+            type: String,
           },
           isMilestone: {
             type: Boolean,
@@ -122,7 +126,7 @@ const programmeSchema = new mongoose.Schema(
       default: "pending",
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 module.exports = mongoose.model("Programme", programmeSchema);

@@ -10,9 +10,6 @@ const {
   validateRequired,
 } = require("../utils/errorResponse");
 
-// @route   POST /api/actions
-// @desc    Create a new action
-// @access  Private (Admin only)
 router.post("/", protect, adminOnly, async (req, res) => {
   try {
     const {
@@ -26,27 +23,28 @@ router.post("/", protect, adminOnly, async (req, res) => {
       dueDate,
     } = req.body;
 
-    // Validate required fields
     const errors = validateRequired({ programmeId, title, assignee, dueDate });
 
-    // Validate linkedActivity
     if (!linkedActivity || !linkedActivity.activityId) {
-      errors.push({ field: "linkedActivity", message: "Linked activity is required" });
+      errors.push({
+        field: "linkedActivity",
+        message: "Linked activity is required",
+      });
     }
 
     if (errors.length > 0) {
       return sendValidationError(res, errors);
     }
 
-    // Verify programme exists
     const programme = await Programme.findById(programmeId);
     if (!programme) {
-      return sendValidationError(res, [
-        { field: "programmeId", message: "Programme not found" },
-      ], 404);
+      return sendValidationError(
+        res,
+        [{ field: "programmeId", message: "Programme not found" }],
+        404,
+      );
     }
 
-    // Create action
     const action = await Action.create({
       programme: programmeId,
       linkedActivity: {
@@ -70,7 +68,7 @@ router.post("/", protect, adminOnly, async (req, res) => {
       res,
       { action: populatedAction },
       "Action created successfully",
-      201
+      201,
     );
   } catch (error) {
     console.error(error);
@@ -78,14 +76,10 @@ router.post("/", protect, adminOnly, async (req, res) => {
   }
 });
 
-// @route   GET /api/actions
-// @desc    Get all actions (with filters)
-// @access  Private (Admin only)
 router.get("/", protect, adminOnly, async (req, res) => {
   try {
     const { programmeId, status, priority, assignee } = req.query;
 
-    // Build filter
     const filter = {};
     if (programmeId) filter.programme = programmeId;
     if (status) filter.status = status;
@@ -105,9 +99,6 @@ router.get("/", protect, adminOnly, async (req, res) => {
   }
 });
 
-// @route   GET /api/actions/programme/:programmeId
-// @desc    Get all actions for a specific programme
-// @access  Private (Admin only)
 router.get("/programme/:programmeId", protect, adminOnly, async (req, res) => {
   try {
     const actions = await Action.find({ programme: req.params.programmeId })
@@ -122,9 +113,6 @@ router.get("/programme/:programmeId", protect, adminOnly, async (req, res) => {
   }
 });
 
-// @route   GET /api/actions/activity/:activityId
-// @desc    Get all actions for a specific activity
-// @access  Private (Admin only)
 router.get("/activity/:activityId", protect, adminOnly, async (req, res) => {
   try {
     const { programmeId } = req.query;
@@ -144,9 +132,6 @@ router.get("/activity/:activityId", protect, adminOnly, async (req, res) => {
   }
 });
 
-// @route   GET /api/actions/:id
-// @desc    Get single action by ID
-// @access  Private (Admin only)
 router.get("/:id", protect, adminOnly, async (req, res) => {
   try {
     const action = await Action.findById(req.params.id)
@@ -166,9 +151,6 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-// @route   PUT /api/actions/:id
-// @desc    Update an action
-// @access  Private (Admin only)
 router.put("/:id", protect, adminOnly, async (req, res) => {
   try {
     const { title, description, type, priority, assignee, dueDate, status } =
@@ -179,7 +161,6 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    // Update fields
     if (title) action.title = title;
     if (description !== undefined) action.description = description;
     if (type) action.type = type;
@@ -188,7 +169,6 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
     if (dueDate) action.dueDate = dueDate;
     if (status) {
       action.status = status;
-      // Set completedAt if status is Completed
       if (status === "Completed") {
         action.completedAt = new Date();
       } else {
@@ -202,21 +182,21 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
-    return sendSuccess(res, { action: updatedAction }, "Action updated successfully");
+    return sendSuccess(
+      res,
+      { action: updatedAction },
+      "Action updated successfully",
+    );
   } catch (error) {
     console.error(error);
     return sendError(res, "Server error");
   }
 });
 
-// @route   POST /api/actions/:id/comments
-// @desc    Add a comment to an action
-// @access  Private (Admin only)
 router.post("/:id/comments", protect, adminOnly, async (req, res) => {
   try {
     const { text } = req.body;
 
-    // Validate required fields
     const errors = validateRequired({ text });
     if (errors.length > 0) {
       return sendValidationError(res, errors);
@@ -239,16 +219,17 @@ router.post("/:id/comments", protect, adminOnly, async (req, res) => {
       .populate("createdBy", "name email")
       .populate("comments.createdBy", "name email");
 
-    return sendSuccess(res, { action: updatedAction }, "Comment added successfully");
+    return sendSuccess(
+      res,
+      { action: updatedAction },
+      "Comment added successfully",
+    );
   } catch (error) {
     console.error(error);
     return sendError(res, "Server error");
   }
 });
 
-// @route   PATCH /api/actions/:id/complete
-// @desc    Mark action as completed (quick toggle)
-// @access  Private (Admin only)
 router.patch("/:id/complete", protect, adminOnly, async (req, res) => {
   try {
     const action = await Action.findById(req.params.id);
@@ -257,7 +238,6 @@ router.patch("/:id/complete", protect, adminOnly, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    // Toggle completion status
     if (action.status === "Completed") {
       action.status = "Open";
       action.completedAt = null;
@@ -272,16 +252,17 @@ router.patch("/:id/complete", protect, adminOnly, async (req, res) => {
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
-    return sendSuccess(res, { action: updatedAction }, `Action marked as ${action.status}`);
+    return sendSuccess(
+      res,
+      { action: updatedAction },
+      `Action marked as ${action.status}`,
+    );
   } catch (error) {
     console.error(error);
     return sendError(res, "Server error");
   }
 });
 
-// @route   DELETE /api/actions/:id
-// @desc    Delete an action
-// @access  Private (Admin only)
 router.delete("/:id", protect, adminOnly, async (req, res) => {
   try {
     const action = await Action.findById(req.params.id);
@@ -299,9 +280,6 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-// @route   GET /api/actions/stats/summary
-// @desc    Get action statistics
-// @access  Private (Admin only)
 router.get("/stats/summary", protect, adminOnly, async (req, res) => {
   try {
     const { programmeId } = req.query;
@@ -341,11 +319,7 @@ router.get("/stats/summary", protect, adminOnly, async (req, res) => {
           },
           highPriority: {
             $sum: {
-              $cond: [
-                { $in: ["$priority", ["High", "Critical"]] },
-                1,
-                0,
-              ],
+              $cond: [{ $in: ["$priority", ["High", "Critical"]] }, 1, 0],
             },
           },
         },

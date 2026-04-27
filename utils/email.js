@@ -1,6 +1,5 @@
 const nodemailer = require("nodemailer");
 
-// Create transporter for Mailtrap
 const createTransporter = () => {
   return nodemailer.createTransport({
     host: process.env.SMTP_HOST,
@@ -9,10 +8,12 @@ const createTransporter = () => {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
     },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
   });
 };
 
-// Send invite email
 const sendInviteEmail = async (options) => {
   const transporter = createTransporter();
 
@@ -74,9 +75,18 @@ const sendInviteEmail = async (options) => {
   await transporter.sendMail(mailOptions);
 };
 
-// Send welcome email after accepting invite
 const sendWelcomeEmail = async (options) => {
   const transporter = createTransporter();
+
+  const passwordSection = options.password
+    ? `
+    <div style="background: #1a1a2e; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: center;">
+      <p style="margin: 0 0 10px 0; color: #94a3b8;">Your temporary password:</p>
+      <p style="margin: 0; font-size: 24px; color: #3b82f6; font-weight: bold;">${options.password}</p>
+      <p style="margin: 10px 0 0 0; color: #94a3b8; font-size: 12px;">Please change your password after logging in.</p>
+    </div>
+  `
+    : "";
 
   const mailOptions = {
     from: "Plansure <noreply@plansure.io>",
@@ -89,19 +99,21 @@ const sendWelcomeEmail = async (options) => {
         <style>
           body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
           .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-          .header { background: #4CAF50; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+          .header { background: #22c55e; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
           .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
-          .button { display: inline-block; padding: 14px 28px; background: #1a1a2e; color: white; border-radius: 6px; text-decoration: none; font-weight: bold; }
+          .button { display: inline-block; padding: 14px 28px; background: #3b82f6; color: white; border-radius: 6px; text-decoration: none; font-weight: bold; }
         </style>
       </head>
       <body>
         <div class="container">
           <div class="header">
-            <h1>Welcome Aboard!</h1>
+            <h1>Welcome to Plansure!</h1>
           </div>
           <div class="content">
             <h2>Hello ${options.name},</h2>
             <p>Your account has been successfully activated. You can now log in to Plansure and start collaborating with your team.</p>
+
+            ${passwordSection}
 
             <div style="text-align: center; margin: 30px 0;">
               <a href="${process.env.FRONTEND_URL}/login" class="button">Login to Plansure</a>
@@ -116,4 +128,67 @@ const sendWelcomeEmail = async (options) => {
   await transporter.sendMail(mailOptions);
 };
 
-module.exports = { sendInviteEmail, sendWelcomeEmail };
+const sendRoleChangeEmail = async (options) => {
+  const transporter = createTransporter();
+
+  const changes = [];
+  if (options.oldRole !== options.newRole) {
+    changes.push(
+      `<li>Role changed from <strong>${options.oldRole}</strong> to <strong>${options.newRole}</strong></li>`,
+    );
+  }
+  if (options.oldProject !== options.newProject) {
+    changes.push(
+      `<li>Project assignment changed from <strong>${options.oldProject}</strong> to <strong>${options.newProject}</strong></li>`,
+    );
+  }
+
+  const mailOptions = {
+    from: "Plansure <noreply@plansure.io>",
+    to: options.email,
+    subject: "Your Plansure Account Has Been Updated",
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background: #3b82f6; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+          .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
+          .changes { background: #fff; padding: 20px; border-radius: 8px; border-left: 4px solid #3b82f6; margin: 20px 0; }
+          .button { display: inline-block; padding: 14px 28px; background: #3b82f6; color: white; border-radius: 6px; text-decoration: none; font-weight: bold; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>Account Updated</h1>
+          </div>
+          <div class="content">
+            <h2>Hello ${options.name},</h2>
+            <p>Your Plansure account has been updated by an administrator.</p>
+
+            <div class="changes">
+              <strong>Changes made:</strong>
+              <ul>
+                ${changes.join("")}
+              </ul>
+            </div>
+
+            <p>If you have any questions about these changes, please contact your administrator.</p>
+
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${process.env.FRONTEND_URL}/login" class="button">Go to Plansure</a>
+            </div>
+          </div>
+        </div>
+      </body>
+      </html>
+    `,
+  };
+
+  await transporter.sendMail(mailOptions);
+};
+
+module.exports = { sendInviteEmail, sendWelcomeEmail, sendRoleChangeEmail };

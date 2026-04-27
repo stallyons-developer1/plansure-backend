@@ -72,10 +72,9 @@ const actionSchema = new mongoose.Schema(
       },
     ],
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
-// Index for faster queries
 actionSchema.index({ programme: 1, "linkedActivity.activityId": 1 });
 actionSchema.index({ assignee: 1, status: 1 });
 actionSchema.index({ dueDate: 1 });

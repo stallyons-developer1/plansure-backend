@@ -43,18 +43,16 @@ const adminSchema = new mongoose.Schema(
     lastLogin: Date,
     avatar: String,
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
-// Generate invite token
 adminSchema.methods.generateInviteToken = function () {
   const token = crypto.randomBytes(32).toString("hex");
   this.inviteToken = crypto.createHash("sha256").update(token).digest("hex");
-  this.inviteTokenExpiry = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
+  this.inviteTokenExpiry = Date.now() + 7 * 24 * 60 * 60 * 1000;
   return token;
 };
 
-// Hash password before saving
 adminSchema.pre("save", async function () {
   if (!this.isModified("password") || !this.password) {
     return;
@@ -63,7 +61,6 @@ adminSchema.pre("save", async function () {
   this.password = await bcrypt.hash(this.password, salt);
 });
 
-// Compare password method
 adminSchema.methods.matchPassword = async function (enteredPassword) {
   return await bcrypt.compare(enteredPassword, this.password);
 };

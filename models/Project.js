@@ -60,10 +60,9 @@ const projectSchema = new mongoose.Schema(
       required: true,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
-// Index for faster queries
 projectSchema.index({ name: 1 });
 projectSchema.index({ status: 1 });
 projectSchema.index({ createdBy: 1 });

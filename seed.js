@@ -9,23 +9,17 @@ const seedAdmin = async () => {
     await mongoose.connect(process.env.MONGO_URI);
     console.log("MongoDB Connected");
 
-    // Check if admin already exists
     const existingAdmin = await Admin.findOne({ email: "admin@plansure.com" });
 
     if (existingAdmin) {
-      // Ensure admin is active (use updateOne to avoid pre-save hook)
       if (existingAdmin.status !== "active") {
-        await Admin.updateOne(
-          { _id: existingAdmin._id },
-          { status: "active" }
-        );
+        await Admin.updateOne({ _id: existingAdmin._id }, { status: "active" });
         console.log("Admin status updated to active");
       }
       console.log("Admin already exists:");
       console.log("Email: admin@plansure.com");
       console.log("Password: password");
     } else {
-      // Create admin with active status
       const admin = await Admin.create({
         name: "Admin",
         email: "admin@plansure.com",

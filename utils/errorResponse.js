@@ -1,12 +1,8 @@
-// Standardized error response format
-
-// Single field error
 const fieldError = (field, message) => ({
   field,
   message,
 });
 
-// Send validation errors response
 const sendValidationError = (res, errors, statusCode = 400) => {
   return res.status(statusCode).json({
     success: false,
@@ -14,7 +10,6 @@ const sendValidationError = (res, errors, statusCode = 400) => {
   });
 };
 
-// Send general error response
 const sendError = (res, message, statusCode = 500) => {
   return res.status(statusCode).json({
     success: false,
@@ -22,7 +17,6 @@ const sendError = (res, message, statusCode = 500) => {
   });
 };
 
-// Send success response
 const sendSuccess = (res, data, message = "Success", statusCode = 200) => {
   return res.status(statusCode).json({
     success: true,
@@ -31,7 +25,6 @@ const sendSuccess = (res, data, message = "Success", statusCode = 200) => {
   });
 };
 
-// Validate required fields and return errors array
 const validateRequired = (fields) => {
   const errors = [];
 
@@ -47,7 +40,6 @@ const validateRequired = (fields) => {
   return errors;
 };
 
-// Format field name for display (camelCase to Title Case)
 const formatFieldName = (field) => {
   return field
     .replace(/([A-Z])/g, " $1")
@@ -55,7 +47,6 @@ const formatFieldName = (field) => {
     .trim();
 };
 
-// Email validation
 const validateEmail = (email) => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) {
@@ -64,7 +55,6 @@ const validateEmail = (email) => {
   return null;
 };
 
-// Password validation
 const validatePassword = (password, minLength = 6) => {
   if (password && password.length < minLength) {
     return {

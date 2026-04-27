@@ -10,11 +10,12 @@ const protect = async (req, res, next) => {
     try {
       token = req.headers.authorization.split(" ")[1];
 
-      // Verify Sanctum-style token from database
       const user = await Token.verifyToken(token);
 
       if (!user) {
-        return res.status(401).json({ message: "Not authorized, token invalid or expired" });
+        return res
+          .status(401)
+          .json({ message: "Not authorized, token invalid or expired" });
       }
 
       req.admin = user;

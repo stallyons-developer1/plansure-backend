@@ -12,7 +12,7 @@ const cycleHistorySchema = new mongoose.Schema(
       required: true,
     },
     weekLabel: {
-      type: String, // "Week 23"
+      type: String,
     },
     dateRange: {
       startDate: Date,
@@ -24,7 +24,7 @@ const cycleHistorySchema = new mongoose.Schema(
       default: "Normal Close",
     },
     score: {
-      type: Number, // Score out of 100
+      type: Number,
       default: 0,
     },
     stats: {
@@ -43,10 +43,9 @@ const cycleHistorySchema = new mongoose.Schema(
     },
     notes: String,
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
-// Index for faster queries
 cycleHistorySchema.index({ programme: 1, weekNumber: -1 });
 
 module.exports = mongoose.model("CycleHistory", cycleHistorySchema);
