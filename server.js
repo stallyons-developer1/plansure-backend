@@ -69,4 +69,10 @@ const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
+  console.log("Environment check:", {
+    SMTP_HOST: process.env.SMTP_HOST || "NOT SET",
+    SMTP_PORT: process.env.SMTP_PORT || "NOT SET",
+    SMTP_USER: process.env.SMTP_USER ? "SET" : "NOT SET",
+    SMTP_PASS: process.env.SMTP_PASS ? "SET" : "NOT SET",
+  });
 });
