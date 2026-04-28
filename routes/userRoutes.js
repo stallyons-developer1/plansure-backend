@@ -65,15 +65,21 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
     const acceptUrl = `${backendUrl}/api/users/invite/accept/${inviteToken}`;
     const rejectUrl = `${backendUrl}/api/users/invite/reject/${inviteToken}`;
 
-    await sendInviteEmail({
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      projectName,
-      invitedByName: req.admin.name,
-      acceptUrl,
-      rejectUrl,
-    });
+    let emailSent = true;
+    try {
+      await sendInviteEmail({
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        projectName,
+        invitedByName: req.admin.name,
+        acceptUrl,
+        rejectUrl,
+      });
+    } catch (emailError) {
+      console.error("Failed to send invite email:", emailError);
+      emailSent = false;
+    }
 
     return sendSuccess(
       res,
@@ -85,8 +91,9 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
           role: user.role,
           status: user.status,
         },
+        emailSent,
       },
-      "Invitation sent successfully",
+      emailSent ? "Invitation sent successfully" : "User invited but email could not be sent. Please configure SMTP settings.",
       201,
     );
   } catch (error) {
@@ -682,17 +689,27 @@ router.post("/:id/resend-invite", protect, adminOnly, async (req, res) => {
         ? user.projects.map((p) => p.name).join(", ")
         : "All Projects";
 
-    await sendInviteEmail({
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      projectName,
-      invitedByName: req.admin.name,
-      acceptUrl,
-      rejectUrl,
-    });
+    let emailSent = true;
+    try {
+      await sendInviteEmail({
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        projectName,
+        invitedByName: req.admin.name,
+        acceptUrl,
+        rejectUrl,
+      });
+    } catch (emailError) {
+      console.error("Failed to resend invite email:", emailError);
+      emailSent = false;
+    }
 
-    return sendSuccess(res, {}, "Invitation resent successfully");
+    return sendSuccess(
+      res,
+      { emailSent },
+      emailSent ? "Invitation resent successfully" : "Invitation token refreshed but email could not be sent. Please configure SMTP settings."
+    );
   } catch (error) {
     console.error(error);
     return sendError(res, "Server error");
