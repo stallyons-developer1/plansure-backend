@@ -19,7 +19,6 @@ app.get("/", (req, res) => {
   res.send("Plansure API is running...");
 });
 
-// Health check endpoint for Railway
 app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok" });
 });

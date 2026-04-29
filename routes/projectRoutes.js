@@ -9,21 +9,16 @@ const {
   validateRequired,
 } = require("../utils/errorResponse");
 
-// @route   POST /api/projects
-// @desc    Create a new project
-// @access  Private (Admin only)
 router.post("/", protect, adminOnly, async (req, res) => {
   try {
     const { name, phase, description, startDate, endDate } = req.body;
 
-    // Validate required fields
     const errors = validateRequired({ name, phase, startDate });
 
     if (errors.length > 0) {
       return sendValidationError(res, errors);
     }
 
-    // Create project
     const project = await Project.create({
       name,
       phase,
@@ -42,7 +37,7 @@ router.post("/", protect, adminOnly, async (req, res) => {
       res,
       { project: populatedProject },
       "Project created successfully",
-      201
+      201,
     );
   } catch (error) {
     console.error(error);
@@ -50,14 +45,10 @@ router.post("/", protect, adminOnly, async (req, res) => {
   }
 });
 
-// @route   GET /api/projects
-// @desc    Get all projects
-// @access  Private (Admin only)
 router.get("/", protect, adminOnly, async (req, res) => {
   try {
     const { status, phase } = req.query;
 
-    // Build filter
     const filter = {};
     if (status) filter.status = status;
     if (phase) filter.phase = phase;
@@ -75,9 +66,6 @@ router.get("/", protect, adminOnly, async (req, res) => {
   }
 });
 
-// @route   GET /api/projects/:id
-// @desc    Get single project by ID
-// @access  Private (Admin only)
 router.get("/:id", protect, adminOnly, async (req, res) => {
   try {
     const project = await Project.findById(req.params.id)
@@ -99,9 +87,6 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-// @route   PUT /api/projects/:id
-// @desc    Update a project
-// @access  Private (Admin only)
 router.put("/:id", protect, adminOnly, async (req, res) => {
   try {
     const { name, phase, description, startDate, endDate, status } = req.body;
@@ -111,7 +96,6 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
       return sendError(res, "Project not found", 404);
     }
 
-    // Update fields
     if (name) project.name = name;
     if (phase) project.phase = phase;
     if (description !== undefined) project.description = description;
@@ -125,7 +109,11 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
       .populate("createdBy", "name email")
       .populate("team.user", "name email");
 
-    return sendSuccess(res, { project: updatedProject }, "Project updated successfully");
+    return sendSuccess(
+      res,
+      { project: updatedProject },
+      "Project updated successfully",
+    );
   } catch (error) {
     console.error(error);
     return sendError(res, "Server error");
@@ -172,7 +160,7 @@ router.post("/:id/team", protect, adminOnly, async (req, res) => {
 
     // Check if user already in team
     const existingMember = project.team.find(
-      (member) => member.user.toString() === userId
+      (member) => member.user.toString() === userId,
     );
     if (existingMember) {
       return sendValidationError(res, [
@@ -183,13 +171,15 @@ router.post("/:id/team", protect, adminOnly, async (req, res) => {
     project.team.push({ user: userId, role });
     await project.save();
 
-    const updatedProject = await Project.findById(project._id)
-      .populate("team.user", "name email");
+    const updatedProject = await Project.findById(project._id).populate(
+      "team.user",
+      "name email",
+    );
 
     return sendSuccess(
       res,
       { team: updatedProject.team },
-      "Team member added successfully"
+      "Team member added successfully",
     );
   } catch (error) {
     console.error(error);
@@ -208,7 +198,7 @@ router.delete("/:id/team/:userId", protect, adminOnly, async (req, res) => {
     }
 
     project.team = project.team.filter(
-      (member) => member.user.toString() !== req.params.userId
+      (member) => member.user.toString() !== req.params.userId,
     );
     await project.save();
 
@@ -247,13 +237,15 @@ router.post("/:id/programmes", protect, adminOnly, async (req, res) => {
     project.programmes.push(programmeId);
     await project.save();
 
-    const updatedProject = await Project.findById(project._id)
-      .populate("programmes", "name status");
+    const updatedProject = await Project.findById(project._id).populate(
+      "programmes",
+      "name status",
+    );
 
     return sendSuccess(
       res,
       { programmes: updatedProject.programmes },
-      "Programme linked successfully"
+      "Programme linked successfully",
     );
   } catch (error) {
     console.error(error);

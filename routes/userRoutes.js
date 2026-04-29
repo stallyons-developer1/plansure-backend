@@ -93,7 +93,9 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
         },
         emailSent,
       },
-      emailSent ? "Invitation sent successfully" : "User invited but email could not be sent. Please configure SMTP settings.",
+      emailSent
+        ? "Invitation sent successfully"
+        : "User invited but email could not be sent. Please configure SMTP settings.",
       201,
     );
   } catch (error) {
@@ -708,7 +710,9 @@ router.post("/:id/resend-invite", protect, adminOnly, async (req, res) => {
     return sendSuccess(
       res,
       { emailSent },
-      emailSent ? "Invitation resent successfully" : "Invitation token refreshed but email could not be sent. Please configure SMTP settings."
+      emailSent
+        ? "Invitation resent successfully"
+        : "Invitation token refreshed but email could not be sent. Please configure SMTP settings.",
     );
   } catch (error) {
     console.error(error);

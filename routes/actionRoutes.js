@@ -153,14 +153,23 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
 
 router.put("/:id", protect, adminOnly, async (req, res) => {
   try {
-    const { title, description, type, priority, assignee, dueDate, status, programmeId, linkedActivity } = req.body;
+    const {
+      title,
+      description,
+      type,
+      priority,
+      assignee,
+      dueDate,
+      status,
+      programmeId,
+      linkedActivity,
+    } = req.body;
 
     const action = await Action.findById(req.params.id);
     if (!action) {
       return sendError(res, "Action not found", 404);
     }
 
-    // Update programme if provided
     if (programmeId) {
       const programme = await Programme.findById(programmeId);
       if (!programme) {
@@ -173,11 +182,11 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
       action.programme = programmeId;
     }
 
-    // Update linkedActivity if provided
     if (linkedActivity && linkedActivity.activityId) {
       action.linkedActivity = {
         activityId: linkedActivity.activityId,
-        activityName: linkedActivity.activityName || action.linkedActivity?.activityName,
+        activityName:
+          linkedActivity.activityName || action.linkedActivity?.activityName,
       };
     }
 
