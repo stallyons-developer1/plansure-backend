@@ -1,5 +1,16 @@
 const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 
+// Lazy initialize Resend
+let resend = null;
+const getResend = () => {
+  if (!resend) {
+    resend = new Resend(process.env.RESEND_API_KEY);
+  }
+  return resend;
+};
+
+// SMTP Transporter for Mailtrap (local development)
 const createTransporter = () => {
   const port = parseInt(process.env.SMTP_PORT) || 587;
   return nodemailer.createTransport({
@@ -19,70 +30,81 @@ const createTransporter = () => {
   });
 };
 
+// Check if using SMTP or Resend
+const isSmtp = () => process.env.ISSMTP === "true";
+
 const sendInviteEmail = async (options) => {
-  const transporter = createTransporter();
-
-  const mailOptions = {
-    from: "Plansure <noreply@plansure.io>",
-    to: options.email,
-    subject: "You've been invited to join Plansure",
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-          .header { background: #1a1a2e; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-          .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
-          .button { display: inline-block; padding: 14px 28px; margin: 10px 5px; border-radius: 6px; text-decoration: none; font-weight: bold; }
-          .accept { background: #4CAF50; color: white; }
-          .reject { background: #f44336; color: white; }
-          .role-badge { display: inline-block; padding: 5px 15px; border-radius: 20px; font-size: 14px; margin: 10px 0; }
-          .admin { background: #ff6b6b; color: white; }
-          .planner { background: #ffd93d; color: #333; }
-          .user { background: #6bcb77; color: white; }
-          .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>Welcome to Plansure</h1>
-          </div>
-          <div class="content">
-            <h2>Hello ${options.name},</h2>
-            <p>You've been invited by <strong>${options.invitedByName}</strong> to join Plansure as a team member.</p>
-
-            <p><strong>Your Role:</strong></p>
-            <span class="role-badge ${options.role}">${options.role.charAt(0).toUpperCase() + options.role.slice(1)}</span>
-
-            <p><strong>Project Assignment:</strong> ${options.projectName || "All Projects"}</p>
-
-            <p>Click below to accept or decline this invitation:</p>
-
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="${options.acceptUrl}" class="button accept">Accept Invite</a>
-              <a href="${options.rejectUrl}" class="button reject">Decline</a>
-            </div>
-
-            <p style="color: #666; font-size: 14px;">This invitation will expire in 7 days.</p>
-          </div>
-          <div class="footer">
-            <p>&copy; ${new Date().getFullYear()} Plansure. All rights reserved.</p>
-          </div>
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #1a1a2e; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
+        .button { display: inline-block; padding: 14px 28px; margin: 10px 5px; border-radius: 6px; text-decoration: none; font-weight: bold; }
+        .accept { background: #4CAF50; color: white; }
+        .reject { background: #f44336; color: white; }
+        .role-badge { display: inline-block; padding: 5px 15px; border-radius: 20px; font-size: 14px; margin: 10px 0; }
+        .admin { background: #ff6b6b; color: white; }
+        .planner { background: #ffd93d; color: #333; }
+        .user { background: #6bcb77; color: white; }
+        .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>Welcome to Plansure</h1>
         </div>
-      </body>
-      </html>
-    `,
-  };
+        <div class="content">
+          <h2>Hello ${options.name},</h2>
+          <p>You've been invited by <strong>${options.invitedByName}</strong> to join Plansure as a team member.</p>
 
-  await transporter.sendMail(mailOptions);
+          <p><strong>Your Role:</strong></p>
+          <span class="role-badge ${options.role}">${options.role.charAt(0).toUpperCase() + options.role.slice(1)}</span>
+
+          <p><strong>Project Assignment:</strong> ${options.projectName || "All Projects"}</p>
+
+          <p>Click below to accept or decline this invitation:</p>
+
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${options.acceptUrl}" class="button accept">Accept Invite</a>
+            <a href="${options.rejectUrl}" class="button reject">Decline</a>
+          </div>
+
+          <p style="color: #666; font-size: 14px;">This invitation will expire in 7 days.</p>
+        </div>
+        <div class="footer">
+          <p>&copy; ${new Date().getFullYear()} Plansure. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  if (isSmtp()) {
+    // Use SMTP (Mailtrap) for local development
+    const transporter = createTransporter();
+    await transporter.sendMail({
+      from: "Plansure <noreply@plansure.io>",
+      to: options.email,
+      subject: "You've been invited to join Plansure",
+      html: htmlContent,
+    });
+  } else {
+    // Use Resend for production (Railway)
+    await getResend().emails.send({
+      from: "Plansure <onboarding@resend.dev>",
+      to: options.email,
+      subject: "You've been invited to join Plansure",
+      html: htmlContent,
+    });
+  }
 };
 
 const sendWelcomeEmail = async (options) => {
-  const transporter = createTransporter();
-
   const passwordSection = options.password
     ? `
     <div style="background: #1a1a2e; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: center;">
@@ -93,49 +115,57 @@ const sendWelcomeEmail = async (options) => {
   `
     : "";
 
-  const mailOptions = {
-    from: "Plansure <noreply@plansure.io>",
-    to: options.email,
-    subject: "Welcome to Plansure!",
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-          .header { background: #22c55e; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-          .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
-          .button { display: inline-block; padding: 14px 28px; background: #3b82f6; color: white; border-radius: 6px; text-decoration: none; font-weight: bold; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>Welcome to Plansure!</h1>
-          </div>
-          <div class="content">
-            <h2>Hello ${options.name},</h2>
-            <p>Your account has been successfully activated. You can now log in to Plansure and start collaborating with your team.</p>
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #22c55e; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
+        .button { display: inline-block; padding: 14px 28px; background: #3b82f6; color: white; border-radius: 6px; text-decoration: none; font-weight: bold; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>Welcome to Plansure!</h1>
+        </div>
+        <div class="content">
+          <h2>Hello ${options.name},</h2>
+          <p>Your account has been successfully activated. You can now log in to Plansure and start collaborating with your team.</p>
 
-            ${passwordSection}
+          ${passwordSection}
 
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="${process.env.FRONTEND_URL}/login" class="button">Login to Plansure</a>
-            </div>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${process.env.FRONTEND_URL}/login" class="button">Login to Plansure</a>
           </div>
         </div>
-      </body>
-      </html>
-    `,
-  };
+      </div>
+    </body>
+    </html>
+  `;
 
-  await transporter.sendMail(mailOptions);
+  if (isSmtp()) {
+    const transporter = createTransporter();
+    await transporter.sendMail({
+      from: "Plansure <noreply@plansure.io>",
+      to: options.email,
+      subject: "Welcome to Plansure!",
+      html: htmlContent,
+    });
+  } else {
+    await getResend().emails.send({
+      from: "Plansure <onboarding@resend.dev>",
+      to: options.email,
+      subject: "Welcome to Plansure!",
+      html: htmlContent,
+    });
+  }
 };
 
 const sendRoleChangeEmail = async (options) => {
-  const transporter = createTransporter();
-
   const changes = [];
   if (options.oldRole !== options.newRole) {
     changes.push(
@@ -148,52 +178,62 @@ const sendRoleChangeEmail = async (options) => {
     );
   }
 
-  const mailOptions = {
-    from: "Plansure <noreply@plansure.io>",
-    to: options.email,
-    subject: "Your Plansure Account Has Been Updated",
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-          .header { background: #3b82f6; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-          .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
-          .changes { background: #fff; padding: 20px; border-radius: 8px; border-left: 4px solid #3b82f6; margin: 20px 0; }
-          .button { display: inline-block; padding: 14px 28px; background: #3b82f6; color: white; border-radius: 6px; text-decoration: none; font-weight: bold; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>Account Updated</h1>
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #3b82f6; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
+        .changes { background: #fff; padding: 20px; border-radius: 8px; border-left: 4px solid #3b82f6; margin: 20px 0; }
+        .button { display: inline-block; padding: 14px 28px; background: #3b82f6; color: white; border-radius: 6px; text-decoration: none; font-weight: bold; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>Account Updated</h1>
+        </div>
+        <div class="content">
+          <h2>Hello ${options.name},</h2>
+          <p>Your Plansure account has been updated by an administrator.</p>
+
+          <div class="changes">
+            <strong>Changes made:</strong>
+            <ul>
+              ${changes.join("")}
+            </ul>
           </div>
-          <div class="content">
-            <h2>Hello ${options.name},</h2>
-            <p>Your Plansure account has been updated by an administrator.</p>
 
-            <div class="changes">
-              <strong>Changes made:</strong>
-              <ul>
-                ${changes.join("")}
-              </ul>
-            </div>
+          <p>If you have any questions about these changes, please contact your administrator.</p>
 
-            <p>If you have any questions about these changes, please contact your administrator.</p>
-
-            <div style="text-align: center; margin: 30px 0;">
-              <a href="${process.env.FRONTEND_URL}/login" class="button">Go to Plansure</a>
-            </div>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${process.env.FRONTEND_URL}/login" class="button">Go to Plansure</a>
           </div>
         </div>
-      </body>
-      </html>
-    `,
-  };
+      </div>
+    </body>
+    </html>
+  `;
 
-  await transporter.sendMail(mailOptions);
+  if (isSmtp()) {
+    const transporter = createTransporter();
+    await transporter.sendMail({
+      from: "Plansure <noreply@plansure.io>",
+      to: options.email,
+      subject: "Your Plansure Account Has Been Updated",
+      html: htmlContent,
+    });
+  } else {
+    await getResend().emails.send({
+      from: "Plansure <onboarding@resend.dev>",
+      to: options.email,
+      subject: "Your Plansure Account Has Been Updated",
+      html: htmlContent,
+    });
+  }
 };
 
 module.exports = { sendInviteEmail, sendWelcomeEmail, sendRoleChangeEmail };
