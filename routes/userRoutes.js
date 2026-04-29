@@ -68,7 +68,12 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
 
     let emailSent = true;
     let emailError = null;
-    console.log("[INVITE] About to send invite email to:", user.email);
+    const debugInfo = {
+      ISSMTP: process.env.ISSMTP,
+      RESEND_KEY_EXISTS: !!process.env.RESEND_API_KEY,
+      RESEND_KEY_LENGTH: process.env.RESEND_API_KEY ? process.env.RESEND_API_KEY.length : 0,
+    };
+    console.log("[INVITE] About to send invite email to:", user.email, "Debug:", debugInfo);
     try {
       await sendInviteEmail({
         email: user.email,
@@ -98,6 +103,7 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
         },
         emailSent,
         emailError,
+        debugInfo,
       },
       emailSent
         ? "Invitation sent successfully"
