@@ -19,6 +19,7 @@ const {
 } = require("../utils/errorResponse");
 
 router.post("/invite", protect, adminOnly, async (req, res) => {
+  console.log("[INVITE] Invite request received:", req.body);
   try {
     const { name, email, role, projectId } = req.body;
 
@@ -66,6 +67,7 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
     const rejectUrl = `${backendUrl}/api/users/invite/reject/${inviteToken}`;
 
     let emailSent = true;
+    console.log("[INVITE] About to send invite email to:", user.email);
     try {
       await sendInviteEmail({
         email: user.email,
@@ -76,8 +78,9 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
         acceptUrl,
         rejectUrl,
       });
+      console.log("[INVITE] Email sent successfully to:", user.email);
     } catch (emailError) {
-      console.error("Failed to send invite email:", emailError);
+      console.error("[INVITE] Failed to send invite email:", emailError);
       emailSent = false;
     }
 
