@@ -31,6 +31,16 @@ app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok" });
 });
 
+app.get("/api/debug-env", (req, res) => {
+  res.json({
+    hasResendKey: !!process.env.RESEND_API_KEY,
+    resendKeyLen: (process.env.RESEND_API_KEY || "").length,
+    resendKeyPrefix: (process.env.RESEND_API_KEY || "").slice(0, 3),
+    issmtp: process.env.ISSMTP,
+    nodeEnv: process.env.NODE_ENV,
+  });
+});
+
 app.get("/api/test-email", async (req, res) => {
   const nodemailer = require("nodemailer");
 
