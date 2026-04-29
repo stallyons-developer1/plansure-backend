@@ -5,7 +5,12 @@ const { Resend } = require("resend");
 let resend = null;
 const getResend = () => {
   if (!resend) {
-    resend = new Resend(process.env.RESEND_API_KEY);
+    const apiKey = process.env.RESEND_API_KEY;
+    console.log(`[EMAIL] Initializing Resend with key: ${apiKey ? apiKey.substring(0, 10) + '...' : 'MISSING'}`);
+    if (!apiKey) {
+      throw new Error("RESEND_API_KEY environment variable is not set");
+    }
+    resend = new Resend(apiKey);
   }
   return resend;
 };
