@@ -5,6 +5,14 @@ const path = require("path");
 const connectDB = require("./config/db");
 
 dotenv.config();
+
+console.log("[BOOT]", {
+  hasResendKey: !!process.env.RESEND_API_KEY,
+  resendKeyLen: (process.env.RESEND_API_KEY || "").length,
+  resendKeyPrefix: (process.env.RESEND_API_KEY || "").slice(0, 3),
+  issmtp: process.env.ISSMTP,
+});
+
 connectDB();
 
 const app = express();
