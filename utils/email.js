@@ -106,7 +106,7 @@ const sendInviteEmail = async (options) => {
       // Use Resend for production (Railway)
       console.log(`[EMAIL] Using Resend API - Key exists: ${!!process.env.RESEND_API_KEY}`);
       const result = await getResend().emails.send({
-        from: "Plansure <onboarding@resend.dev>",
+        from: process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
         to: options.email,
         subject: "You've been invited to join Plansure",
         html: htmlContent,
@@ -176,7 +176,7 @@ const sendWelcomeEmail = async (options) => {
       console.log(`[EMAIL] SMTP welcome email success:`, result.messageId);
     } else {
       const result = await getResend().emails.send({
-        from: "Plansure <onboarding@resend.dev>",
+        from: process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
         to: options.email,
         subject: "Welcome to Plansure!",
         html: htmlContent,
@@ -256,7 +256,7 @@ const sendRoleChangeEmail = async (options) => {
       console.log(`[EMAIL] SMTP role change email success:`, result.messageId);
     } else {
       const result = await getResend().emails.send({
-        from: "Plansure <onboarding@resend.dev>",
+        from: process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
         to: options.email,
         subject: "Your Plansure Account Has Been Updated",
         html: htmlContent,
