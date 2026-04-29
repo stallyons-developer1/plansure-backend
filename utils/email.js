@@ -43,6 +43,11 @@ const isSmtp = () => {
 };
 
 const sendInviteEmail = async (options) => {
+  console.log("[EMAIL] sendInviteEmail called, checking env vars:");
+  console.log("[EMAIL] ISSMTP:", process.env.ISSMTP);
+  console.log("[EMAIL] RESEND_API_KEY exists:", !!process.env.RESEND_API_KEY);
+  console.log("[EMAIL] All env keys:", Object.keys(process.env).filter(k => k.includes('RESEND') || k.includes('SMTP') || k.includes('ISSMTP')));
+
   const htmlContent = `
     <!DOCTYPE html>
     <html>
