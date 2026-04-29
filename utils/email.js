@@ -31,7 +31,11 @@ const createTransporter = () => {
 };
 
 // Check if using SMTP or Resend
-const isSmtp = () => process.env.ISSMTP === "true";
+const isSmtp = () => {
+  const useSmtp = process.env.ISSMTP === "true";
+  console.log(`[EMAIL] ISSMTP=${process.env.ISSMTP}, Using: ${useSmtp ? 'SMTP (Mailtrap)' : 'Resend API'}`);
+  return useSmtp;
+};
 
 const sendInviteEmail = async (options) => {
   const htmlContent = `
@@ -84,23 +88,34 @@ const sendInviteEmail = async (options) => {
     </html>
   `;
 
-  if (isSmtp()) {
-    // Use SMTP (Mailtrap) for local development
-    const transporter = createTransporter();
-    await transporter.sendMail({
-      from: "Plansure <noreply@plansure.io>",
-      to: options.email,
-      subject: "You've been invited to join Plansure",
-      html: htmlContent,
-    });
-  } else {
-    // Use Resend for production (Railway)
-    await getResend().emails.send({
-      from: "Plansure <onboarding@resend.dev>",
-      to: options.email,
-      subject: "You've been invited to join Plansure",
-      html: htmlContent,
-    });
+  try {
+    console.log(`[EMAIL] Sending invite email to: ${options.email}`);
+
+    if (isSmtp()) {
+      // Use SMTP (Mailtrap) for local development
+      console.log(`[EMAIL] Using SMTP - Host: ${process.env.SMTP_HOST}, Port: ${process.env.SMTP_PORT}`);
+      const transporter = createTransporter();
+      const result = await transporter.sendMail({
+        from: "Plansure <noreply@plansure.io>",
+        to: options.email,
+        subject: "You've been invited to join Plansure",
+        html: htmlContent,
+      });
+      console.log(`[EMAIL] SMTP send success:`, result.messageId);
+    } else {
+      // Use Resend for production (Railway)
+      console.log(`[EMAIL] Using Resend API - Key exists: ${!!process.env.RESEND_API_KEY}`);
+      const result = await getResend().emails.send({
+        from: "Plansure <onboarding@resend.dev>",
+        to: options.email,
+        subject: "You've been invited to join Plansure",
+        html: htmlContent,
+      });
+      console.log(`[EMAIL] Resend send success:`, result);
+    }
+  } catch (error) {
+    console.error(`[EMAIL] Error sending invite email:`, error);
+    throw error;
   }
 };
 
@@ -147,21 +162,30 @@ const sendWelcomeEmail = async (options) => {
     </html>
   `;
 
-  if (isSmtp()) {
-    const transporter = createTransporter();
-    await transporter.sendMail({
-      from: "Plansure <noreply@plansure.io>",
-      to: options.email,
-      subject: "Welcome to Plansure!",
-      html: htmlContent,
-    });
-  } else {
-    await getResend().emails.send({
-      from: "Plansure <onboarding@resend.dev>",
-      to: options.email,
-      subject: "Welcome to Plansure!",
-      html: htmlContent,
-    });
+  try {
+    console.log(`[EMAIL] Sending welcome email to: ${options.email}`);
+
+    if (isSmtp()) {
+      const transporter = createTransporter();
+      const result = await transporter.sendMail({
+        from: "Plansure <noreply@plansure.io>",
+        to: options.email,
+        subject: "Welcome to Plansure!",
+        html: htmlContent,
+      });
+      console.log(`[EMAIL] SMTP welcome email success:`, result.messageId);
+    } else {
+      const result = await getResend().emails.send({
+        from: "Plansure <onboarding@resend.dev>",
+        to: options.email,
+        subject: "Welcome to Plansure!",
+        html: htmlContent,
+      });
+      console.log(`[EMAIL] Resend welcome email success:`, result);
+    }
+  } catch (error) {
+    console.error(`[EMAIL] Error sending welcome email:`, error);
+    throw error;
   }
 };
 
@@ -218,21 +242,30 @@ const sendRoleChangeEmail = async (options) => {
     </html>
   `;
 
-  if (isSmtp()) {
-    const transporter = createTransporter();
-    await transporter.sendMail({
-      from: "Plansure <noreply@plansure.io>",
-      to: options.email,
-      subject: "Your Plansure Account Has Been Updated",
-      html: htmlContent,
-    });
-  } else {
-    await getResend().emails.send({
-      from: "Plansure <onboarding@resend.dev>",
-      to: options.email,
-      subject: "Your Plansure Account Has Been Updated",
-      html: htmlContent,
-    });
+  try {
+    console.log(`[EMAIL] Sending role change email to: ${options.email}`);
+
+    if (isSmtp()) {
+      const transporter = createTransporter();
+      const result = await transporter.sendMail({
+        from: "Plansure <noreply@plansure.io>",
+        to: options.email,
+        subject: "Your Plansure Account Has Been Updated",
+        html: htmlContent,
+      });
+      console.log(`[EMAIL] SMTP role change email success:`, result.messageId);
+    } else {
+      const result = await getResend().emails.send({
+        from: "Plansure <onboarding@resend.dev>",
+        to: options.email,
+        subject: "Your Plansure Account Has Been Updated",
+        html: htmlContent,
+      });
+      console.log(`[EMAIL] Resend role change email success:`, result);
+    }
+  } catch (error) {
+    console.error(`[EMAIL] Error sending role change email:`, error);
+    throw error;
   }
 };
 
