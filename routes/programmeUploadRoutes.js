@@ -195,15 +195,21 @@ router.post(
           const y = Math.round(item.transform[5] / 3) * 3; // Group nearby Y positions
           const x = Math.round(item.transform[4]); // X position
 
-          // Only include items from the table area (x < 700 to exclude Gantt chart)
-          if (x > 680) return;
+          // Only include items from the table area (x < 800 to exclude Gantt chart bars)
+          if (x > 780) return;
 
           if (!rows[y]) rows[y] = [];
           rows[y].push({ text: item.str.trim(), x });
         });
 
+        // Sort rows by Y position (descending = top to bottom in PDF)
+        const sortedYPositions = Object.keys(rows)
+          .map(Number)
+          .sort((a, b) => b - a); // Higher Y = top of page
+
         // Parse each row into structured activity
-        Object.values(rows).forEach((row) => {
+        sortedYPositions.forEach((y) => {
+          const row = rows[y];
           row.sort((a, b) => a.x - b.x); // Sort by X position
 
           // Activity ID patterns: MS-AD-007, A26410, CST_A17090, CE-121, VI____PP40, etc.
@@ -237,6 +243,14 @@ router.post(
               blocker: "",
             };
 
+            // Date pattern to match formats like "24-Nov-21 A" or "01-Aug-22*"
+            const datePattern = /\d{2}-[A-Za-z]{3}-\d{2}/;
+
+            // Collect all date items from the row (before Gantt chart area x < 780)
+            const dateItems = row.filter((item) =>
+              item.x < 780 && datePattern.test(item.text)
+            ).sort((a, b) => a.x - b.x); // Sort by X position (left to right)
+
             row.forEach((item) => {
               // Activity ID (x 38-145)
               if (item.x >= 38 && item.x < 145 && activityIdPattern.test(item.text)) {
@@ -246,28 +260,39 @@ router.post(
                   activity.isMilestone = true;
                 }
               }
-              // Activity Name (x 145-510) - strict range to avoid Gantt text
-              else if (item.x >= 145 && item.x < 510 && item.text.length > 2) {
+              // Activity Name (x 145-550) - avoid dates and Gantt text
+              else if (item.x >= 145 && item.x < 550 && item.text.length > 2 && !datePattern.test(item.text) && !/^\d+$/.test(item.text)) {
                 activity.activityName = item.text;
               }
-              // Duration (x 530-575)
-              else if (item.x >= 530 && item.x < 575 && /^\d+$/.test(item.text)) {
+              // Duration - standalone numbers
+              else if (item.x >= 500 && item.x < 620 && /^\d+$/.test(item.text)) {
                 activity.duration = item.text;
                 activity.durationDays = parseInt(item.text) || 0;
-                // Duration 0 typically means milestone
                 if (item.text === "0") {
                   activity.isMilestone = true;
                 }
               }
-              // Start Date (x 575-625)
-              else if (item.x >= 575 && item.x < 625 && /\d{2}-[A-Za-z]{3}-\d{2}/.test(item.text)) {
-                activity.startDate = item.text;
-              }
-              // Finish Date (x 625-680)
-              else if (item.x >= 625 && item.x < 680 && /\d{2}-[A-Za-z]{3}-\d{2}/.test(item.text)) {
-                activity.finishDate = item.text;
-              }
             });
+
+            // Assign dates based on X position
+            // PDF layout: Duration | Start Date (x:576) | Finish Date (x:630)
+            // Threshold: midpoint = 603
+            const FINISH_COLUMN_THRESHOLD = 603;
+
+            if (dateItems.length >= 2) {
+              // Two dates: first = Start, second = Finish
+              activity.startDate = dateItems[0].text;
+              activity.finishDate = dateItems[1].text;
+            } else if (dateItems.length === 1) {
+              // Single date: determine column by X position
+              if (dateItems[0].x >= FINISH_COLUMN_THRESHOLD) {
+                // Date is in Finish column (x >= 603)
+                activity.finishDate = dateItems[0].text;
+              } else {
+                // Date is in Start column (x < 603)
+                activity.startDate = dateItems[0].text;
+              }
+            }
 
             // Parse dates
             activity.startDateParsed = parseDate(activity.startDate);
@@ -1171,15 +1196,19 @@ router.patch("/:id/cycle-status", protect, adminOnly, async (req, res) => {
 });
 
 // @route   DELETE /api/programmes/:id
-// @desc    Delete a programme
+// @desc    Delete a programme and its related actions
 // @access  Private (Admin only)
 router.delete("/:id", protect, adminOnly, async (req, res) => {
   try {
+    const Action = require("../models/Action");
     const programme = await Programme.findById(req.params.id);
 
     if (!programme) {
       return sendError(res, "Programme not found", 404);
     }
+
+    // Delete all actions related to this programme
+    await Action.deleteMany({ programme: req.params.id });
 
     // Delete the file from disk
     if (fs.existsSync(programme.filePath)) {
@@ -1188,7 +1217,7 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
 
     await Programme.findByIdAndDelete(req.params.id);
 
-    return sendSuccess(res, {}, "Programme deleted successfully");
+    return sendSuccess(res, {}, "Programme and related actions deleted successfully");
   } catch (error) {
     console.error(error);
     return sendError(res, "Server error");
