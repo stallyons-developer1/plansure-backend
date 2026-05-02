@@ -207,17 +207,75 @@ router.post(
           .map(Number)
           .sort((a, b) => b - a); // Higher Y = top of page
 
+        // Activity ID patterns - must contain digits OR be a specific format with separators
+        // Examples: MS-AD-007, A26410, CST_A17090, CE-121, VI____PP40, TP_2024, CW-001, MEP-001, TC-001, STAGE-1
+        // Must have: letters + separator + letters/digits OR letters + digits
+        const activityIdPattern = /^([A-Z]{1,6}[-_][A-Z0-9]{1,6}[-_]?\d*[\.\d]*|[A-Z]{1,4}\d+[\.\d]*|[A-Z]{2,}[-_][A-Z0-9]+-?\d*|VI_+[A-Z0-9]+|[A-Z]+-\d+|STAGE-\d+)/;
+        const datePattern = /\d{2}-[A-Za-z]{3}-\d{2}/;
+
+        // Auto-detect column positions by analyzing X positions of different text types
+        // Collect X positions of activity ID candidates (must be in leftmost area)
+        const idXPositions = [];
+        const dateXPositions = [];
+        const textXPositions = []; // For activity names
+
+        sortedYPositions.slice(0, 50).forEach((y) => {
+          const row = rows[y];
+          row.sort((a, b) => a.x - b.x);
+
+          row.forEach((item, idx) => {
+            // Activity IDs are typically in the first column (leftmost items that match pattern)
+            if (activityIdPattern.test(item.text) && item.x < 200 && idx === 0) {
+              idXPositions.push(item.x);
+            }
+            if (datePattern.test(item.text)) {
+              dateXPositions.push(item.x);
+            }
+            // Text items that are not IDs, dates, or numbers are likely activity names
+            if (item.text.length > 5 && !datePattern.test(item.text) && !/^\d+$/.test(item.text) && !activityIdPattern.test(item.text)) {
+              textXPositions.push(item.x);
+            }
+          });
+        });
+
+        // Calculate adaptive thresholds based on detected positions
+        // ID column: find the typical X position range for IDs (usually consistent leftmost position)
+        const uniqueIdX = [...new Set(idXPositions)].sort((a, b) => a - b);
+        const idColumnX = uniqueIdX.length > 0 ? uniqueIdX[0] : 30; // Most common (leftmost) ID position
+        const idColumnMaxX = uniqueIdX.length > 0 ? Math.max(...uniqueIdX) + 80 : 145;
+
+        // Name column: find where activity names typically start
+        const uniqueTextX = [...new Set(textXPositions)].sort((a, b) => a - b);
+        const nameColumnMinX = uniqueTextX.length > 0 ? Math.min(...uniqueTextX.filter(x => x > idColumnX)) - 10 : 100;
+
+        // Date positions - find the gap between start and finish columns
+        const sortedDateX = [...new Set(dateXPositions)].sort((a, b) => a - b);
+        let finishColumnThreshold = 603; // default
+        if (sortedDateX.length >= 4) {
+          // Find significant gaps between date X positions
+          const dateGaps = [];
+          for (let j = 1; j < sortedDateX.length; j++) {
+            if (sortedDateX[j] - sortedDateX[j-1] > 20) {
+              dateGaps.push({ gap: sortedDateX[j] - sortedDateX[j-1], midpoint: (sortedDateX[j] + sortedDateX[j-1]) / 2 });
+            }
+          }
+          if (dateGaps.length > 0) {
+            // Use the first significant gap as the threshold
+            finishColumnThreshold = dateGaps[0].midpoint;
+          }
+        } else if (sortedDateX.length >= 2) {
+          // Use midpoint of detected range
+          finishColumnThreshold = (sortedDateX[0] + sortedDateX[sortedDateX.length - 1]) / 2;
+        }
+
         // Parse each row into structured activity
         sortedYPositions.forEach((y) => {
           const row = rows[y];
           row.sort((a, b) => a.x - b.x); // Sort by X position
 
-          // Activity ID patterns: MS-AD-007, A26410, CST_A17090, CE-121, VI____PP40, etc.
-          const activityIdPattern = /^([A-Z]{1,4}[-_]?[A-Z]{0,3}[-_]?\d+[\.\d]*|[A-Z]{2,}[-_][A-Z]{0,3}[-_]?\d+|VI_+[A-Z0-9]+)/;
-
-          // Check if this row has an Activity ID
+          // Check if this row has an Activity ID (flexible X range: 0 to idColumnMaxX)
           const idItem = row.find((item) =>
-            item.x >= 38 && item.x < 145 && activityIdPattern.test(item.text)
+            item.x >= 0 && item.x < idColumnMaxX && activityIdPattern.test(item.text)
           );
 
           if (idItem) {
@@ -243,29 +301,36 @@ router.post(
               blocker: "",
             };
 
-            // Date pattern to match formats like "24-Nov-21 A" or "01-Aug-22*"
-            const datePattern = /\d{2}-[A-Za-z]{3}-\d{2}/;
-
             // Collect all date items from the row (before Gantt chart area x < 780)
             const dateItems = row.filter((item) =>
               item.x < 780 && datePattern.test(item.text)
             ).sort((a, b) => a.x - b.x); // Sort by X position (left to right)
 
+            // Find the minimum date X position for this row to help identify name column boundary
+            const minDateX = dateItems.length > 0 ? Math.min(...dateItems.map(d => d.x)) : 780;
+            // Name column ends before duration/dates (use detected or fallback)
+            const nameColumnMaxX = Math.min(minDateX - 20, 550);
+
             row.forEach((item) => {
-              // Activity ID (x 38-145)
-              if (item.x >= 38 && item.x < 145 && activityIdPattern.test(item.text)) {
+              // Activity ID (flexible range based on detection)
+              if (item.x >= 0 && item.x < idColumnMaxX && activityIdPattern.test(item.text)) {
                 activity.activityId = item.text;
                 // Check if it's a milestone (typically MS- prefix)
                 if (item.text.startsWith("MS-")) {
                   activity.isMilestone = true;
                 }
               }
-              // Activity Name (x 145-550) - avoid dates and Gantt text
-              else if (item.x >= 145 && item.x < 550 && item.text.length > 2 && !datePattern.test(item.text) && !/^\d+$/.test(item.text)) {
-                activity.activityName = item.text;
+              // Activity Name - between ID column and dates, avoid dates and pure numbers
+              else if (item.x >= nameColumnMinX && item.x < nameColumnMaxX && item.text.length > 2 && !datePattern.test(item.text) && !/^\d+$/.test(item.text)) {
+                // Concatenate if multiple name segments
+                if (activity.activityName) {
+                  activity.activityName += " " + item.text;
+                } else {
+                  activity.activityName = item.text;
+                }
               }
-              // Duration - standalone numbers
-              else if (item.x >= 500 && item.x < 620 && /^\d+$/.test(item.text)) {
+              // Duration - standalone numbers (anywhere before dates)
+              else if (/^\d+$/.test(item.text) && parseInt(item.text) < 2000 && item.x < minDateX) {
                 activity.duration = item.text;
                 activity.durationDays = parseInt(item.text) || 0;
                 if (item.text === "0") {
@@ -275,21 +340,17 @@ router.post(
             });
 
             // Assign dates based on X position
-            // PDF layout: Duration | Start Date (x:576) | Finish Date (x:630)
-            // Threshold: midpoint = 603
-            const FINISH_COLUMN_THRESHOLD = 603;
-
             if (dateItems.length >= 2) {
               // Two dates: first = Start, second = Finish
               activity.startDate = dateItems[0].text;
               activity.finishDate = dateItems[1].text;
             } else if (dateItems.length === 1) {
               // Single date: determine column by X position
-              if (dateItems[0].x >= FINISH_COLUMN_THRESHOLD) {
-                // Date is in Finish column (x >= 603)
+              if (dateItems[0].x >= finishColumnThreshold) {
+                // Date is in Finish column
                 activity.finishDate = dateItems[0].text;
               } else {
-                // Date is in Start column (x < 603)
+                // Date is in Start column
                 activity.startDate = dateItems[0].text;
               }
             }
