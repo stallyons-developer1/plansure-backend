@@ -541,9 +541,20 @@ router.get("/by-project/:projectId", protect, async (req, res) => {
       }
     }
 
-    const programme = await Programme.findOne({ project: req.params.projectId })
+    // Prioritize active (non-closed) programme, otherwise get most recent
+    let programme = await Programme.findOne({
+      project: req.params.projectId,
+      cycleStatus: { $ne: "Closed" }
+    })
       .populate("uploadedBy", "name email")
       .sort({ createdAt: -1 });
+
+    // If no active programme, fall back to most recent (which would be closed)
+    if (!programme) {
+      programme = await Programme.findOne({ project: req.params.projectId })
+        .populate("uploadedBy", "name email")
+        .sort({ createdAt: -1 });
+    }
 
     if (!programme) {
       return sendSuccess(res, { programme: null });
@@ -556,8 +567,43 @@ router.get("/by-project/:projectId", protect, async (req, res) => {
   }
 });
 
+// @route   GET /api/programmes/project/:projectId/history
+// @desc    Get all programmes (history) for a project
+// @access  Private
+router.get("/project/:projectId/history", protect, async (req, res) => {
+  try {
+    // Check if non-admin user has access to this project
+    if (req.admin.role !== "admin") {
+      const userProjects = req.admin.projects || [];
+      const hasAccess = userProjects.some(
+        (p) => p.toString() === req.params.projectId
+      );
+      if (!hasAccess) {
+        return sendError(res, "Access denied", 403);
+      }
+    }
+
+    const programmes = await Programme.find({ project: req.params.projectId })
+      .populate("uploadedBy", "name email")
+      .sort({ createdAt: -1 });
+
+    // Separate current (latest non-closed) and history (closed)
+    const currentProgramme = programmes.find(p => p.cycleStatus !== "Closed");
+    const history = programmes.filter(p => p.cycleStatus === "Closed");
+
+    return sendSuccess(res, {
+      currentProgramme: currentProgramme || null,
+      history,
+      canUploadNew: !currentProgramme || currentProgramme.cycleStatus === "Closed"
+    });
+  } catch (error) {
+    console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
 // @route   GET /api/programmes/project/:projectId/activities
-// @desc    Get activities for a project with pagination
+// @desc    Get activities for a project with pagination (from current non-closed programme)
 // @access  Private
 router.get("/project/:projectId/activities", protect, async (req, res) => {
   try {
@@ -565,8 +611,18 @@ router.get("/project/:projectId/activities", protect, async (req, res) => {
     const pageNum = parseInt(page);
     const limitNum = parseInt(limit);
 
-    // Find programme for this project
-    const programme = await Programme.findOne({ project: req.params.projectId });
+    // Find the current active (non-closed) programme for this project
+    // If all programmes are closed, get the most recent one
+    let programme = await Programme.findOne({
+      project: req.params.projectId,
+      cycleStatus: { $ne: "Closed" }
+    }).sort({ createdAt: -1 });
+
+    // If no active programme, fall back to the most recent programme
+    if (!programme) {
+      programme = await Programme.findOne({ project: req.params.projectId })
+        .sort({ createdAt: -1 });
+    }
 
     if (!programme || !programme.extractedData || !programme.extractedData.activities) {
       return sendSuccess(res, {

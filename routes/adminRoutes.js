@@ -33,6 +33,8 @@ router.post("/login", async (req, res) => {
 
     const user = await Admin.findOne({ email });
 
+    console.log(`[LOGIN] Attempt for ${email}, found user status: ${user?.status || 'NOT FOUND'}`);
+
     // Check if user exists
     if (!user) {
       return sendValidationError(res, [
@@ -49,6 +51,7 @@ router.post("/login", async (req, res) => {
 
     // Check if user is pending (hasn't accepted invite)
     if (user.status === "pending") {
+      console.log(`[LOGIN] User ${email} rejected - status is still pending. User ID: ${user._id}`);
       return sendValidationError(res, [
         { field: "email", message: "Please accept your invitation first" },
       ], 403);

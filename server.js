@@ -102,9 +102,12 @@ app.delete("/api/dev/clear-database", protect, adminOnly, async (req, res) => {
     const results = {};
 
     for (const collection of collections) {
-      // Skip the admins collection to keep admin users
+      // For admins collection, only delete non-admin users (planners and regular users)
       if (collection.name === "admins") {
-        results[collection.name] = "skipped (preserved admin users)";
+        const deleteResult = await db.collection(collection.name).deleteMany({
+          role: { $ne: "admin" }
+        });
+        results[collection.name] = `deleted ${deleteResult.deletedCount} non-admin users (preserved admin users)`;
         continue;
       }
 

@@ -236,7 +236,13 @@ router.get("/invite/accept/:token", async (req, res) => {
     user.status = "active";
     user.inviteToken = undefined;
     user.inviteTokenExpiry = undefined;
+
+    console.log(`[INVITE ACCEPT] Setting user ${user.email} status to active`);
     await user.save();
+
+    // Verify the save worked
+    const verifyUser = await Admin.findById(user._id);
+    console.log(`[INVITE ACCEPT] Verified user ${verifyUser.email} status: ${verifyUser.status}`);
 
     try {
       await sendWelcomeEmail({
