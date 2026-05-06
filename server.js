@@ -86,6 +86,52 @@ app.use("/api/users", require("./routes/userRoutes"));
 app.use("/api/projects", require("./routes/projectRoutes"));
 app.use("/api/programmes", require("./routes/programmeUploadRoutes"));
 app.use("/api/actions", require("./routes/actionRoutes"));
+app.use("/api/dashboard", require("./routes/dashboardRoutes"));
+
+// DEV ONLY: Clear all database collections
+// WARNING: This deletes ALL data - use with caution!
+const { protect, adminOnly } = require("./middleware/authMiddleware");
+const mongoose = require("mongoose");
+const fs = require("fs");
+
+app.delete("/api/dev/clear-database", protect, adminOnly, async (req, res) => {
+  try {
+    const db = mongoose.connection.db;
+    const collections = await db.listCollections().toArray();
+
+    const results = {};
+
+    for (const collection of collections) {
+      // Skip the admins collection to keep admin users
+      if (collection.name === "admins") {
+        results[collection.name] = "skipped (preserved admin users)";
+        continue;
+      }
+
+      const deleteResult = await db.collection(collection.name).deleteMany({});
+      results[collection.name] = `deleted ${deleteResult.deletedCount} documents`;
+    }
+
+    // Also clear uploaded PDF files
+    const uploadsDir = "./uploads/programmes";
+    if (fs.existsSync(uploadsDir)) {
+      const files = fs.readdirSync(uploadsDir);
+      for (const file of files) {
+        fs.unlinkSync(`${uploadsDir}/${file}`);
+      }
+      results["uploaded_files"] = `deleted ${files.length} PDF files`;
+    }
+
+    res.json({
+      success: true,
+      message: "Database cleared successfully",
+      results,
+    });
+  } catch (error) {
+    console.error("Clear database error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 const PORT = process.env.PORT || 5000;
 

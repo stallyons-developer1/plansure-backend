@@ -424,7 +424,8 @@ router.get("/invite/verify/:token", async (req, res) => {
   }
 });
 
-router.get("/", protect, adminOnly, async (req, res) => {
+// Allow admin and planner to view users list (needed for action assignment)
+router.get("/", protect, async (req, res) => {
   try {
     const { status, role, search } = req.query;
 

@@ -34,34 +34,50 @@ const parseDate = (dateStr) => {
   return new Date(year, month, day);
 };
 
-// Calculate RAG status based on dates
+// Calculate RAG status based on weeks until activity STARTS
+// Per PlanSure spec:
+// - 1-2 weeks away → Green (committed work, ready NOW)
+// - 3-4 weeks away → Amber (operational readiness, preparing)
+// - 5-6 weeks away → Red (strategic, flag constraints early)
+// - >6 weeks away → Grey (too far, not shown in lookahead)
+// - Already started/completed → based on current status
 const calculateRAG = (activity, today) => {
-  const finishDate = parseDate(activity.finishDate);
   const startDate = parseDate(activity.startDate);
+  const finishDate = parseDate(activity.finishDate);
 
   // If completed, always Green
   if (activity.status === "Completed") {
     return "Green";
   }
 
-  if (!finishDate) {
+  if (!startDate) {
     return "Grey"; // Unknown/No date
   }
 
-  const daysUntilFinish = Math.ceil((finishDate - today) / (1000 * 60 * 60 * 24));
+  // Calculate weeks until start
+  const msPerDay = 1000 * 60 * 60 * 24;
+  const daysUntilStart = Math.ceil((startDate - today) / msPerDay);
+  const weeksUntilStart = Math.ceil(daysUntilStart / 7);
 
-  // Past finish date and not completed = Red
-  if (daysUntilFinish < 0) {
-    return "Red";
+  // Activity already started but not completed
+  if (daysUntilStart < 0) {
+    // Check if it's overdue (past finish date)
+    if (finishDate && finishDate < today) {
+      return "Red"; // Overdue - should have finished
+    }
+    return "Green"; // In progress, on track
   }
 
-  // Within 14 days of finish and not completed = Amber
-  if (daysUntilFinish <= 14) {
-    return "Amber";
+  // Apply weeks-based RAG logic per PlanSure spec
+  if (weeksUntilStart <= 2) {
+    return "Green"; // Weeks 1-2: Committed work
+  } else if (weeksUntilStart <= 4) {
+    return "Amber"; // Weeks 3-4: Operational readiness
+  } else if (weeksUntilStart <= 6) {
+    return "Red"; // Weeks 5-6: Strategic planning
+  } else {
+    return "Grey"; // Beyond 6 weeks: Not in lookahead
   }
-
-  // Future finish date = Green
-  return "Green";
 };
 
 // Generate week zones for lookahead (6 weeks by default)
@@ -128,29 +144,39 @@ const getWeekZone = (activityStartDate, weekZones) => {
 };
 
 // Calculate activity status (Ready, Blocked, At Risk, etc.)
-const calculateActivityStatus = (activity, ragStatus) => {
+// Note: RAG is about TIME (weeks until start), Activity Status is about READINESS
+// - Complete = Activity is completed
+// - Blocked = Has a blocker preventing progress
+// - At Risk = Started but past finish date (overdue)
+// - Ready = Good to go, no issues
+const calculateActivityStatus = (activity, ragStatus, today) => {
   if (activity.status === "Completed") {
     return "Complete";
   }
   if (activity.isBlocked) {
     return "Blocked";
   }
-  if (ragStatus === "Red") {
-    return "Blocked";
+
+  // Check if activity is overdue (started but past finish date)
+  const finishDate = parseDate(activity.finishDate);
+  const startDate = parseDate(activity.startDate);
+
+  if (startDate && finishDate && today) {
+    // Activity has started (start date passed) but finish date also passed
+    if (startDate < today && finishDate < today && activity.status !== "Completed") {
+      return "At Risk"; // Overdue
+    }
   }
-  if (ragStatus === "Amber") {
-    return "At Risk";
-  }
+
   return "Ready";
 };
 
 // @route   POST /api/programmes/upload
 // @desc    Upload a programme PDF and extract data
-// @access  Private (Admin only)
+// @access  Private (Admin and Planner)
 router.post(
   "/upload",
   protect,
-  adminOnly,
   uploadToDisk.single("programme"),
   async (req, res) => {
     try {
@@ -376,7 +402,7 @@ router.post(
             activity.ragStatus = calculateRAG(activity, today);
 
             // Calculate activity status (Ready, Blocked, At Risk)
-            activity.activityStatus = calculateActivityStatus(activity, activity.ragStatus);
+            activity.activityStatus = calculateActivityStatus(activity, activity.ragStatus, today);
 
             if (activity.activityName) {
               activities.push(activity);
@@ -414,13 +440,19 @@ router.post(
         ready: activities.filter((a) => a.activityStatus === "Ready").length,
       };
 
+      // Calculate week number from current date
+      const startOfYear = new Date(today.getFullYear(), 0, 1);
+      const days = Math.floor((today - startOfYear) / (24 * 60 * 60 * 1000));
+      const weekNumber = Math.ceil((days + 1) / 7);
+
       // Create programme record with extracted data
       const programme = await Programme.create({
         name,
         project: project || null,
         originalFileName: req.file.originalname,
         filePath: req.file.path,
-        cycleStatus: "Draft",
+        cycleStatus: "Uploaded", // Stage 1: PDF uploaded, activities extracted
+        weekNumber,
         lookaheadWeeks: 6,
         lookaheadStartDate: today,
         weekZones: weekZones,
@@ -467,11 +499,22 @@ router.post(
 );
 
 // @route   GET /api/programmes
-// @desc    Get all programmes
-// @access  Private (Admin only)
-router.get("/", protect, adminOnly, async (req, res) => {
+// @desc    Get all programmes (filtered by user's assigned projects for non-admins)
+// @access  Private
+router.get("/", protect, async (req, res) => {
   try {
-    const programmes = await Programme.find()
+    let filter = {};
+
+    // If user is not admin, only show programmes for their assigned projects
+    if (req.admin.role !== "admin") {
+      const userProjects = req.admin.projects || [];
+      if (userProjects.length === 0) {
+        return sendSuccess(res, { programmes: [] });
+      }
+      filter.project = { $in: userProjects };
+    }
+
+    const programmes = await Programme.find(filter)
       .populate("uploadedBy", "name email")
       .sort({ createdAt: -1 });
 
@@ -484,9 +527,20 @@ router.get("/", protect, adminOnly, async (req, res) => {
 
 // @route   GET /api/programmes/by-project/:projectId
 // @desc    Get programme by project ID
-// @access  Private (Admin only)
-router.get("/by-project/:projectId", protect, adminOnly, async (req, res) => {
+// @access  Private
+router.get("/by-project/:projectId", protect, async (req, res) => {
   try {
+    // Check if non-admin user has access to this project
+    if (req.admin.role !== "admin") {
+      const userProjects = req.admin.projects || [];
+      const hasAccess = userProjects.some(
+        (p) => p.toString() === req.params.projectId
+      );
+      if (!hasAccess) {
+        return sendError(res, "Access denied", 403);
+      }
+    }
+
     const programme = await Programme.findOne({ project: req.params.projectId })
       .populate("uploadedBy", "name email")
       .sort({ createdAt: -1 });
@@ -574,8 +628,8 @@ router.get("/project/:projectId/activities", protect, async (req, res) => {
 
 // @route   GET /api/programmes/:id
 // @desc    Get single programme by ID
-// @access  Private (Admin only)
-router.get("/:id", protect, adminOnly, async (req, res) => {
+// @access  Private
+router.get("/:id", protect, async (req, res) => {
   try {
     const programme = await Programme.findById(req.params.id).populate(
       "uploadedBy",
@@ -584,6 +638,17 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
 
     if (!programme) {
       return sendError(res, "Programme not found", 404);
+    }
+
+    // Check if non-admin user has access to this programme's project
+    if (req.admin.role !== "admin" && programme.project) {
+      const userProjects = req.admin.projects || [];
+      const hasAccess = userProjects.some(
+        (p) => p.toString() === programme.project.toString()
+      );
+      if (!hasAccess) {
+        return sendError(res, "Access denied", 403);
+      }
     }
 
     return sendSuccess(res, { programme });
@@ -595,8 +660,8 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
 
 // @route   GET /api/programmes/:id/lookahead
 // @desc    Get comprehensive lookahead data for dashboard
-// @access  Private (Admin only)
-router.get("/:id/lookahead", protect, adminOnly, async (req, res) => {
+// @access  Private
+router.get("/:id/lookahead", protect, async (req, res) => {
   try {
     const programme = await Programme.findById(req.params.id)
       .populate("uploadedBy", "name email")
@@ -604,6 +669,17 @@ router.get("/:id/lookahead", protect, adminOnly, async (req, res) => {
 
     if (!programme) {
       return sendError(res, "Programme not found", 404);
+    }
+
+    // Check if non-admin user has access to this programme's project
+    if (req.admin.role !== "admin" && programme.project) {
+      const userProjects = req.admin.projects || [];
+      const hasAccess = userProjects.some(
+        (p) => p.toString() === programme.project.toString()
+      );
+      if (!hasAccess) {
+        return sendError(res, "Access denied", 403);
+      }
     }
 
     // Get actions for this programme
@@ -629,11 +705,16 @@ router.get("/:id/lookahead", protect, adminOnly, async (req, res) => {
     const today = new Date();
     const weekZones = generateWeekZones(today, programme.lookaheadWeeks || 6);
 
-    // Process activities with action counts and week zones
+    // Process activities with action counts, week zones, and recalculate RAG dynamically
     const activities = programme.extractedData.activities.map((activity) => {
       const activityObj = activity.toObject ? activity.toObject() : activity;
+      // Recalculate RAG status based on current date (time-based)
+      const ragStatus = calculateRAG(activityObj, today);
+      const activityStatus = calculateActivityStatus(activityObj, ragStatus, today);
       return {
         ...activityObj,
+        ragStatus, // Use recalculated RAG
+        activityStatus, // Use recalculated activity status
         weekZone: getWeekZone(activityObj.startDate, weekZones),
         actionsCount: actionCountMap[activityObj.activityId]?.total || 0,
         openActionsCount: actionCountMap[activityObj.activityId]?.open || 0,
@@ -741,14 +822,19 @@ router.get("/:id/lookahead", protect, adminOnly, async (req, res) => {
 
 // @route   PATCH /api/programmes/:id/activity/:activityId
 // @desc    Update activity details (owner, status, notes, blocked)
-// @access  Private (Admin only)
-router.patch("/:id/activity/:activityId", protect, adminOnly, async (req, res) => {
+// @access  Private (Admin and Planner)
+router.patch("/:id/activity/:activityId", protect, async (req, res) => {
   try {
     const { owner, ownerName, activityStatus, notes, isBlocked, blocker } = req.body;
 
     const programme = await Programme.findById(req.params.id);
     if (!programme) {
       return sendError(res, "Programme not found", 404);
+    }
+
+    // Check if week is closed (read-only)
+    if (programme.isLocked) {
+      return sendError(res, "This week is closed and read-only. No changes allowed.", 403);
     }
 
     // Find and update the activity
@@ -771,15 +857,8 @@ router.patch("/:id/activity/:activityId", protect, adminOnly, async (req, res) =
 
     // Recalculate activity status if blocked changed
     if (isBlocked !== undefined) {
-      if (isBlocked) {
-        activity.activityStatus = "Blocked";
-      } else if (activity.ragStatus === "Amber") {
-        activity.activityStatus = "At Risk";
-      } else if (activity.status === "Completed") {
-        activity.activityStatus = "Complete";
-      } else {
-        activity.activityStatus = "Ready";
-      }
+      const today = new Date();
+      activity.activityStatus = calculateActivityStatus(activity, activity.ragStatus, today);
     }
 
     await programme.save();
@@ -797,14 +876,25 @@ router.patch("/:id/activity/:activityId", protect, adminOnly, async (req, res) =
 
 // @route   GET /api/programmes/:id/overview
 // @desc    Get overview tab dashboard data
-// @access  Private (Admin only)
-router.get("/:id/overview", protect, adminOnly, async (req, res) => {
+// @access  Private
+router.get("/:id/overview", protect, async (req, res) => {
   try {
     const programme = await Programme.findById(req.params.id)
       .populate("uploadedBy", "name email");
 
     if (!programme) {
       return sendError(res, "Programme not found", 404);
+    }
+
+    // Check if non-admin user has access to this programme's project
+    if (req.admin.role !== "admin" && programme.project) {
+      const userProjects = req.admin.projects || [];
+      const hasAccess = userProjects.some(
+        (p) => p.toString() === programme.project.toString()
+      );
+      if (!hasAccess) {
+        return sendError(res, "Access denied", 403);
+      }
     }
 
     // Get actions for this programme
@@ -817,18 +907,23 @@ router.get("/:id/overview", protect, adminOnly, async (req, res) => {
     // Regenerate week zones
     const weekZones = generateWeekZones(today, programme.lookaheadWeeks || 6);
 
-    // Process activities
+    // Process activities with recalculated RAG
     const activities = programme.extractedData.activities.map((activity) => {
       const activityObj = activity.toObject ? activity.toObject() : activity;
+      // Recalculate RAG status based on current date
+      const ragStatus = calculateRAG(activityObj, today);
+      const activityStatus = calculateActivityStatus(activityObj, ragStatus, today);
       return {
         ...activityObj,
+        ragStatus,
+        activityStatus,
         weekZone: getWeekZone(activityObj.startDate, weekZones),
       };
     });
 
-    // Filter lookahead activities
+    // Filter lookahead activities (only those within 6 weeks)
     const lookaheadActivities = activities.filter(
-      (a) => a.weekZone && !["Beyond Lookahead", "Before Lookahead"].includes(a.weekZone)
+      (a) => a.ragStatus !== "Grey" && a.weekZone && !["Beyond Lookahead", "Before Lookahead"].includes(a.weekZone)
     );
 
     // Calculate stats
@@ -915,7 +1010,8 @@ const formatDateShort = (date) => {
 // @route   POST /api/programmes/:id/close-cycle
 // @desc    Close current cycle and save to history
 // @access  Private (Admin only)
-router.post("/:id/close-cycle", protect, adminOnly, async (req, res) => {
+// Allow admin and planner to close cycle
+router.post("/:id/close-cycle", protect, async (req, res) => {
   try {
     const { closeType, notes } = req.body;
     const CycleHistory = require("../models/CycleHistory");
@@ -937,17 +1033,19 @@ router.post("/:id/close-cycle", protect, adminOnly, async (req, res) => {
       .sort({ weekNumber: -1 });
     const newWeekNumber = lastCycle ? lastCycle.weekNumber + 1 : 1;
 
-    // Calculate stats for this cycle
+    // Calculate stats for this cycle with recalculated RAG
     const activities = programme.extractedData.activities.map((activity) => {
       const activityObj = activity.toObject ? activity.toObject() : activity;
+      const ragStatus = calculateRAG(activityObj, today);
       return {
         ...activityObj,
+        ragStatus,
         weekZone: getWeekZone(activityObj.startDate, weekZones),
       };
     });
 
     const lookaheadActivities = activities.filter(
-      (a) => a.weekZone && !["Beyond Lookahead", "Before Lookahead"].includes(a.weekZone)
+      (a) => a.ragStatus !== "Grey" && a.weekZone && !["Beyond Lookahead", "Before Lookahead"].includes(a.weekZone)
     );
 
     const actions = await Action.find({ programme: req.params.id });
@@ -1011,10 +1109,24 @@ router.post("/:id/close-cycle", protect, adminOnly, async (req, res) => {
 
 // @route   GET /api/programmes/:id/cycle-history
 // @desc    Get all cycle history for a programme
-// @access  Private (Admin only)
-router.get("/:id/cycle-history", protect, adminOnly, async (req, res) => {
+// @access  Private
+router.get("/:id/cycle-history", protect, async (req, res) => {
   try {
     const CycleHistory = require("../models/CycleHistory");
+
+    // Check if non-admin user has access to this programme's project
+    if (req.admin.role !== "admin") {
+      const programme = await Programme.findById(req.params.id);
+      if (programme && programme.project) {
+        const userProjects = req.admin.projects || [];
+        const hasAccess = userProjects.some(
+          (p) => p.toString() === programme.project.toString()
+        );
+        if (!hasAccess) {
+          return sendError(res, "Access denied", 403);
+        }
+      }
+    }
 
     const history = await CycleHistory.find({ programme: req.params.id })
       .sort({ weekNumber: -1 })
@@ -1029,14 +1141,25 @@ router.get("/:id/cycle-history", protect, adminOnly, async (req, res) => {
 
 // @route   GET /api/programmes/:id/weekly-control
 // @desc    Get weekly control dashboard data
-// @access  Private (Admin only)
-router.get("/:id/weekly-control", protect, adminOnly, async (req, res) => {
+// @access  Private
+router.get("/:id/weekly-control", protect, async (req, res) => {
   try {
     const programme = await Programme.findById(req.params.id)
       .populate("uploadedBy", "name email");
 
     if (!programme) {
       return sendError(res, "Programme not found", 404);
+    }
+
+    // Check if non-admin user has access to this programme's project
+    if (req.admin.role !== "admin" && programme.project) {
+      const userProjects = req.admin.projects || [];
+      const hasAccess = userProjects.some(
+        (p) => p.toString() === programme.project.toString()
+      );
+      if (!hasAccess) {
+        return sendError(res, "Access denied", 403);
+      }
     }
 
     // Get actions for this programme
@@ -1079,18 +1202,23 @@ router.get("/:id/weekly-control", protect, adminOnly, async (req, res) => {
     // Regenerate week zones
     const weekZones = generateWeekZones(today, programme.lookaheadWeeks || 6);
 
-    // Process activities
+    // Process activities with recalculated RAG
     const activities = programme.extractedData.activities.map((activity) => {
       const activityObj = activity.toObject ? activity.toObject() : activity;
+      // Recalculate RAG status based on current date
+      const ragStatus = calculateRAG(activityObj, today);
+      const activityStatus = calculateActivityStatus(activityObj, ragStatus, today);
       return {
         ...activityObj,
+        ragStatus,
+        activityStatus,
         weekZone: getWeekZone(activityObj.startDate, weekZones),
         linkedActions: actionMap[activityObj.activityId] || [],
       };
     });
 
-    // Use all activities (not filtered by lookahead) for display purposes
-    const allActivities = activities;
+    // Filter to only show activities within 6-week lookahead (exclude Grey)
+    const allActivities = activities.filter((a) => a.ragStatus !== "Grey");
 
     // RAG Distribution for donut chart
     const ragDistribution = {
@@ -1216,12 +1344,90 @@ router.get("/:id/weekly-control", protect, adminOnly, async (req, res) => {
   }
 });
 
+// Valid cycle status transitions (can only move forward, one step at a time)
+const CYCLE_TRANSITIONS = {
+  "Uploaded": ["Meeting Open"],
+  "Meeting Open": ["Execution"],
+  "Execution": ["Close-Out Eligible"], // Auto-triggered when conditions met
+  "Close-Out Eligible": ["Closed"],
+  "Closed": [], // Cannot transition from Closed
+};
+
+// Check if all required actions on GREEN activities are closed
+const checkCloseOutEligible = async (programmeId) => {
+  const Action = require("../models/Action");
+  const programme = await Programme.findById(programmeId);
+
+  if (!programme) return { eligible: false, reason: "Programme not found" };
+
+  const today = new Date();
+  const activities = programme.extractedData?.activities || [];
+
+  // Get GREEN activities (weeks 1-2, committed work)
+  const greenActivities = activities.filter(a => {
+    const rag = calculateRAG(a, today);
+    return rag === "Green";
+  });
+
+  if (greenActivities.length === 0) {
+    return { eligible: true, reason: "No GREEN activities to check" };
+  }
+
+  // Get all actions for this programme
+  const actions = await Action.find({ programme: programmeId });
+
+  // Check each GREEN activity for open REQUIRED actions
+  for (const activity of greenActivities) {
+    const activityActions = actions.filter(
+      a => a.linkedActivity?.activityId === activity.activityId &&
+           a.type === "Required" &&
+           a.status !== "Completed" &&
+           a.status !== "Cancelled"
+    );
+
+    if (activityActions.length > 0) {
+      return {
+        eligible: false,
+        reason: `Activity "${activity.activityName}" has ${activityActions.length} open required action(s)`,
+        openActions: activityActions.length
+      };
+    }
+  }
+
+  // Check for overdue actions
+  const overdueActions = actions.filter(
+    a => a.status !== "Completed" &&
+         a.status !== "Cancelled" &&
+         new Date(a.dueDate) < today
+  );
+
+  if (overdueActions.length > 0) {
+    return {
+      eligible: false,
+      reason: `${overdueActions.length} overdue action(s) remaining`,
+      overdueActions: overdueActions.length
+    };
+  }
+
+  // Check for blocked activities
+  const blockedActivities = greenActivities.filter(a => a.isBlocked);
+  if (blockedActivities.length > 0) {
+    return {
+      eligible: false,
+      reason: `${blockedActivities.length} blocked activity/activities`,
+      blockedActivities: blockedActivities.length
+    };
+  }
+
+  return { eligible: true, reason: "All conditions met" };
+};
+
 // @route   PATCH /api/programmes/:id/cycle-status
-// @desc    Update programme cycle status
-// @access  Private (Admin only)
-router.patch("/:id/cycle-status", protect, adminOnly, async (req, res) => {
+// @desc    Transition programme cycle status (with validation)
+// @access  Private (Admin and Planner)
+router.patch("/:id/cycle-status", protect, async (req, res) => {
   try {
-    const { cycleStatus } = req.body;
+    const { cycleStatus, overrideReason } = req.body;
 
     // Validate required field
     const errors = validateRequired({ cycleStatus });
@@ -1229,26 +1435,301 @@ router.patch("/:id/cycle-status", protect, adminOnly, async (req, res) => {
       return sendValidationError(res, errors);
     }
 
-    if (!["Draft", "In Review", "Approved", "Closed"].includes(cycleStatus)) {
+    const validStatuses = ["Uploaded", "Meeting Open", "Execution", "Close-Out Eligible", "Closed"];
+    if (!validStatuses.includes(cycleStatus)) {
       return sendValidationError(res, [
-        { field: "cycleStatus", message: "Invalid cycle status. Must be: Draft, In Review, Approved, or Closed" },
+        { field: "cycleStatus", message: `Invalid cycle status. Must be one of: ${validStatuses.join(", ")}` },
       ]);
     }
 
-    const programme = await Programme.findByIdAndUpdate(
-      req.params.id,
-      { cycleStatus },
-      { new: true }
+    const programme = await Programme.findById(req.params.id);
+    if (!programme) {
+      return sendError(res, "Programme not found", 404);
+    }
+
+    // Check if week is already closed (read-only)
+    if (programme.isLocked) {
+      return sendError(res, "This week is closed and read-only. No changes allowed.", 403);
+    }
+
+    const currentStatus = programme.cycleStatus;
+    const allowedTransitions = CYCLE_TRANSITIONS[currentStatus] || [];
+
+    // Check if transition is valid
+    if (!allowedTransitions.includes(cycleStatus)) {
+      // Special case: PM Override allows skipping to Closed
+      if (cycleStatus === "Closed" && currentStatus !== "Closed") {
+        if (!overrideReason || overrideReason.trim() === "") {
+          return sendValidationError(res, [
+            { field: "overrideReason", message: "PM Override requires a reason" },
+          ]);
+        }
+
+        // Allow PM Override - skip to Closed with reason
+        programme.cycleStatus = "Closed";
+        programme.closeType = "PM Override";
+        programme.overrideReason = overrideReason;
+        programme.closedAt = new Date();
+        programme.closedBy = req.admin._id;
+        programme.isLocked = true;
+
+        await programme.save();
+
+        return sendSuccess(
+          res,
+          {
+            cycleStatus: programme.cycleStatus,
+            closeType: programme.closeType,
+            message: "Week closed with PM Override"
+          },
+          "Week closed with PM Override"
+        );
+      }
+
+      return sendError(
+        res,
+        `Cannot transition from "${currentStatus}" to "${cycleStatus}". Allowed: ${allowedTransitions.join(", ") || "None (week is closed)"}`,
+        400
+      );
+    }
+
+    // Special validation for transitioning to Close-Out Eligible
+    if (cycleStatus === "Close-Out Eligible") {
+      const eligibility = await checkCloseOutEligible(req.params.id);
+      if (!eligibility.eligible) {
+        return sendError(res, `Cannot mark as Close-Out Eligible: ${eligibility.reason}`, 400);
+      }
+    }
+
+    // Special handling for closing the week
+    if (cycleStatus === "Closed") {
+      programme.closeType = "Normal Close";
+      programme.closedAt = new Date();
+      programme.closedBy = req.admin._id;
+      programme.isLocked = true;
+    }
+
+    programme.cycleStatus = cycleStatus;
+    await programme.save();
+
+    return sendSuccess(
+      res,
+      {
+        cycleStatus: programme.cycleStatus,
+        closeType: programme.closeType || null
+      },
+      `Cycle status updated to "${cycleStatus}"`
     );
+  } catch (error) {
+    console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
+// @route   GET /api/programmes/:id/close-eligibility
+// @desc    Check if programme is eligible for close-out
+// @access  Private
+router.get("/:id/close-eligibility", protect, async (req, res) => {
+  try {
+    const programme = await Programme.findById(req.params.id);
+    if (!programme) {
+      return sendError(res, "Programme not found", 404);
+    }
+
+    const eligibility = await checkCloseOutEligible(req.params.id);
+
+    return sendSuccess(res, {
+      eligible: eligibility.eligible,
+      reason: eligibility.reason,
+      currentStatus: programme.cycleStatus,
+      openActions: eligibility.openActions || 0,
+      overdueActions: eligibility.overdueActions || 0,
+      blockedActivities: eligibility.blockedActivities || 0,
+    });
+  } catch (error) {
+    console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
+// @route   POST /api/programmes/recalculate-rag
+// @desc    Recalculate RAG status for all programmes based on current date
+// @access  Private (Admin only)
+router.post("/recalculate-rag", protect, adminOnly, async (req, res) => {
+  try {
+    const today = new Date();
+    const programmes = await Programme.find({ status: "processed" });
+
+    let totalUpdated = 0;
+    let totalActivities = 0;
+
+    for (const programme of programmes) {
+      if (!programme.extractedData?.activities) continue;
+
+      const weekZones = generateWeekZones(today, programme.lookaheadWeeks || 6);
+
+      // Recalculate RAG for each activity
+      for (let i = 0; i < programme.extractedData.activities.length; i++) {
+        const activity = programme.extractedData.activities[i];
+
+        // Recalculate RAG status
+        const newRagStatus = calculateRAG(activity, today);
+        const newActivityStatus = calculateActivityStatus(activity, newRagStatus, today);
+        const newWeekZone = getWeekZone(activity.startDate, weekZones);
+
+        // Update activity
+        programme.extractedData.activities[i].ragStatus = newRagStatus;
+        programme.extractedData.activities[i].activityStatus = newActivityStatus;
+        programme.extractedData.activities[i].weekZone = newWeekZone;
+
+        totalActivities++;
+      }
+
+      // Recalculate summary
+      const activities = programme.extractedData.activities;
+      const lookaheadActivities = activities.filter(a => a.ragStatus !== "Grey");
+
+      programme.extractedData.summary = {
+        total: activities.length,
+        inLookahead: lookaheadActivities.length,
+        completed: activities.filter(a => a.status === "Completed").length,
+        inProgress: activities.filter(a => a.status === "In Progress").length,
+        planned: activities.filter(a => a.status === "Planned" || a.status === "Forecast").length,
+        red: lookaheadActivities.filter(a => a.ragStatus === "Red").length,
+        amber: lookaheadActivities.filter(a => a.ragStatus === "Amber").length,
+        green: lookaheadActivities.filter(a => a.ragStatus === "Green").length,
+        blocked: lookaheadActivities.filter(a => a.activityStatus === "Blocked").length,
+        atRisk: lookaheadActivities.filter(a => a.activityStatus === "At Risk").length,
+        ready: lookaheadActivities.filter(a => a.activityStatus === "Ready").length,
+      };
+
+      // Update week zones
+      programme.weekZones = weekZones;
+      programme.lookaheadStartDate = today;
+
+      await programme.save();
+      totalUpdated++;
+    }
+
+    return sendSuccess(
+      res,
+      {
+        programmesUpdated: totalUpdated,
+        activitiesRecalculated: totalActivities,
+      },
+      `Recalculated RAG for ${totalUpdated} programmes (${totalActivities} activities)`
+    );
+  } catch (error) {
+    console.error("Recalculate RAG error:", error);
+    return sendError(res, "Server error");
+  }
+});
+
+// @route   POST /api/programmes/:id/recalculate-rag
+// @desc    Recalculate RAG status for a specific programme
+// @access  Private (Admin only)
+router.post("/:id/recalculate-rag", protect, adminOnly, async (req, res) => {
+  try {
+    const programme = await Programme.findById(req.params.id);
 
     if (!programme) {
       return sendError(res, "Programme not found", 404);
     }
 
+    if (!programme.extractedData?.activities) {
+      return sendError(res, "No activities found in programme", 400);
+    }
+
+    const today = new Date();
+    const weekZones = generateWeekZones(today, programme.lookaheadWeeks || 6);
+
+    // Recalculate RAG for each activity
+    for (let i = 0; i < programme.extractedData.activities.length; i++) {
+      const activity = programme.extractedData.activities[i];
+
+      const newRagStatus = calculateRAG(activity, today);
+      const newActivityStatus = calculateActivityStatus(activity, newRagStatus, today);
+      const newWeekZone = getWeekZone(activity.startDate, weekZones);
+
+      programme.extractedData.activities[i].ragStatus = newRagStatus;
+      programme.extractedData.activities[i].activityStatus = newActivityStatus;
+      programme.extractedData.activities[i].weekZone = newWeekZone;
+    }
+
+    // Recalculate summary
+    const activities = programme.extractedData.activities;
+    const lookaheadActivities = activities.filter(a => a.ragStatus !== "Grey");
+
+    programme.extractedData.summary = {
+      total: activities.length,
+      inLookahead: lookaheadActivities.length,
+      completed: activities.filter(a => a.status === "Completed").length,
+      inProgress: activities.filter(a => a.status === "In Progress").length,
+      planned: activities.filter(a => a.status === "Planned" || a.status === "Forecast").length,
+      red: lookaheadActivities.filter(a => a.ragStatus === "Red").length,
+      amber: lookaheadActivities.filter(a => a.ragStatus === "Amber").length,
+      green: lookaheadActivities.filter(a => a.ragStatus === "Green").length,
+      blocked: lookaheadActivities.filter(a => a.activityStatus === "Blocked").length,
+      atRisk: lookaheadActivities.filter(a => a.activityStatus === "At Risk").length,
+      ready: lookaheadActivities.filter(a => a.activityStatus === "Ready").length,
+    };
+
+    // Update week zones
+    programme.weekZones = weekZones;
+    programme.lookaheadStartDate = today;
+
+    await programme.save();
+
     return sendSuccess(
       res,
-      { cycleStatus: programme.cycleStatus },
-      "Cycle status updated successfully"
+      {
+        programme: {
+          _id: programme._id,
+          name: programme.name,
+          summary: programme.extractedData.summary,
+        },
+      },
+      `Recalculated RAG for ${activities.length} activities`
+    );
+  } catch (error) {
+    console.error("Recalculate RAG error:", error);
+    return sendError(res, "Server error");
+  }
+});
+
+// @route   DELETE /api/programmes/all
+// @desc    Delete ALL programmes and their related actions
+// @access  Private (Admin only)
+router.delete("/all", protect, adminOnly, async (req, res) => {
+  try {
+    const Action = require("../models/Action");
+    const CycleHistory = require("../models/CycleHistory");
+
+    // Get all programmes to delete their files
+    const programmes = await Programme.find();
+
+    // Delete files from disk
+    for (const programme of programmes) {
+      if (programme.filePath && fs.existsSync(programme.filePath)) {
+        fs.unlinkSync(programme.filePath);
+      }
+    }
+
+    // Delete all related data
+    const deletedActions = await Action.deleteMany({});
+    const deletedCycleHistory = await CycleHistory.deleteMany({});
+    const deletedProgrammes = await Programme.deleteMany({});
+
+    return sendSuccess(
+      res,
+      {
+        deleted: {
+          programmes: deletedProgrammes.deletedCount,
+          actions: deletedActions.deletedCount,
+          cycleHistory: deletedCycleHistory.deletedCount,
+        },
+      },
+      `Deleted ${deletedProgrammes.deletedCount} programmes, ${deletedActions.deletedCount} actions, and ${deletedCycleHistory.deletedCount} cycle history records`
     );
   } catch (error) {
     console.error(error);

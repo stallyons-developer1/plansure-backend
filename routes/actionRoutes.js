@@ -10,7 +10,15 @@ const {
   validateRequired,
 } = require("../utils/errorResponse");
 
-router.post("/", protect, adminOnly, async (req, res) => {
+// Helper to check if programme is locked (read-only)
+const checkProgrammeLocked = async (programmeId) => {
+  const programme = await Programme.findById(programmeId);
+  if (!programme) return { locked: false, error: "Programme not found" };
+  return { locked: programme.isLocked, programme };
+};
+
+// Allow admin and planner to create actions
+router.post("/", protect, async (req, res) => {
   try {
     const {
       programmeId,
@@ -45,6 +53,20 @@ router.post("/", protect, adminOnly, async (req, res) => {
       );
     }
 
+    // Check if week is closed (read-only)
+    if (programme.isLocked) {
+      return sendError(res, "This week is closed and read-only. Cannot create new actions.", 403);
+    }
+
+    // Check if cycle status allows action creation (only in Meeting Open or Execution)
+    if (!["Meeting Open", "Execution"].includes(programme.cycleStatus)) {
+      return sendError(
+        res,
+        `Cannot create actions when cycle status is "${programme.cycleStatus}". Actions can only be created during "Meeting Open" or "Execution" stages.`,
+        400
+      );
+    }
+
     const action = await Action.create({
       programme: programmeId,
       linkedActivity: {
@@ -76,7 +98,7 @@ router.post("/", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.get("/", protect, adminOnly, async (req, res) => {
+router.get("/", protect, async (req, res) => {
   try {
     const { programmeId, status, priority, assignee } = req.query;
 
@@ -85,6 +107,25 @@ router.get("/", protect, adminOnly, async (req, res) => {
     if (status) filter.status = status;
     if (priority) filter.priority = priority;
     if (assignee) filter.assignee = assignee;
+
+    // If non-admin, filter actions by user's assigned projects
+    if (req.admin.role !== "admin") {
+      const userProjects = req.admin.projects || [];
+
+      if (userProjects.length === 0) {
+        return sendSuccess(res, { actions: [] });
+      }
+
+      // Get programmes for user's projects
+      const programmes = await Programme.find({ project: { $in: userProjects } }).select("_id");
+      const programmeIds = programmes.map((p) => p._id);
+
+      if (programmeIds.length === 0) {
+        return sendSuccess(res, { actions: [] });
+      }
+
+      filter.programme = { $in: programmeIds };
+    }
 
     const actions = await Action.find(filter)
       .populate("assignee", "name email")
@@ -99,8 +140,22 @@ router.get("/", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.get("/programme/:programmeId", protect, adminOnly, async (req, res) => {
+router.get("/programme/:programmeId", protect, async (req, res) => {
   try {
+    // Check if non-admin user has access to this programme's project
+    if (req.admin.role !== "admin") {
+      const programme = await Programme.findById(req.params.programmeId);
+      if (programme && programme.project) {
+        const userProjects = req.admin.projects || [];
+        const hasAccess = userProjects.some(
+          (p) => p.toString() === programme.project.toString()
+        );
+        if (!hasAccess) {
+          return sendError(res, "Access denied", 403);
+        }
+      }
+    }
+
     const actions = await Action.find({ programme: req.params.programmeId })
       .populate("assignee", "name email")
       .populate("createdBy", "name email")
@@ -113,12 +168,26 @@ router.get("/programme/:programmeId", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.get("/activity/:activityId", protect, adminOnly, async (req, res) => {
+router.get("/activity/:activityId", protect, async (req, res) => {
   try {
     const { programmeId } = req.query;
 
     const filter = { "linkedActivity.activityId": req.params.activityId };
     if (programmeId) filter.programme = programmeId;
+
+    // Check if non-admin user has access
+    if (req.admin.role !== "admin" && programmeId) {
+      const programme = await Programme.findById(programmeId);
+      if (programme && programme.project) {
+        const userProjects = req.admin.projects || [];
+        const hasAccess = userProjects.some(
+          (p) => p.toString() === programme.project.toString()
+        );
+        if (!hasAccess) {
+          return sendError(res, "Access denied", 403);
+        }
+      }
+    }
 
     const actions = await Action.find(filter)
       .populate("assignee", "name email")
@@ -132,16 +201,27 @@ router.get("/activity/:activityId", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.get("/:id", protect, adminOnly, async (req, res) => {
+router.get("/:id", protect, async (req, res) => {
   try {
     const action = await Action.findById(req.params.id)
       .populate("assignee", "name email")
       .populate("createdBy", "name email")
-      .populate("programme", "name")
+      .populate("programme", "name project")
       .populate("comments.createdBy", "name email");
 
     if (!action) {
       return sendError(res, "Action not found", 404);
+    }
+
+    // Check if non-admin user has access to this action's programme's project
+    if (req.admin.role !== "admin" && action.programme && action.programme.project) {
+      const userProjects = req.admin.projects || [];
+      const hasAccess = userProjects.some(
+        (p) => p.toString() === action.programme.project.toString()
+      );
+      if (!hasAccess) {
+        return sendError(res, "Access denied", 403);
+      }
     }
 
     return sendSuccess(res, { action });
@@ -151,7 +231,8 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.put("/:id", protect, adminOnly, async (req, res) => {
+// Allow admin and planner to update actions
+router.put("/:id", protect, async (req, res) => {
   try {
     const {
       title,
@@ -168,6 +249,12 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
     const action = await Action.findById(req.params.id);
     if (!action) {
       return sendError(res, "Action not found", 404);
+    }
+
+    // Check if the action's programme is locked
+    const { locked } = await checkProgrammeLocked(action.programme);
+    if (locked) {
+      return sendError(res, "This week is closed and read-only. Cannot update actions.", 403);
     }
 
     if (programmeId) {
@@ -223,7 +310,8 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.post("/:id/comments", protect, adminOnly, async (req, res) => {
+// Allow admin and planner to add comments
+router.post("/:id/comments", protect, async (req, res) => {
   try {
     const { text } = req.body;
 
@@ -235,6 +323,12 @@ router.post("/:id/comments", protect, adminOnly, async (req, res) => {
     const action = await Action.findById(req.params.id);
     if (!action) {
       return sendError(res, "Action not found", 404);
+    }
+
+    // Check if the action's programme is locked
+    const { locked } = await checkProgrammeLocked(action.programme);
+    if (locked) {
+      return sendError(res, "This week is closed and read-only. Cannot add comments.", 403);
     }
 
     action.comments.push({
@@ -260,12 +354,19 @@ router.post("/:id/comments", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.patch("/:id/complete", protect, adminOnly, async (req, res) => {
+// Allow admin and planner to toggle complete status
+router.patch("/:id/complete", protect, async (req, res) => {
   try {
     const action = await Action.findById(req.params.id);
 
     if (!action) {
       return sendError(res, "Action not found", 404);
+    }
+
+    // Check if the action's programme is locked
+    const { locked } = await checkProgrammeLocked(action.programme);
+    if (locked) {
+      return sendError(res, "This week is closed and read-only. Cannot modify actions.", 403);
     }
 
     if (action.status === "Completed") {
@@ -293,12 +394,19 @@ router.patch("/:id/complete", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.delete("/:id", protect, adminOnly, async (req, res) => {
+// Allow admin and planner to delete actions
+router.delete("/:id", protect, async (req, res) => {
   try {
     const action = await Action.findById(req.params.id);
 
     if (!action) {
       return sendError(res, "Action not found", 404);
+    }
+
+    // Check if the action's programme is locked
+    const { locked } = await checkProgrammeLocked(action.programme);
+    if (locked) {
+      return sendError(res, "This week is closed and read-only. Cannot delete actions.", 403);
     }
 
     await Action.findByIdAndDelete(req.params.id);
@@ -310,12 +418,25 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.get("/stats/summary", protect, adminOnly, async (req, res) => {
+router.get("/stats/summary", protect, async (req, res) => {
   try {
     const { programmeId } = req.query;
 
     const filter = {};
     if (programmeId) filter.programme = programmeId;
+
+    // If non-admin, filter by user's assigned projects
+    if (req.admin.role !== "admin" && !programmeId) {
+      const userProjects = req.admin.projects || [];
+      if (userProjects.length === 0) {
+        return sendSuccess(res, {
+          stats: { total: 0, open: 0, inProgress: 0, completed: 0, overdue: 0, highPriority: 0 },
+        });
+      }
+      const programmes = await Programme.find({ project: { $in: userProjects } }).select("_id");
+      const programmeIds = programmes.map((p) => p._id);
+      filter.programme = { $in: programmeIds };
+    }
 
     const stats = await Action.aggregate([
       { $match: filter },

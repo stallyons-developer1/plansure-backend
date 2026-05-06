@@ -45,13 +45,24 @@ router.post("/", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.get("/", protect, adminOnly, async (req, res) => {
+router.get("/", protect, async (req, res) => {
   try {
     const { status, phase } = req.query;
 
     const filter = {};
     if (status) filter.status = status;
     if (phase) filter.phase = phase;
+
+    // If user is not admin, only show assigned projects
+    if (req.admin.role !== "admin") {
+      // Get user's assigned project IDs
+      const userProjects = req.admin.projects || [];
+      if (userProjects.length === 0) {
+        // User has no assigned projects
+        return sendSuccess(res, { projects: [] });
+      }
+      filter._id = { $in: userProjects };
+    }
 
     const projects = await Project.find(filter)
       .populate("createdBy", "name email")
@@ -66,7 +77,7 @@ router.get("/", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.get("/:id", protect, adminOnly, async (req, res) => {
+router.get("/:id", protect, async (req, res) => {
   try {
     const project = await Project.findById(req.params.id)
       .populate("createdBy", "name email")
@@ -78,6 +89,17 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
 
     if (!project) {
       return sendError(res, "Project not found", 404);
+    }
+
+    // If user is not admin, check if they have access to this project
+    if (req.admin.role !== "admin") {
+      const userProjects = req.admin.projects || [];
+      const hasAccess = userProjects.some(
+        (p) => p.toString() === req.params.id
+      );
+      if (!hasAccess) {
+        return sendError(res, "Access denied", 403);
+      }
     }
 
     return sendSuccess(res, { project });
