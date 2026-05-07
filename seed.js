@@ -16,9 +16,6 @@ const seedAdmin = async () => {
         await Admin.updateOne({ _id: existingAdmin._id }, { status: "active" });
         console.log("Admin status updated to active");
       }
-      console.log("Admin already exists:");
-      console.log("Email: admin@plansure.com");
-      console.log("Password: password");
     } else {
       const admin = await Admin.create({
         name: "Admin",
