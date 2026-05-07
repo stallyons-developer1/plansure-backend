@@ -53,20 +53,20 @@ const sendToTokens = async (tokens, notification, userId = null) => {
     return { success: false, reason: "No tokens provided" };
   }
 
+  // Use data-only message to ensure it goes through service worker
   const message = {
-    notification: {
-      title: notification.title,
-      body: notification.body,
+    data: {
+      title: notification.title || "New Notification",
+      body: notification.body || "You have a new notification",
+      clickUrl: notification.data?.clickUrl || process.env.FRONTEND_URL || "/",
+      type: notification.data?.type || "general",
+      actionId: notification.data?.actionId || "",
+      projectId: notification.data?.projectId || "",
+      notificationId: notification.data?.notificationId || Date.now().toString(),
     },
-    data: notification.data || {},
     webpush: {
-      fcmOptions: {
-        link: notification.data?.clickUrl || process.env.FRONTEND_URL || "/",
-      },
-      notification: {
-        icon: "/favicon.png",
-        badge: "/favicon.png",
-        requireInteraction: true,
+      headers: {
+        Urgency: "high",
       },
     },
   };
