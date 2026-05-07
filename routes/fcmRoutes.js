@@ -120,6 +120,19 @@ router.post("/test-push", protect, async (req, res) => {
   }
 });
 
+// Clear all tokens for user
+router.delete("/clear-all-tokens", protect, async (req, res) => {
+  try {
+    await Admin.findByIdAndUpdate(req.admin._id, {
+      $set: { fcmTokens: [] },
+    });
+    return sendSuccess(res, {}, "All FCM tokens cleared");
+  } catch (error) {
+    console.error("Clear tokens error:", error);
+    return sendError(res, "Server error", 500);
+  }
+});
+
 router.get("/status", protect, async (req, res) => {
   try {
     const user = await Admin.findById(req.admin._id).select(
