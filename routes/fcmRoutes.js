@@ -102,6 +102,24 @@ router.patch("/toggle-push", protect, async (req, res) => {
   }
 });
 
+// Test endpoint to debug push notifications
+router.post("/test-push", protect, async (req, res) => {
+  try {
+    const { sendToUser } = require("../services/fcmService");
+
+    const result = await sendToUser(req.admin._id, {
+      title: "Test Push Notification",
+      body: "If you see this, FCM is working!",
+      data: { type: "test" }
+    });
+
+    return sendSuccess(res, { fcmResult: result }, "Test push sent");
+  } catch (error) {
+    console.error("Test push error:", error);
+    return sendError(res, error.message, 500);
+  }
+});
+
 router.get("/status", protect, async (req, res) => {
   try {
     const user = await Admin.findById(req.admin._id).select(
