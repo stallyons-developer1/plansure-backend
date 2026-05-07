@@ -138,6 +138,10 @@ app.delete("/api/dev/clear-database", protect, adminOnly, async (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
+// Initialize Firebase on startup
+const { initializeFirebase } = require("./config/firebase");
+initializeFirebase();
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
   console.log("Environment check:", {
