@@ -54,8 +54,16 @@ const initializeFirebase = () => {
 };
 
 const getMessaging = () => {
-  if (!firebaseApp) initializeFirebase();
-  if (!firebaseApp) return null;
+  console.log("[Firebase] getMessaging called, firebaseApp exists:", !!firebaseApp);
+  if (!firebaseApp) {
+    console.log("[Firebase] Attempting to initialize...");
+    initializeFirebase();
+  }
+  if (!firebaseApp) {
+    console.log("[Firebase] Still no firebaseApp after init attempt");
+    return null;
+  }
+  console.log("[Firebase] Returning messaging instance");
   return admin.messaging();
 };
 
