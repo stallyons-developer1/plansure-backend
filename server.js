@@ -87,9 +87,9 @@ app.use("/api/projects", require("./routes/projectRoutes"));
 app.use("/api/programmes", require("./routes/programmeUploadRoutes"));
 app.use("/api/actions", require("./routes/actionRoutes"));
 app.use("/api/dashboard", require("./routes/dashboardRoutes"));
+app.use("/api/notifications", require("./routes/notificationRoutes"));
+app.use("/api/fcm", require("./routes/fcmRoutes"));
 
-// DEV ONLY: Clear all database collections
-// WARNING: This deletes ALL data - use with caution!
 const { protect, adminOnly } = require("./middleware/authMiddleware");
 const mongoose = require("mongoose");
 const fs = require("fs");
@@ -102,20 +102,20 @@ app.delete("/api/dev/clear-database", protect, adminOnly, async (req, res) => {
     const results = {};
 
     for (const collection of collections) {
-      // For admins collection, only delete non-admin users (planners and regular users)
       if (collection.name === "admins") {
         const deleteResult = await db.collection(collection.name).deleteMany({
-          role: { $ne: "admin" }
+          role: { $ne: "admin" },
         });
-        results[collection.name] = `deleted ${deleteResult.deletedCount} non-admin users (preserved admin users)`;
+        results[collection.name] =
+          `deleted ${deleteResult.deletedCount} non-admin users (preserved admin users)`;
         continue;
       }
 
       const deleteResult = await db.collection(collection.name).deleteMany({});
-      results[collection.name] = `deleted ${deleteResult.deletedCount} documents`;
+      results[collection.name] =
+        `deleted ${deleteResult.deletedCount} documents`;
     }
 
-    // Also clear uploaded PDF files
     const uploadsDir = "./uploads/programmes";
     if (fs.existsSync(uploadsDir)) {
       const files = fs.readdirSync(uploadsDir);

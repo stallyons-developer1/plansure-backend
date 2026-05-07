@@ -18,18 +18,17 @@ const programmeSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
-    // Week Cycle Statuses per PlanSure spec:
-    // 1. Uploaded - PDF uploaded, activities extracted, planner hasn't reviewed
-    // 2. Meeting Open - Planner confirmed activities, actions can be created
-    // 3. Execution - Week is live, owners working on actions
-    // 4. Close-Out Eligible - All required actions on GREEN activities done (automatic)
-    // 5. Closed - Week is locked forever, read-only
     cycleStatus: {
       type: String,
-      enum: ["Uploaded", "Meeting Open", "Execution", "Close-Out Eligible", "Closed"],
+      enum: [
+        "Uploaded",
+        "Meeting Open",
+        "Execution",
+        "Close-Out Eligible",
+        "Closed",
+      ],
       default: "Uploaded",
     },
-    // Tracking when cycle was closed
     closedAt: {
       type: Date,
     },
@@ -37,20 +36,16 @@ const programmeSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Admin",
     },
-    // Close type: "Normal Close" or "PM Override"
     closeType: {
       type: String,
       enum: ["Normal Close", "PM Override"],
     },
-    // Required reason if PM Override was used
     overrideReason: {
       type: String,
     },
-    // Week number for this cycle
     weekNumber: {
       type: Number,
     },
-    // Flag to indicate if week is locked (read-only)
     isLocked: {
       type: Boolean,
       default: false,

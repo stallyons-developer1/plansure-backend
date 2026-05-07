@@ -41,6 +41,18 @@ const actionSchema = new mongoose.Schema(
       ref: "Admin",
       required: true,
     },
+    previousAssignees: [
+      {
+        user: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Admin",
+        },
+        reassignedAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
     dueDate: {
       type: Date,
       required: true,

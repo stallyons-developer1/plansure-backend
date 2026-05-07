@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const Action = require("../models/Action");
 const Programme = require("../models/Programme");
+const Notification = require("../models/Notification");
 const { protect, adminOnly } = require("../middleware/authMiddleware");
 const {
   sendValidationError,
@@ -9,15 +10,14 @@ const {
   sendSuccess,
   validateRequired,
 } = require("../utils/errorResponse");
+const { sendPushForNotification } = require("../services/fcmService");
 
-// Helper to check if programme is locked (read-only)
 const checkProgrammeLocked = async (programmeId) => {
   const programme = await Programme.findById(programmeId);
   if (!programme) return { locked: false, error: "Programme not found" };
   return { locked: programme.isLocked, programme };
 };
 
-// Allow admin and planner to create actions
 router.post("/", protect, async (req, res) => {
   try {
     const {
@@ -53,17 +53,19 @@ router.post("/", protect, async (req, res) => {
       );
     }
 
-    // Check if week is closed (read-only)
     if (programme.isLocked) {
-      return sendError(res, "This week is closed and read-only. Cannot create new actions.", 403);
+      return sendError(
+        res,
+        "This week is closed and read-only. Cannot create new actions.",
+        403,
+      );
     }
 
-    // Check if cycle status allows action creation (only in Meeting Open or Execution)
     if (!["Meeting Open", "Execution"].includes(programme.cycleStatus)) {
       return sendError(
         res,
         `Cannot create actions when cycle status is "${programme.cycleStatus}". Actions can only be created during "Meeting Open" or "Execution" stages.`,
-        400
+        400,
       );
     }
 
@@ -85,6 +87,46 @@ router.post("/", protect, async (req, res) => {
     const populatedAction = await Action.findById(action._id)
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
+
+    if (assignee.toString() !== req.admin._id.toString()) {
+      await Notification.create({
+        recipient: assignee,
+        sender: req.admin._id,
+        type: "action_assigned",
+        title: "New Action Assigned",
+        message: `${req.admin.name} assigned you a new action: "${title}"`,
+        action: action._id,
+        programme: programmeId,
+        project: programme.project,
+      });
+
+      sendPushForNotification(assignee, "action_assigned", {
+        title,
+        message: `${req.admin.name} assigned you a new action: "${title}"`,
+        actionId: action._id,
+        programmeId,
+        projectId: programme.project,
+      });
+
+      await Notification.create({
+        recipient: req.admin._id,
+        sender: req.admin._id,
+        type: "action_assigned",
+        title: "Action Assigned",
+        message: `You assigned "${title}" to ${populatedAction.assignee.name}`,
+        action: action._id,
+        programme: programmeId,
+        project: programme.project,
+      });
+
+      sendPushForNotification(req.admin._id, "action_assigned", {
+        title: "Action Assigned",
+        message: `You assigned "${title}" to ${populatedAction.assignee.name}`,
+        actionId: action._id,
+        programmeId,
+        projectId: programme.project,
+      });
+    }
 
     return sendSuccess(
       res,
@@ -108,29 +150,19 @@ router.get("/", protect, async (req, res) => {
     if (priority) filter.priority = priority;
     if (assignee) filter.assignee = assignee;
 
-    // If non-admin, filter actions by user's assigned projects
     if (req.admin.role !== "admin") {
-      const userProjects = req.admin.projects || [];
-
-      if (userProjects.length === 0) {
-        return sendSuccess(res, { actions: [] });
-      }
-
-      // Get programmes for user's projects
-      const programmes = await Programme.find({ project: { $in: userProjects } }).select("_id");
-      const programmeIds = programmes.map((p) => p._id);
-
-      if (programmeIds.length === 0) {
-        return sendSuccess(res, { actions: [] });
-      }
-
-      filter.programme = { $in: programmeIds };
+      filter.$or = [
+        { assignee: req.admin._id },
+        { "previousAssignees.user": req.admin._id },
+        { createdBy: req.admin._id },
+      ];
     }
 
     const actions = await Action.find(filter)
       .populate("assignee", "name email")
       .populate("createdBy", "name email")
       .populate("programme", "name")
+      .populate("previousAssignees.user", "name email")
       .sort({ createdAt: -1 });
 
     return sendSuccess(res, { actions });
@@ -142,23 +174,23 @@ router.get("/", protect, async (req, res) => {
 
 router.get("/programme/:programmeId", protect, async (req, res) => {
   try {
-    // Check if non-admin user has access to this programme's project
+    let filter = { programme: req.params.programmeId };
+
     if (req.admin.role !== "admin") {
-      const programme = await Programme.findById(req.params.programmeId);
-      if (programme && programme.project) {
-        const userProjects = req.admin.projects || [];
-        const hasAccess = userProjects.some(
-          (p) => p.toString() === programme.project.toString()
-        );
-        if (!hasAccess) {
-          return sendError(res, "Access denied", 403);
-        }
-      }
+      filter = {
+        programme: req.params.programmeId,
+        $or: [
+          { assignee: req.admin._id },
+          { "previousAssignees.user": req.admin._id },
+          { createdBy: req.admin._id },
+        ],
+      };
     }
 
-    const actions = await Action.find({ programme: req.params.programmeId })
+    const actions = await Action.find(filter)
       .populate("assignee", "name email")
       .populate("createdBy", "name email")
+      .populate("previousAssignees.user", "name email")
       .sort({ createdAt: -1 });
 
     return sendSuccess(res, { actions });
@@ -172,26 +204,21 @@ router.get("/activity/:activityId", protect, async (req, res) => {
   try {
     const { programmeId } = req.query;
 
-    const filter = { "linkedActivity.activityId": req.params.activityId };
+    let filter = { "linkedActivity.activityId": req.params.activityId };
     if (programmeId) filter.programme = programmeId;
 
-    // Check if non-admin user has access
-    if (req.admin.role !== "admin" && programmeId) {
-      const programme = await Programme.findById(programmeId);
-      if (programme && programme.project) {
-        const userProjects = req.admin.projects || [];
-        const hasAccess = userProjects.some(
-          (p) => p.toString() === programme.project.toString()
-        );
-        if (!hasAccess) {
-          return sendError(res, "Access denied", 403);
-        }
-      }
+    if (req.admin.role !== "admin") {
+      filter.$or = [
+        { assignee: req.admin._id },
+        { "previousAssignees.user": req.admin._id },
+        { createdBy: req.admin._id },
+      ];
     }
 
     const actions = await Action.find(filter)
       .populate("assignee", "name email")
       .populate("createdBy", "name email")
+      .populate("previousAssignees.user", "name email")
       .sort({ createdAt: -1 });
 
     return sendSuccess(res, { actions });
@@ -207,19 +234,21 @@ router.get("/:id", protect, async (req, res) => {
       .populate("assignee", "name email")
       .populate("createdBy", "name email")
       .populate("programme", "name project")
-      .populate("comments.createdBy", "name email");
+      .populate("comments.createdBy", "name email")
+      .populate("previousAssignees.user", "name email");
 
     if (!action) {
       return sendError(res, "Action not found", 404);
     }
 
-    // Check if non-admin user has access to this action's programme's project
-    if (req.admin.role !== "admin" && action.programme && action.programme.project) {
-      const userProjects = req.admin.projects || [];
-      const hasAccess = userProjects.some(
-        (p) => p.toString() === action.programme.project.toString()
+    if (req.admin.role !== "admin") {
+      const isCurrentAssignee =
+        action.assignee?._id?.toString() === req.admin._id.toString();
+      const wasPreviouslyAssigned = action.previousAssignees?.some(
+        (pa) => pa.user?._id?.toString() === req.admin._id.toString(),
       );
-      if (!hasAccess) {
+
+      if (!isCurrentAssignee && !wasPreviouslyAssigned) {
         return sendError(res, "Access denied", 403);
       }
     }
@@ -231,7 +260,6 @@ router.get("/:id", protect, async (req, res) => {
   }
 });
 
-// Allow admin and planner to update actions
 router.put("/:id", protect, async (req, res) => {
   try {
     const {
@@ -251,10 +279,13 @@ router.put("/:id", protect, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    // Check if the action's programme is locked
     const { locked } = await checkProgrammeLocked(action.programme);
     if (locked) {
-      return sendError(res, "This week is closed and read-only. Cannot update actions.", 403);
+      return sendError(
+        res,
+        "This week is closed and read-only. Cannot update actions.",
+        403,
+      );
     }
 
     if (programmeId) {
@@ -281,7 +312,27 @@ router.put("/:id", protect, async (req, res) => {
     if (description !== undefined) action.description = description;
     if (type) action.type = type;
     if (priority) action.priority = priority;
-    if (assignee) action.assignee = assignee;
+
+    let wasReassigned = false;
+    let previousAssigneeId = null;
+    if (assignee && assignee !== action.assignee.toString()) {
+      wasReassigned = true;
+      previousAssigneeId = action.assignee;
+      if (!action.previousAssignees) {
+        action.previousAssignees = [];
+      }
+      const alreadyInList = action.previousAssignees.some(
+        (pa) => pa.user.toString() === action.assignee.toString(),
+      );
+      if (!alreadyInList) {
+        action.previousAssignees.push({
+          user: action.assignee,
+          reassignedAt: new Date(),
+        });
+      }
+      action.assignee = assignee;
+    }
+
     if (dueDate) action.dueDate = dueDate;
     if (status) {
       action.status = status;
@@ -299,6 +350,28 @@ router.put("/:id", protect, async (req, res) => {
       .populate("createdBy", "name email")
       .populate("programme", "name");
 
+    if (wasReassigned && assignee !== req.admin._id.toString()) {
+      const programmeForNotif = await Programme.findById(action.programme);
+      await Notification.create({
+        recipient: assignee,
+        sender: req.admin._id,
+        type: "action_reassigned",
+        title: "Action Reassigned to You",
+        message: `${req.admin.name} reassigned an action to you: "${action.title}"`,
+        action: action._id,
+        programme: action.programme,
+        project: programmeForNotif?.project,
+      });
+
+      sendPushForNotification(assignee, "action_reassigned", {
+        title: action.title,
+        message: `${req.admin.name} reassigned an action to you: "${action.title}"`,
+        actionId: action._id,
+        programmeId: action.programme,
+        projectId: programmeForNotif?.project,
+      });
+    }
+
     return sendSuccess(
       res,
       { action: updatedAction },
@@ -310,7 +383,6 @@ router.put("/:id", protect, async (req, res) => {
   }
 });
 
-// Allow admin and planner to add comments
 router.post("/:id/comments", protect, async (req, res) => {
   try {
     const { text } = req.body;
@@ -325,10 +397,13 @@ router.post("/:id/comments", protect, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    // Check if the action's programme is locked
     const { locked } = await checkProgrammeLocked(action.programme);
     if (locked) {
-      return sendError(res, "This week is closed and read-only. Cannot add comments.", 403);
+      return sendError(
+        res,
+        "This week is closed and read-only. Cannot add comments.",
+        403,
+      );
     }
 
     action.comments.push({
@@ -354,7 +429,6 @@ router.post("/:id/comments", protect, async (req, res) => {
   }
 });
 
-// Allow admin and planner to toggle complete status
 router.patch("/:id/complete", protect, async (req, res) => {
   try {
     const action = await Action.findById(req.params.id);
@@ -363,11 +437,26 @@ router.patch("/:id/complete", protect, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    // Check if the action's programme is locked
+    if (req.admin.role !== "admin") {
+      if (action.assignee?.toString() !== req.admin._id.toString()) {
+        return sendError(
+          res,
+          "Only the assigned user can complete this action",
+          403,
+        );
+      }
+    }
+
     const { locked } = await checkProgrammeLocked(action.programme);
     if (locked) {
-      return sendError(res, "This week is closed and read-only. Cannot modify actions.", 403);
+      return sendError(
+        res,
+        "This week is closed and read-only. Cannot modify actions.",
+        403,
+      );
     }
+
+    const wasCompleted = action.status === "Completed";
 
     if (action.status === "Completed") {
       action.status = "Open";
@@ -383,6 +472,31 @@ router.patch("/:id/complete", protect, async (req, res) => {
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
+    if (!wasCompleted && action.status === "Completed") {
+      const programmeForNotif = await Programme.findById(action.programme);
+
+      if (action.createdBy?.toString() !== req.admin._id.toString()) {
+        await Notification.create({
+          recipient: action.createdBy,
+          sender: req.admin._id,
+          type: "action_completed",
+          title: "Action Completed",
+          message: `${req.admin.name} completed the action: "${action.title}"`,
+          action: action._id,
+          programme: action.programme,
+          project: programmeForNotif?.project,
+        });
+
+        sendPushForNotification(action.createdBy, "action_completed", {
+          title: action.title,
+          message: `${req.admin.name} completed the action: "${action.title}"`,
+          actionId: action._id,
+          programmeId: action.programme,
+          projectId: programmeForNotif?.project,
+        });
+      }
+    }
+
     return sendSuccess(
       res,
       { action: updatedAction },
@@ -394,7 +508,6 @@ router.patch("/:id/complete", protect, async (req, res) => {
   }
 });
 
-// Allow admin and planner to delete actions
 router.delete("/:id", protect, async (req, res) => {
   try {
     const action = await Action.findById(req.params.id);
@@ -403,10 +516,13 @@ router.delete("/:id", protect, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    // Check if the action's programme is locked
     const { locked } = await checkProgrammeLocked(action.programme);
     if (locked) {
-      return sendError(res, "This week is closed and read-only. Cannot delete actions.", 403);
+      return sendError(
+        res,
+        "This week is closed and read-only. Cannot delete actions.",
+        403,
+      );
     }
 
     await Action.findByIdAndDelete(req.params.id);
@@ -425,17 +541,11 @@ router.get("/stats/summary", protect, async (req, res) => {
     const filter = {};
     if (programmeId) filter.programme = programmeId;
 
-    // If non-admin, filter by user's assigned projects
-    if (req.admin.role !== "admin" && !programmeId) {
-      const userProjects = req.admin.projects || [];
-      if (userProjects.length === 0) {
-        return sendSuccess(res, {
-          stats: { total: 0, open: 0, inProgress: 0, completed: 0, overdue: 0, highPriority: 0 },
-        });
-      }
-      const programmes = await Programme.find({ project: { $in: userProjects } }).select("_id");
-      const programmeIds = programmes.map((p) => p._id);
-      filter.programme = { $in: programmeIds };
+    if (req.admin.role !== "admin") {
+      filter.$or = [
+        { assignee: req.admin._id },
+        { "previousAssignees.user": req.admin._id },
+      ];
     }
 
     const stats = await Action.aggregate([

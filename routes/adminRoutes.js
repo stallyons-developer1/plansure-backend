@@ -11,17 +11,12 @@ const {
   validateEmail,
 } = require("../utils/errorResponse");
 
-// @route   POST /api/auth/login
-// @desc    Login for all roles (admin, user, planner)
-// @access  Public
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Validate required fields
     const errors = validateRequired({ email, password });
 
-    // Validate email format if provided
     if (email && !errors.find((e) => e.field === "email")) {
       const emailError = validateEmail(email);
       if (emailError) errors.push(emailError);
@@ -33,63 +28,75 @@ router.post("/login", async (req, res) => {
 
     const user = await Admin.findOne({ email });
 
-    console.log(`[LOGIN] Attempt for ${email}, found user status: ${user?.status || 'NOT FOUND'}`);
+    console.log(
+      `[LOGIN] Attempt for ${email}, found user status: ${user?.status || "NOT FOUND"}`,
+    );
 
-    // Check if user exists
     if (!user) {
-      return sendValidationError(res, [
-        { field: "email", message: "No account found with this email" },
-      ], 401);
+      return sendValidationError(
+        res,
+        [{ field: "email", message: "No account found with this email" }],
+        401,
+      );
     }
 
-    // Check if user is blocked
     if (user.status === "blocked") {
-      return sendValidationError(res, [
-        { field: "email", message: "Your account has been blocked. Contact admin." },
-      ], 403);
+      return sendValidationError(
+        res,
+        [
+          {
+            field: "email",
+            message: "Your account has been blocked. Contact admin.",
+          },
+        ],
+        403,
+      );
     }
 
-    // Check if user is pending (hasn't accepted invite)
     if (user.status === "pending") {
-      console.log(`[LOGIN] User ${email} rejected - status is still pending. User ID: ${user._id}`);
-      return sendValidationError(res, [
-        { field: "email", message: "Please accept your invitation first" },
-      ], 403);
+      console.log(
+        `[LOGIN] User ${email} rejected - status is still pending. User ID: ${user._id}`,
+      );
+      return sendValidationError(
+        res,
+        [{ field: "email", message: "Please accept your invitation first" }],
+        403,
+      );
     }
 
-    // Verify password
     const isMatch = await user.matchPassword(password);
     if (!isMatch) {
-      return sendValidationError(res, [
-        { field: "password", message: "Incorrect password" },
-      ], 401);
+      return sendValidationError(
+        res,
+        [{ field: "password", message: "Incorrect password" }],
+        401,
+      );
     }
 
-    // Update last login
     user.lastLogin = new Date();
     await user.save();
 
-    // Generate Sanctum-style token
     const token = await Token.generateToken(user._id);
 
-    return sendSuccess(res, {
-      token: token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
+    return sendSuccess(
+      res,
+      {
+        token: token,
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+        },
       },
-    }, "Login successful");
+      "Login successful",
+    );
   } catch (error) {
     console.error(error);
     return sendError(res, "Server error");
   }
 });
 
-// @route   GET /api/auth/profile
-// @desc    Get logged in user profile
-// @access  Private
 router.get("/profile", protect, async (req, res) => {
   res.json({
     _id: req.admin._id,
@@ -99,15 +106,11 @@ router.get("/profile", protect, async (req, res) => {
   });
 });
 
-// @route   POST /api/auth/logout
-// @desc    Logout user (delete current token)
-// @access  Private
 router.post("/logout", protect, async (req, res) => {
   try {
     const token = req.headers.authorization.split(" ")[1];
     const [tokenId, tokenValue] = token.split("|");
 
-    // Delete the token from database
     await Token.findOneAndDelete({
       tokenId: parseInt(tokenId),
       token: tokenValue,
@@ -120,12 +123,8 @@ router.post("/logout", protect, async (req, res) => {
   }
 });
 
-// @route   POST /api/auth/logout-all
-// @desc    Logout from all devices (delete all tokens for user)
-// @access  Private
 router.post("/logout-all", protect, async (req, res) => {
   try {
-    // Delete all tokens for this user
     await Token.deleteMany({ user: req.admin._id });
 
     res.json({ message: "Logged out from all devices successfully" });

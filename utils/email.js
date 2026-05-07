@@ -1,12 +1,13 @@
 const nodemailer = require("nodemailer");
 const { Resend } = require("resend");
 
-// Lazy initialize Resend
 let resend = null;
 const getResend = () => {
   if (!resend) {
     const apiKey = process.env.RESEND_API_KEY;
-    console.log(`[EMAIL] Initializing Resend with key: ${apiKey ? apiKey.substring(0, 10) + '...' : 'MISSING'}`);
+    console.log(
+      `[EMAIL] Initializing Resend with key: ${apiKey ? apiKey.substring(0, 10) + "..." : "MISSING"}`,
+    );
     if (!apiKey) {
       throw new Error("RESEND_API_KEY environment variable is not set");
     }
@@ -15,7 +16,6 @@ const getResend = () => {
   return resend;
 };
 
-// SMTP Transporter for Mailtrap (local development)
 const createTransporter = () => {
   const port = parseInt(process.env.SMTP_PORT) || 587;
   return nodemailer.createTransport({
@@ -27,7 +27,7 @@ const createTransporter = () => {
       pass: process.env.SMTP_PASS,
     },
     tls: {
-      rejectUnauthorized: false
+      rejectUnauthorized: false,
     },
     connectionTimeout: 10000,
     greetingTimeout: 10000,
@@ -35,10 +35,11 @@ const createTransporter = () => {
   });
 };
 
-// Check if using SMTP or Resend
 const isSmtp = () => {
   const useSmtp = process.env.ISSMTP === "true";
-  console.log(`[EMAIL] ISSMTP=${process.env.ISSMTP}, Using: ${useSmtp ? 'SMTP (Mailtrap)' : 'Resend API'}`);
+  console.log(
+    `[EMAIL] ISSMTP=${process.env.ISSMTP}, Using: ${useSmtp ? "SMTP (Mailtrap)" : "Resend API"}`,
+  );
   return useSmtp;
 };
 
@@ -46,7 +47,12 @@ const sendInviteEmail = async (options) => {
   console.log("[EMAIL] sendInviteEmail called, checking env vars:");
   console.log("[EMAIL] ISSMTP:", process.env.ISSMTP);
   console.log("[EMAIL] RESEND_API_KEY exists:", !!process.env.RESEND_API_KEY);
-  console.log("[EMAIL] All env keys:", Object.keys(process.env).filter(k => k.includes('RESEND') || k.includes('SMTP') || k.includes('ISSMTP')));
+  console.log(
+    "[EMAIL] All env keys:",
+    Object.keys(process.env).filter(
+      (k) => k.includes("RESEND") || k.includes("SMTP") || k.includes("ISSMTP"),
+    ),
+  );
 
   const htmlContent = `
     <!DOCTYPE html>
@@ -102,8 +108,9 @@ const sendInviteEmail = async (options) => {
     console.log(`[EMAIL] Sending invite email to: ${options.email}`);
 
     if (isSmtp()) {
-      // Use SMTP (Mailtrap) for local development
-      console.log(`[EMAIL] Using SMTP - Host: ${process.env.SMTP_HOST}, Port: ${process.env.SMTP_PORT}`);
+      console.log(
+        `[EMAIL] Using SMTP - Host: ${process.env.SMTP_HOST}, Port: ${process.env.SMTP_PORT}`,
+      );
       const transporter = createTransporter();
       const result = await transporter.sendMail({
         from: "Plansure <noreply@plansure.io>",
@@ -113,10 +120,12 @@ const sendInviteEmail = async (options) => {
       });
       console.log(`[EMAIL] SMTP send success:`, result.messageId);
     } else {
-      // Use Resend for production (Railway)
-      console.log(`[EMAIL] Using Resend API - Key exists: ${!!process.env.RESEND_API_KEY}`);
+      console.log(
+        `[EMAIL] Using Resend API - Key exists: ${!!process.env.RESEND_API_KEY}`,
+      );
       const result = await getResend().emails.send({
-        from: process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
+        from:
+          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
         to: options.email,
         subject: "You've been invited to join Plansure",
         html: htmlContent,
@@ -186,7 +195,8 @@ const sendWelcomeEmail = async (options) => {
       console.log(`[EMAIL] SMTP welcome email success:`, result.messageId);
     } else {
       const result = await getResend().emails.send({
-        from: process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
+        from:
+          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
         to: options.email,
         subject: "Welcome to Plansure!",
         html: htmlContent,
@@ -266,7 +276,8 @@ const sendRoleChangeEmail = async (options) => {
       console.log(`[EMAIL] SMTP role change email success:`, result.messageId);
     } else {
       const result = await getResend().emails.send({
-        from: process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
+        from:
+          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
         to: options.email,
         subject: "Your Plansure Account Has Been Updated",
         html: htmlContent,

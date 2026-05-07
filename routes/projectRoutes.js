@@ -1,6 +1,8 @@
 const express = require("express");
 const router = express.Router();
 const Project = require("../models/Project");
+const Programme = require("../models/Programme");
+const Action = require("../models/Action");
 const { protect, adminOnly } = require("../middleware/authMiddleware");
 const {
   sendValidationError,
@@ -53,15 +55,64 @@ router.get("/", protect, async (req, res) => {
     if (status) filter.status = status;
     if (phase) filter.phase = phase;
 
-    // If user is not admin, only show assigned projects
     if (req.admin.role !== "admin") {
-      // Get user's assigned project IDs
-      const userProjects = req.admin.projects || [];
-      if (userProjects.length === 0) {
-        // User has no assigned projects
+      let projectIds = [];
+
+      if (req.admin.role === "planner") {
+        const userAssignedProjects = (req.admin.projects || []).map((p) =>
+          p.toString(),
+        );
+
+        const userActions = await Action.find({
+          $or: [
+            { assignee: req.admin._id },
+            { "previousAssignees.user": req.admin._id },
+          ],
+        }).select("programme");
+        let actionProjectIds = [];
+        if (userActions.length > 0) {
+          const programmeIds = [
+            ...new Set(userActions.map((a) => a.programme.toString())),
+          ];
+          const programmes = await Programme.find({
+            _id: { $in: programmeIds },
+          }).select("project");
+          actionProjectIds = programmes
+            .map((p) => p.project?.toString())
+            .filter(Boolean);
+        }
+
+        projectIds = [
+          ...new Set([...userAssignedProjects, ...actionProjectIds]),
+        ];
+      } else {
+        const userActions = await Action.find({
+          $or: [
+            { assignee: req.admin._id },
+            { "previousAssignees.user": req.admin._id },
+          ],
+        }).select("programme");
+
+        if (userActions.length > 0) {
+          const programmeIds = [
+            ...new Set(userActions.map((a) => a.programme.toString())),
+          ];
+          const programmes = await Programme.find({
+            _id: { $in: programmeIds },
+          }).select("project");
+          projectIds = [
+            ...new Set(
+              programmes.map((p) => p.project?.toString()).filter(Boolean),
+            ),
+          ];
+        }
+      }
+
+      if (projectIds.length === 0) {
         return sendSuccess(res, { projects: [] });
       }
-      filter._id = { $in: userProjects };
+
+      filter._id = { $in: projectIds };
     }
 
     const projects = await Project.find(filter)
@@ -91,14 +142,36 @@ router.get("/:id", protect, async (req, res) => {
       return sendError(res, "Project not found", 404);
     }
 
-    // If user is not admin, check if they have access to this project
     if (req.admin.role !== "admin") {
-      const userProjects = req.admin.projects || [];
-      const hasAccess = userProjects.some(
-        (p) => p.toString() === req.params.id
-      );
-      if (!hasAccess) {
-        return sendError(res, "Access denied", 403);
+      const allProgrammes = await Programme.find({
+        project: req.params.id,
+      }).select("_id");
+      const allProgrammeIds = allProgrammes.map((p) => p._id);
+
+      const userActionCount =
+        allProgrammeIds.length > 0
+          ? await Action.countDocuments({
+              programme: { $in: allProgrammeIds },
+              $or: [
+                { assignee: req.admin._id },
+                { "previousAssignees.user": req.admin._id },
+              ],
+            })
+          : 0;
+
+      if (req.admin.role === "planner") {
+        const userProjects = req.admin.projects || [];
+        const isAssigned = userProjects.some(
+          (p) => p.toString() === req.params.id,
+        );
+
+        if (!isAssigned && userActionCount === 0) {
+          return sendError(res, "Access denied", 403);
+        }
+      } else {
+        if (userActionCount === 0) {
+          return sendError(res, "Access denied", 403);
+        }
       }
     }
 
@@ -142,9 +215,6 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-// @route   DELETE /api/projects/:id
-// @desc    Delete a project
-// @access  Private (Admin only)
 router.delete("/:id", protect, adminOnly, async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
@@ -162,14 +232,10 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-// @route   POST /api/projects/:id/team
-// @desc    Add team member to project
-// @access  Private (Admin only)
 router.post("/:id/team", protect, adminOnly, async (req, res) => {
   try {
     const { userId, role } = req.body;
 
-    // Validate required fields
     const errors = validateRequired({ userId, role });
     if (errors.length > 0) {
       return sendValidationError(res, errors);
@@ -180,7 +246,6 @@ router.post("/:id/team", protect, adminOnly, async (req, res) => {
       return sendError(res, "Project not found", 404);
     }
 
-    // Check if user already in team
     const existingMember = project.team.find(
       (member) => member.user.toString() === userId,
     );
@@ -209,9 +274,6 @@ router.post("/:id/team", protect, adminOnly, async (req, res) => {
   }
 });
 
-// @route   DELETE /api/projects/:id/team/:userId
-// @desc    Remove team member from project
-// @access  Private (Admin only)
 router.delete("/:id/team/:userId", protect, adminOnly, async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
@@ -231,14 +293,10 @@ router.delete("/:id/team/:userId", protect, adminOnly, async (req, res) => {
   }
 });
 
-// @route   POST /api/projects/:id/programmes
-// @desc    Link a programme to project
-// @access  Private (Admin only)
 router.post("/:id/programmes", protect, adminOnly, async (req, res) => {
   try {
     const { programmeId } = req.body;
 
-    // Validate required fields
     const errors = validateRequired({ programmeId });
     if (errors.length > 0) {
       return sendValidationError(res, errors);
@@ -249,7 +307,6 @@ router.post("/:id/programmes", protect, adminOnly, async (req, res) => {
       return sendError(res, "Project not found", 404);
     }
 
-    // Check if programme already linked
     if (project.programmes.includes(programmeId)) {
       return sendValidationError(res, [
         { field: "programmeId", message: "Programme already linked" },
@@ -275,9 +332,6 @@ router.post("/:id/programmes", protect, adminOnly, async (req, res) => {
   }
 });
 
-// @route   GET /api/projects/phases
-// @desc    Get all available phases
-// @access  Private
 router.get("/meta/phases", protect, async (req, res) => {
   res.json({
     phases: [

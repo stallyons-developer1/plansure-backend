@@ -20,27 +20,16 @@ if (!fs.existsSync(pdfPath)) {
 }
 
 async function analyzePdf() {
-  console.log(`\n📄 Analyzing PDF: ${pdfPath}\n`);
-  console.log("=".repeat(80));
-
   const pdfBuffer = fs.readFileSync(pdfPath);
   const uint8Array = new Uint8Array(pdfBuffer);
   const pdfDoc = await pdfjsLib.getDocument({ data: uint8Array }).promise;
 
-  console.log(`\n📊 Total Pages: ${pdfDoc.numPages}\n`);
-
-  // Only analyze first 2 pages for debugging
   const pagesToAnalyze = Math.min(2, pdfDoc.numPages);
 
   for (let pageNum = 1; pageNum <= pagesToAnalyze; pageNum++) {
-    console.log(`\n${"=".repeat(80)}`);
-    console.log(`📄 PAGE ${pageNum}`);
-    console.log("=".repeat(80));
-
     const page = await pdfDoc.getPage(pageNum);
     const textContent = await page.getTextContent();
 
-    // Group items by Y position
     const rows = {};
     textContent.items.forEach((item) => {
       if (!item.str.trim()) return;
@@ -51,16 +40,17 @@ async function analyzePdf() {
       rows[y].push({ text: item.str.trim(), x, rawX: item.transform[4] });
     });
 
-    // Sort rows by Y (descending = top to bottom)
     const sortedYPositions = Object.keys(rows)
       .map(Number)
       .sort((a, b) => b - a);
 
-    // Activity ID pattern
-    const activityIdPattern = /^([A-Z]{1,4}[-_]?[A-Z]{0,3}[-_]?\d+[\.\d]*|[A-Z]{2,}[-_][A-Z]{0,3}[-_]?\d+|VI_+[A-Z0-9]+)/;
+    const activityIdPattern =
+      /^([A-Z]{1,4}[-_]?[A-Z]{0,3}[-_]?\d+[\.\d]*|[A-Z]{2,}[-_][A-Z]{0,3}[-_]?\d+|VI_+[A-Z0-9]+)/;
     const datePattern = /\d{2}-[A-Za-z]{3}-\d{2}/;
 
-    console.log("\n📍 X Position Analysis (first 30 rows with potential activity IDs):\n");
+    console.log(
+      "\n📍 X Position Analysis (first 30 rows with potential activity IDs):\n",
+    );
     console.log("Format: [X position] text content");
     console.log("-".repeat(80));
 
@@ -74,8 +64,9 @@ async function analyzePdf() {
       const row = rows[y];
       row.sort((a, b) => a.x - b.x);
 
-      // Check if any item looks like an Activity ID
-      const hasActivityId = row.some((item) => activityIdPattern.test(item.text));
+      const hasActivityId = row.some((item) =>
+        activityIdPattern.test(item.text),
+      );
       const hasDate = row.some((item) => datePattern.test(item.text));
 
       if (hasActivityId || hasDate) {
@@ -86,19 +77,17 @@ async function analyzePdf() {
             const marker = activityIdPattern.test(item.text)
               ? "🆔"
               : datePattern.test(item.text)
-              ? "📅"
-              : /^\d+$/.test(item.text)
-              ? "⏱️"
-              : "  ";
-            console.log(`   ${marker} [X: ${item.x.toString().padStart(4)}] "${item.text}"`);
+                ? "📅"
+                : /^\d+$/.test(item.text)
+                  ? "⏱️"
+                  : "  ";
+            console.log(
+              `   ${marker} [X: ${item.x.toString().padStart(4)}] "${item.text}"`,
+            );
           });
         }
       }
     }
-
-    // Analyze column positions
-    console.log("\n\n📊 COLUMN POSITION STATISTICS:\n");
-    console.log("-".repeat(80));
 
     const activityIdPositions = [];
     const datePositions = [];
@@ -128,7 +117,9 @@ async function analyzePdf() {
       positions.sort((a, b) => a - b);
       const min = Math.min(...positions);
       const max = Math.max(...positions);
-      const avg = Math.round(positions.reduce((a, b) => a + b, 0) / positions.length);
+      const avg = Math.round(
+        positions.reduce((a, b) => a + b, 0) / positions.length,
+      );
       const median = positions[Math.floor(positions.length / 2)];
 
       console.log(`\n${name}:`);
@@ -145,19 +136,6 @@ async function analyzePdf() {
     analyzePositions(durationPositions, "⏱️ Durations (numbers < 2000)");
     analyzePositions(textPositions, "📝 Text items (>5 chars)");
   }
-
-  // Summary recommendations
-  console.log("\n\n" + "=".repeat(80));
-  console.log("📋 CURRENT CODE THRESHOLDS vs DETECTED POSITIONS:");
-  console.log("=".repeat(80));
-  console.log("\nCurrent code expects:");
-  console.log("  Activity ID:    x >= 38  && x < 145");
-  console.log("  Activity Name:  x >= 145 && x < 550");
-  console.log("  Duration:       x >= 500 && x < 620");
-  console.log("  Finish Column:  x >= 603");
-  console.log("\n⚠️  If detected positions above don't match these ranges,");
-  console.log("    the parsing will fail to extract activities!");
-  console.log("=".repeat(80));
 }
 
 analyzePdf().catch((err) => {

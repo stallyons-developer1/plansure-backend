@@ -42,6 +42,30 @@ const adminSchema = new mongoose.Schema(
     },
     lastLogin: Date,
     avatar: String,
+    fcmTokens: [
+      {
+        token: {
+          type: String,
+          required: true,
+        },
+        deviceInfo: {
+          type: String,
+          default: "Unknown device",
+        },
+        createdAt: {
+          type: Date,
+          default: Date.now,
+        },
+        lastUsed: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
+    pushNotificationsEnabled: {
+      type: Boolean,
+      default: true,
+    },
   },
   { timestamps: true },
 );

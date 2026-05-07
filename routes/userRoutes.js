@@ -71,9 +71,16 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
     const debugInfo = {
       ISSMTP: process.env.ISSMTP,
       RESEND_KEY_EXISTS: !!process.env.RESEND_API_KEY,
-      RESEND_KEY_LENGTH: process.env.RESEND_API_KEY ? process.env.RESEND_API_KEY.length : 0,
+      RESEND_KEY_LENGTH: process.env.RESEND_API_KEY
+        ? process.env.RESEND_API_KEY.length
+        : 0,
     };
-    console.log("[INVITE] About to send invite email to:", user.email, "Debug:", debugInfo);
+    console.log(
+      "[INVITE] About to send invite email to:",
+      user.email,
+      "Debug:",
+      debugInfo,
+    );
     try {
       await sendInviteEmail({
         email: user.email,
@@ -237,12 +244,12 @@ router.get("/invite/accept/:token", async (req, res) => {
     user.inviteToken = undefined;
     user.inviteTokenExpiry = undefined;
 
-    console.log(`[INVITE ACCEPT] Setting user ${user.email} status to active`);
     await user.save();
 
-    // Verify the save worked
     const verifyUser = await Admin.findById(user._id);
-    console.log(`[INVITE ACCEPT] Verified user ${verifyUser.email} status: ${verifyUser.status}`);
+    console.log(
+      `[INVITE ACCEPT] Verified user ${verifyUser.email} status: ${verifyUser.status}`,
+    );
 
     try {
       await sendWelcomeEmail({
@@ -430,7 +437,6 @@ router.get("/invite/verify/:token", async (req, res) => {
   }
 });
 
-// Allow admin and planner to view users list (needed for action assignment)
 router.get("/", protect, async (req, res) => {
   try {
     const { status, role, search } = req.query;

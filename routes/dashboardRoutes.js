@@ -6,13 +6,22 @@ const Action = require("../models/Action");
 const { protect } = require("../middleware/authMiddleware");
 const { sendError, sendSuccess } = require("../utils/errorResponse");
 
-// Helper function to parse date strings like "24-Nov-21"
 const parseDate = (dateStr) => {
   if (!dateStr) return null;
   const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
   const months = {
-    Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
-    Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+    Jan: 0,
+    Feb: 1,
+    Mar: 2,
+    Apr: 3,
+    May: 4,
+    Jun: 5,
+    Jul: 6,
+    Aug: 7,
+    Sep: 8,
+    Oct: 9,
+    Nov: 10,
+    Dec: 11,
   };
   const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
   if (!match) return null;
@@ -23,12 +32,6 @@ const parseDate = (dateStr) => {
   return new Date(year, month, day);
 };
 
-// Calculate RAG status based on weeks until activity STARTS
-// Per PlanSure spec:
-// - 1-2 weeks away → Green (committed work)
-// - 3-4 weeks away → Amber (operational readiness)
-// - 5-6 weeks away → Red (strategic)
-// - >6 weeks away → Grey (not in lookahead)
 const calculateRAG = (activity, today) => {
   const startDate = parseDate(activity.startDate);
   const finishDate = parseDate(activity.finishDate);
@@ -45,15 +48,13 @@ const calculateRAG = (activity, today) => {
   const daysUntilStart = Math.ceil((startDate - today) / msPerDay);
   const weeksUntilStart = Math.ceil(daysUntilStart / 7);
 
-  // Activity already started
   if (daysUntilStart < 0) {
     if (finishDate && finishDate < today) {
-      return "Red"; // Overdue
+      return "Red";
     }
-    return "Green"; // In progress
+    return "Green";
   }
 
-  // Weeks-based RAG
   if (weeksUntilStart <= 2) {
     return "Green";
   } else if (weeksUntilStart <= 4) {
@@ -65,10 +66,8 @@ const calculateRAG = (activity, today) => {
   }
 };
 
-// Get dashboard stats
 router.get("/stats", protect, async (req, res) => {
   try {
-    // Get projects stats - count all non-cancelled projects
     const projects = await Project.find({ status: { $ne: "Cancelled" } });
     const projectIds = projects.map((p) => p._id);
 
@@ -78,7 +77,6 @@ router.get("/stats", protect, async (req, res) => {
       return acc;
     }, {});
 
-    // Get programmes only for existing projects
     const programmes = await Programme.find({
       status: { $in: ["processed", "pending"] },
       project: { $in: projectIds },
@@ -94,40 +92,35 @@ router.get("/stats", protect, async (req, res) => {
     let cycleStatus = null;
     let activeProgramme = null;
 
-    // Find the most recent programme with activities
     const sortedProgrammes = programmes.sort(
-      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
     );
 
     if (sortedProgrammes.length > 0) {
       activeProgramme = sortedProgrammes[0];
       cycleStatus = activeProgramme.cycleStatus;
 
-      // Calculate week number from lookaheadStartDate
       if (activeProgramme.lookaheadStartDate) {
         const startOfYear = new Date(
           new Date(activeProgramme.lookaheadStartDate).getFullYear(),
           0,
-          1
+          1,
         );
         const days = Math.floor(
           (new Date(activeProgramme.lookaheadStartDate) - startOfYear) /
-            (24 * 60 * 60 * 1000)
+            (24 * 60 * 60 * 1000),
         );
         currentCycle = `W${Math.ceil((days + 1) / 7)}`;
       }
     }
 
-    // Aggregate activity stats across programmes linked to existing projects
     const today = new Date();
     for (const prog of programmes) {
       const activities = prog.extractedData?.activities || [];
 
-      // Count ALL activities for total
       totalActivities += activities.length;
 
       for (const activity of activities) {
-        // Recalculate RAG dynamically based on current date
         const rag = calculateRAG(activity, today);
         if (rag === "Green") greenCount++;
         else if (rag === "Amber") amberCount++;
@@ -136,30 +129,28 @@ router.get("/stats", protect, async (req, res) => {
       }
     }
 
-    // Get actions only for programmes linked to existing projects
     const actions = await Action.find({
       programme: { $in: programmeIds },
     });
     const openActions = actions.filter(
-      (a) => a.status !== "Completed" && a.status !== "Cancelled"
+      (a) => a.status !== "Completed" && a.status !== "Cancelled",
     );
     const overdueActions = actions.filter(
       (a) =>
         a.status !== "Completed" &&
         a.status !== "Cancelled" &&
-        new Date(a.dueDate) < new Date()
+        new Date(a.dueDate) < new Date(),
     );
     const pendingActions = openActions.length - overdueActions.length;
 
-    // Calculate cycle day info
     let cycleDayInfo = null;
     if (activeProgramme?.lookaheadStartDate) {
       const cycleStart = new Date(activeProgramme.lookaheadStartDate);
       const today = new Date();
       const daysSinceStart = Math.floor(
-        (today - cycleStart) / (24 * 60 * 60 * 1000)
+        (today - cycleStart) / (24 * 60 * 60 * 1000),
       );
-      const cycleDuration = 5; // Assuming 5-day cycles
+      const cycleDuration = 5;
       const currentDay = Math.min(daysSinceStart + 1, cycleDuration);
       const daysRemaining = Math.max(0, cycleDuration - currentDay);
 
@@ -204,12 +195,10 @@ router.get("/stats", protect, async (req, res) => {
   }
 });
 
-// Get RAG distribution for activities
 router.get("/rag-distribution", protect, async (req, res) => {
   try {
     const { programmeId } = req.query;
 
-    // Get existing project IDs
     const projects = await Project.find({ status: { $ne: "Cancelled" } });
     const projectIds = projects.map((p) => p._id);
 
@@ -218,7 +207,6 @@ router.get("/rag-distribution", protect, async (req, res) => {
       const programme = await Programme.findById(programmeId);
       programmes = programme ? [programme] : [];
     } else {
-      // Get programmes only for existing projects
       programmes = await Programme.find({
         status: { $in: ["processed", "pending"] },
         project: { $in: projectIds },
@@ -235,9 +223,7 @@ router.get("/rag-distribution", protect, async (req, res) => {
       const activities = prog.extractedData?.activities || [];
 
       for (const activity of activities) {
-        // Recalculate RAG dynamically
         const rag = calculateRAG(activity, today);
-        // Only count activities within 6-week lookahead
         if (rag !== "Grey") {
           totalActivities++;
           if (rag === "Green") greenCount++;
@@ -247,15 +233,20 @@ router.get("/rag-distribution", protect, async (req, res) => {
       }
     }
 
-    // Calculate percentages based on RAG-assigned activities only
     const ragAssignedTotal = greenCount + amberCount + redCount;
 
     const greenPercentage =
-      ragAssignedTotal > 0 ? Math.round((greenCount / ragAssignedTotal) * 100) : 0;
+      ragAssignedTotal > 0
+        ? Math.round((greenCount / ragAssignedTotal) * 100)
+        : 0;
     const amberPercentage =
-      ragAssignedTotal > 0 ? Math.round((amberCount / ragAssignedTotal) * 100) : 0;
+      ragAssignedTotal > 0
+        ? Math.round((amberCount / ragAssignedTotal) * 100)
+        : 0;
     const redPercentage =
-      ragAssignedTotal > 0 ? Math.round((redCount / ragAssignedTotal) * 100) : 0;
+      ragAssignedTotal > 0
+        ? Math.round((redCount / ragAssignedTotal) * 100)
+        : 0;
 
     return sendSuccess(res, {
       distribution: {
@@ -271,43 +262,41 @@ router.get("/rag-distribution", protect, async (req, res) => {
   }
 });
 
-// Get recent activity feed
 router.get("/recent-activity", protect, async (req, res) => {
   try {
     const { limit = 10 } = req.query;
 
-    // Get existing project IDs
     const projects = await Project.find({ status: { $ne: "Cancelled" } });
     const projectIds = projects.map((p) => p._id);
 
-    // Get programmes for existing projects
-    const existingProgrammes = await Programme.find({ project: { $in: projectIds } });
+    const existingProgrammes = await Programme.find({
+      project: { $in: projectIds },
+    });
     const programmeIds = existingProgrammes.map((p) => p._id);
 
-    // Get recent programmes (uploads) - only for existing projects
-    const recentProgrammes = await Programme.find({ project: { $in: projectIds } })
+    const recentProgrammes = await Programme.find({
+      project: { $in: projectIds },
+    })
       .sort({ createdAt: -1 })
       .limit(5)
       .populate("uploadedBy", "name email")
       .populate("project", "name");
 
-    // Get recent actions - only for existing programmes
-    const recentActions = await Action.find({ programme: { $in: programmeIds } })
+    const recentActions = await Action.find({
+      programme: { $in: programmeIds },
+    })
       .sort({ createdAt: -1 })
       .limit(5)
       .populate("createdBy", "name email")
       .populate("assignee", "name email");
 
-    // Get recent projects (existing ones)
     const recentProjects = await Project.find({ status: { $ne: "Cancelled" } })
       .sort({ createdAt: -1 })
       .limit(3)
       .populate("createdBy", "name email");
 
-    // Combine and format activities
     const activities = [];
 
-    // Add programme uploads
     for (const prog of recentProgrammes) {
       activities.push({
         id: prog._id,
@@ -321,7 +310,6 @@ router.get("/recent-activity", protect, async (req, res) => {
       });
     }
 
-    // Add action creations
     for (const action of recentActions) {
       const isCompleted = action.status === "Completed";
       activities.push({
@@ -335,7 +323,6 @@ router.get("/recent-activity", protect, async (req, res) => {
       });
     }
 
-    // Add project creations
     for (const project of recentProjects) {
       activities.push({
         id: project._id,
@@ -348,7 +335,6 @@ router.get("/recent-activity", protect, async (req, res) => {
       });
     }
 
-    // Sort by timestamp and limit
     activities.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     const limitedActivities = activities.slice(0, parseInt(limit));
 
@@ -359,12 +345,10 @@ router.get("/recent-activity", protect, async (req, res) => {
   }
 });
 
-// Get weekly dashboard stats
 router.get("/weekly", protect, async (req, res) => {
   try {
     const { projectId } = req.query;
 
-    // Get existing projects
     const projects = await Project.find({ status: { $ne: "Cancelled" } });
     const projectIds = projects.map((p) => p._id);
 
@@ -391,20 +375,20 @@ router.get("/weekly", protect, async (req, res) => {
       });
     }
 
-    // Get the most recent programme
     const programmes = await Programme.find({
       status: { $in: ["processed", "pending"] },
       project: { $in: projectIds },
-    }).populate("project", "name").populate("uploadedBy", "name");
+    })
+      .populate("project", "name")
+      .populate("uploadedBy", "name");
 
     const sortedProgrammes = programmes.sort(
-      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
     );
 
     const activeProgramme = sortedProgrammes[0];
     const programmeIds = programmes.map((p) => p._id);
 
-    // Calculate week number and dates
     let weekNumber = "N/A";
     let weekDates = "";
     let weekOpened = "";
@@ -414,7 +398,9 @@ router.get("/weekly", protect, async (req, res) => {
     if (activeProgramme?.lookaheadStartDate) {
       const startDate = new Date(activeProgramme.lookaheadStartDate);
       const startOfYear = new Date(startDate.getFullYear(), 0, 1);
-      const days = Math.floor((startDate - startOfYear) / (24 * 60 * 60 * 1000));
+      const days = Math.floor(
+        (startDate - startOfYear) / (24 * 60 * 60 * 1000),
+      );
       weekNumber = `Week ${Math.ceil((days + 1) / 7)}`;
 
       const endDate = new Date(startDate);
@@ -422,13 +408,39 @@ router.get("/weekly", protect, async (req, res) => {
 
       const formatDate = (d) => {
         const day = d.getDate();
-        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        const months = [
+          "Jan",
+          "Feb",
+          "Mar",
+          "Apr",
+          "May",
+          "Jun",
+          "Jul",
+          "Aug",
+          "Sep",
+          "Oct",
+          "Nov",
+          "Dec",
+        ];
         return `${day} ${months[d.getMonth()]} ${d.getFullYear()}`;
       };
 
       const formatShort = (d) => {
         const day = d.getDate();
-        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        const months = [
+          "Jan",
+          "Feb",
+          "Mar",
+          "Apr",
+          "May",
+          "Jun",
+          "Jul",
+          "Aug",
+          "Sep",
+          "Oct",
+          "Nov",
+          "Dec",
+        ];
         return `${day}-${day + 6} ${months[d.getMonth()]} ${d.getFullYear()}`;
       };
 
@@ -438,7 +450,6 @@ router.get("/weekly", protect, async (req, res) => {
       cycleStatus = activeProgramme.cycleStatus || "Draft";
     }
 
-    // Get activities from programme and recalculate RAG dynamically
     const rawActivities = activeProgramme?.extractedData?.activities || [];
     const today = new Date();
 
@@ -447,11 +458,9 @@ router.get("/weekly", protect, async (req, res) => {
     let redCount = 0;
     let blockedCount = 0;
 
-    // Recalculate RAG for each activity and filter to lookahead only
     const activities = [];
     for (const activity of rawActivities) {
       const rag = calculateRAG(activity, today);
-      // Only include activities within 6-week lookahead
       if (rag !== "Grey") {
         activities.push({ ...activity, ragStatus: rag });
         if (rag === "Green") greenCount++;
@@ -464,34 +473,34 @@ router.get("/weekly", protect, async (req, res) => {
 
     const totalActivities = activities.length;
     const ragTotal = greenCount + amberCount + redCount;
-    const greenPercentage = ragTotal > 0 ? Math.round((greenCount / ragTotal) * 100) : 0;
+    const greenPercentage =
+      ragTotal > 0 ? Math.round((greenCount / ragTotal) * 100) : 0;
 
-    // Get actions stats
     const actions = await Action.find({ programme: { $in: programmeIds } })
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
     const openActions = actions.filter(
-      (a) => a.status !== "Completed" && a.status !== "Cancelled"
+      (a) => a.status !== "Completed" && a.status !== "Cancelled",
     );
     const closedActions = actions.filter((a) => a.status === "Completed");
     const overdueActions = actions.filter(
       (a) =>
         a.status !== "Completed" &&
         a.status !== "Cancelled" &&
-        new Date(a.dueDate) < new Date()
+        new Date(a.dueDate) < new Date(),
     );
 
-    // Check ready for close
     const readyForClose = overdueActions.length === 0 && blockedCount === 0;
 
-    // Get blocked/risk activities for table (activities needing attention)
     const blockedActivities = activities
-      .filter((a) => a.isBlocked || a.ragStatus === "Red" || a.ragStatus === "Amber")
+      .filter(
+        (a) => a.isBlocked || a.ragStatus === "Red" || a.ragStatus === "Amber",
+      )
       .slice(0, 10)
       .map((a) => {
         const linkedAction = actions.find(
-          (act) => act.linkedActivity?.activityId === a.activityId
+          (act) => act.linkedActivity?.activityId === a.activityId,
         );
         return {
           id: a.activityId,
@@ -499,12 +508,16 @@ router.get("/weekly", protect, async (req, res) => {
           rag: a.ragStatus,
           owner: a.ownerName || "-",
           blocker: a.blocker || (a.isBlocked ? "Blocked" : "Needs attention"),
-          linkedAction: linkedAction ? `ACT-${String(linkedAction._id).slice(-4).toUpperCase()}` : "-",
-          status: linkedAction && new Date(linkedAction.dueDate) < today ? "Overdue" : "Open",
+          linkedAction: linkedAction
+            ? `ACT-${String(linkedAction._id).slice(-4).toUpperCase()}`
+            : "-",
+          status:
+            linkedAction && new Date(linkedAction.dueDate) < today
+              ? "Overdue"
+              : "Open",
         };
       });
 
-    // Weekly plan preview - first 10 activities (sorted by RAG priority: Green first for committed work)
     const sortedActivities = [...activities].sort((a, b) => {
       const ragOrder = { Green: 1, Amber: 2, Red: 3 };
       return (ragOrder[a.ragStatus] || 4) - (ragOrder[b.ragStatus] || 4);
@@ -513,7 +526,12 @@ router.get("/weekly", protect, async (req, res) => {
     const weeklyPlanPreview = sortedActivities.slice(0, 10).map((a) => ({
       activityId: a.activityId,
       activityName: a.activityName,
-      weekZone: a.ragStatus === "Green" ? "Weeks 1-2" : a.ragStatus === "Amber" ? "Weeks 3-4" : "Weeks 5-6",
+      weekZone:
+        a.ragStatus === "Green"
+          ? "Weeks 1-2"
+          : a.ragStatus === "Amber"
+            ? "Weeks 3-4"
+            : "Weeks 5-6",
       startDate: a.startDate,
       finishDate: a.finishDate,
       duration: a.duration,
@@ -522,7 +540,6 @@ router.get("/weekly", protect, async (req, res) => {
       activityStatus: a.activityStatus || "Ready",
     }));
 
-    // Planner to-do (from open actions)
     const plannerToDo = openActions.slice(0, 10).map((action) => ({
       activityId: action.linkedActivity?.activityId || "-",
       activityName: action.linkedActivity?.activityName || action.title,
