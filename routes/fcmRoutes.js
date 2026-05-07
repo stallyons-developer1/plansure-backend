@@ -102,7 +102,6 @@ router.patch("/toggle-push", protect, async (req, res) => {
   }
 });
 
-// Test endpoint to debug push notifications
 router.post("/test-push", protect, async (req, res) => {
   try {
     const { sendToUser } = require("../services/fcmService");
@@ -110,7 +109,7 @@ router.post("/test-push", protect, async (req, res) => {
     const result = await sendToUser(req.admin._id, {
       title: "Test Push Notification",
       body: "If you see this, FCM is working!",
-      data: { type: "test" }
+      data: { type: "test" },
     });
 
     return sendSuccess(res, { fcmResult: result }, "Test push sent");
@@ -120,7 +119,6 @@ router.post("/test-push", protect, async (req, res) => {
   }
 });
 
-// Clear all tokens for user
 router.delete("/clear-all-tokens", protect, async (req, res) => {
   try {
     await Admin.findByIdAndUpdate(req.admin._id, {

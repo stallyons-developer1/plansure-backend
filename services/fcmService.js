@@ -53,7 +53,6 @@ const sendToTokens = async (tokens, notification, userId = null) => {
     return { success: false, reason: "No tokens provided" };
   }
 
-  // Use data-only message to ensure it goes through service worker
   const message = {
     data: {
       title: notification.title || "New Notification",
@@ -62,7 +61,8 @@ const sendToTokens = async (tokens, notification, userId = null) => {
       type: notification.data?.type || "general",
       actionId: notification.data?.actionId || "",
       projectId: notification.data?.projectId || "",
-      notificationId: notification.data?.notificationId || Date.now().toString(),
+      notificationId:
+        notification.data?.notificationId || Date.now().toString(),
     },
     webpush: {
       headers: {
