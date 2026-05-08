@@ -3,6 +3,7 @@ const router = express.Router();
 const fs = require("fs");
 const path = require("path");
 const Programme = require("../models/Programme");
+const Project = require("../models/Project");
 const Action = require("../models/Action");
 const { protect, adminOnly } = require("../middleware/authMiddleware");
 const { uploadToDisk } = require("../middleware/upload");
@@ -467,6 +468,41 @@ router.post(
         atRisk: activities.filter((a) => a.activityStatus === "At Risk").length,
         ready: activities.filter((a) => a.activityStatus === "Ready").length,
       };
+
+      // Validate activity dates against project dates
+      if (project) {
+        const projectData = await Project.findById(project).select("startDate endDate name");
+        if (projectData && projectData.startDate) {
+          const projectStartDate = new Date(projectData.startDate);
+          projectStartDate.setHours(0, 0, 0, 0);
+
+          // Find activities with dates before project start date
+          const invalidActivities = activities.filter((activity) => {
+            if (activity.startDateParsed) {
+              const activityStart = new Date(activity.startDateParsed);
+              activityStart.setHours(0, 0, 0, 0);
+              return activityStart < projectStartDate;
+            }
+            return false;
+          });
+
+          if (invalidActivities.length > 0) {
+            // Clean up uploaded file
+            if (req.file && req.file.path && fs.existsSync(req.file.path)) {
+              fs.unlinkSync(req.file.path);
+            }
+
+            const projectStartFormatted = projectStartDate.toISOString().split('T')[0];
+            const sampleActivities = invalidActivities.slice(0, 3).map(a => a.activityId).join(", ");
+            const moreCount = invalidActivities.length > 3 ? ` and ${invalidActivities.length - 3} more` : "";
+
+            return sendValidationError(res, [{
+              field: "programme",
+              message: `Programme contains ${invalidActivities.length} activities with dates before the project start date (${projectStartFormatted}). Activities: ${sampleActivities}${moreCount}. Please upload a programme with dates matching the project timeline.`
+            }]);
+          }
+        }
+      }
 
       const startOfYear = new Date(today.getFullYear(), 0, 1);
       const days = Math.floor((today - startOfYear) / (24 * 60 * 60 * 1000));
