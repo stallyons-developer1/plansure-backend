@@ -6,6 +6,39 @@ const Action = require("../models/Action");
 const { protect } = require("../middleware/authMiddleware");
 const { sendError, sendSuccess } = require("../utils/errorResponse");
 
+// Helper function to get accessible projects for planners
+const getPlannerAccessibleProjects = async (admin) => {
+  // Get projects directly assigned to the planner
+  const userAssignedProjects = (admin.projects || []).map((p) => p.toString());
+
+  // Get projects from actions assigned to the planner
+  const userActions = await Action.find({
+    $or: [
+      { assignee: admin._id },
+      { "previousAssignees.user": admin._id },
+    ],
+  }).select("programme");
+
+  let actionProjectIds = [];
+  if (userActions.length > 0) {
+    const programmeIds = [...new Set(userActions.map((a) => a.programme.toString()))];
+    const programmes = await Programme.find({
+      _id: { $in: programmeIds },
+    }).select("project");
+    actionProjectIds = programmes.map((p) => p.project?.toString()).filter(Boolean);
+  }
+
+  // Get projects where planner is in the team
+  const teamProjects = await Project.find({
+    "team.user": admin._id,
+    status: { $ne: "Cancelled" },
+  }).select("_id");
+  const teamProjectIds = teamProjects.map((p) => p._id.toString());
+
+  // Combine all project IDs
+  return [...new Set([...userAssignedProjects, ...actionProjectIds, ...teamProjectIds])];
+};
+
 const parseDate = (dateStr) => {
   if (!dateStr) return null;
   const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
@@ -36,7 +69,13 @@ const calculateRAG = (activity, today) => {
   const startDate = parseDate(activity.startDate);
   const finishDate = parseDate(activity.finishDate);
 
-  if (activity.status === "Completed") {
+  // Check if completed (status or "A" suffix in dates means Actual/Complete)
+  const isCompleted =
+    activity.status === "Completed" ||
+    (activity.startDate && activity.startDate.includes(" A")) ||
+    (activity.finishDate && activity.finishDate.includes(" A"));
+
+  if (isCompleted) {
     return "Green";
   }
 
@@ -68,8 +107,39 @@ const calculateRAG = (activity, today) => {
 
 router.get("/stats", protect, async (req, res) => {
   try {
-    const projects = await Project.find({ status: { $ne: "Cancelled" } });
-    const projectIds = projects.map((p) => p._id);
+    const { projectId } = req.query;
+
+    let projects;
+    let projectIds;
+
+    if (projectId) {
+      // Filter by specific project
+      const project = await Project.findById(projectId);
+      projects = project ? [project] : [];
+      projectIds = projects.map((p) => p._id);
+    } else if (req.admin.role === "planner") {
+      // Planners see projects they have access to (assigned, team member, or via actions)
+      const accessibleProjectIds = await getPlannerAccessibleProjects(req.admin);
+      if (accessibleProjectIds.length === 0) {
+        return sendSuccess(res, {
+          stats: {
+            projects: { total: 0, byPhase: {} },
+            cycle: { current: "N/A", status: "N/A", dayInfo: null },
+            activities: { total: 0, inLookahead: 0, green: 0, amber: 0, red: 0, grey: 0 },
+            actions: { open: 0, overdue: 0, pending: 0 },
+          },
+        });
+      }
+      projects = await Project.find({
+        _id: { $in: accessibleProjectIds },
+        status: { $ne: "Cancelled" },
+      });
+      projectIds = projects.map((p) => p._id);
+    } else {
+      // Admins see all non-cancelled projects
+      projects = await Project.find({ status: { $ne: "Cancelled" } });
+      projectIds = projects.map((p) => p._id);
+    }
 
     const projectsByPhase = projects.reduce((acc, p) => {
       const phase = p.phase || "Other";
@@ -100,17 +170,28 @@ router.get("/stats", protect, async (req, res) => {
       activeProgramme = sortedProgrammes[0];
       cycleStatus = activeProgramme.cycleStatus;
 
-      if (activeProgramme.lookaheadStartDate) {
-        const startOfYear = new Date(
-          new Date(activeProgramme.lookaheadStartDate).getFullYear(),
-          0,
-          1,
-        );
-        const days = Math.floor(
-          (new Date(activeProgramme.lookaheadStartDate) - startOfYear) /
-            (24 * 60 * 60 * 1000),
-        );
-        currentCycle = `W${Math.ceil((days + 1) / 7)}`;
+      // Find the earliest activity start date from the programme
+      const activities = activeProgramme.extractedData?.activities || [];
+      let earliestStartDate = null;
+
+      for (const activity of activities) {
+        const startDate = parseDate(activity.startDate);
+        if (startDate && (!earliestStartDate || startDate < earliestStartDate)) {
+          earliestStartDate = startDate;
+        }
+      }
+
+      if (earliestStartDate) {
+        // Calculate weeks from programme start date to today
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        earliestStartDate.setHours(0, 0, 0, 0);
+
+        const msPerDay = 1000 * 60 * 60 * 24;
+        const daysSinceStart = Math.floor((today - earliestStartDate) / msPerDay);
+        const weekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
+
+        currentCycle = `W${weekNumber}`;
       }
     }
 
@@ -145,14 +226,15 @@ router.get("/stats", protect, async (req, res) => {
 
     let cycleDayInfo = null;
     if (activeProgramme?.lookaheadStartDate) {
-      const cycleStart = new Date(activeProgramme.lookaheadStartDate);
       const today = new Date();
-      const daysSinceStart = Math.floor(
-        (today - cycleStart) / (24 * 60 * 60 * 1000),
-      );
-      const cycleDuration = 5;
-      const currentDay = Math.min(daysSinceStart + 1, cycleDuration);
-      const daysRemaining = Math.max(0, cycleDuration - currentDay);
+
+      // Get current day of week (0 = Sunday, 1 = Monday, ..., 6 = Saturday)
+      // Convert to Monday-based: Monday = 1, Sunday = 7
+      const dayOfWeek = today.getDay();
+      const currentDay = dayOfWeek === 0 ? 7 : dayOfWeek; // Sunday becomes 7
+
+      const cycleDuration = 7;
+      const daysRemaining = cycleDuration - currentDay;
 
       cycleDayInfo = {
         currentDay,
@@ -197,10 +279,27 @@ router.get("/stats", protect, async (req, res) => {
 
 router.get("/rag-distribution", protect, async (req, res) => {
   try {
-    const { programmeId } = req.query;
+    const { programmeId, projectId } = req.query;
 
-    const projects = await Project.find({ status: { $ne: "Cancelled" } });
-    const projectIds = projects.map((p) => p._id);
+    let projects;
+    let projectIds;
+
+    if (projectId) {
+      const project = await Project.findById(projectId);
+      projects = project ? [project] : [];
+      projectIds = projects.map((p) => p._id);
+    } else if (req.admin.role === "planner") {
+      // Planners see projects they have access to
+      const accessibleProjectIds = await getPlannerAccessibleProjects(req.admin);
+      projects = await Project.find({
+        _id: { $in: accessibleProjectIds },
+        status: { $ne: "Cancelled" },
+      });
+      projectIds = projects.map((p) => p._id);
+    } else {
+      projects = await Project.find({ status: { $ne: "Cancelled" } });
+      projectIds = projects.map((p) => p._id);
+    }
 
     let programmes;
     if (programmeId) {
@@ -264,10 +363,27 @@ router.get("/rag-distribution", protect, async (req, res) => {
 
 router.get("/recent-activity", protect, async (req, res) => {
   try {
-    const { limit = 10 } = req.query;
+    const { limit = 10, projectId } = req.query;
 
-    const projects = await Project.find({ status: { $ne: "Cancelled" } });
-    const projectIds = projects.map((p) => p._id);
+    let projects;
+    let projectIds;
+
+    if (projectId) {
+      const project = await Project.findById(projectId);
+      projects = project ? [project] : [];
+      projectIds = projects.map((p) => p._id);
+    } else if (req.admin.role === "planner") {
+      // Planners see projects they have access to
+      const accessibleProjectIds = await getPlannerAccessibleProjects(req.admin);
+      projects = await Project.find({
+        _id: { $in: accessibleProjectIds },
+        status: { $ne: "Cancelled" },
+      });
+      projectIds = projects.map((p) => p._id);
+    } else {
+      projects = await Project.find({ status: { $ne: "Cancelled" } });
+      projectIds = projects.map((p) => p._id);
+    }
 
     const existingProgrammes = await Programme.find({
       project: { $in: projectIds },
@@ -290,10 +406,12 @@ router.get("/recent-activity", protect, async (req, res) => {
       .populate("createdBy", "name email")
       .populate("assignee", "name email");
 
-    const recentProjects = await Project.find({ status: { $ne: "Cancelled" } })
-      .sort({ createdAt: -1 })
-      .limit(3)
-      .populate("createdBy", "name email");
+    const recentProjects = projectId
+      ? projects
+      : await Project.find({ status: { $ne: "Cancelled" } })
+          .sort({ createdAt: -1 })
+          .limit(3)
+          .populate("createdBy", "name email");
 
     const activities = [];
 
@@ -345,12 +463,537 @@ router.get("/recent-activity", protect, async (req, res) => {
   }
 });
 
+router.get("/governance", protect, async (req, res) => {
+  try {
+    const { projectId } = req.query;
+    const CycleHistory = require("../models/CycleHistory");
+
+    // Get all projects or filter by projectId
+    let projects;
+    let projectIds;
+
+    if (projectId) {
+      const project = await Project.findById(projectId);
+      projects = project ? [project] : [];
+      projectIds = projects.map((p) => p._id);
+    } else if (req.admin.role === "planner") {
+      // Planners see projects they have access to (assigned, team member, or via actions)
+      const accessibleProjectIds = await getPlannerAccessibleProjects(req.admin);
+      if (accessibleProjectIds.length === 0) {
+        return sendSuccess(res, {
+          governance: {
+            hasData: false,
+            message: "No projects assigned to you. Contact an admin to get assigned to a project.",
+          },
+        });
+      }
+      projects = await Project.find({
+        _id: { $in: accessibleProjectIds },
+        status: { $ne: "Cancelled" },
+      });
+      projectIds = projects.map((p) => p._id);
+    } else {
+      // Admins see all projects
+      projects = await Project.find({ status: { $ne: "Cancelled" } });
+      projectIds = projects.map((p) => p._id);
+    }
+
+    // Get all programmes for these projects
+    const programmes = await Programme.find({
+      project: { $in: projectIds },
+    }).sort({ createdAt: -1 });
+
+    // Check if there's any data to show
+    if (projects.length === 0 || programmes.length === 0) {
+      return sendSuccess(res, {
+        governance: {
+          hasData: false,
+          message: programmes.length === 0
+            ? "No programmes uploaded yet. Upload a programme PDF to see governance data."
+            : "No projects found. Create a project to get started.",
+        },
+      });
+    }
+
+    const programmeIds = programmes.map((p) => p._id);
+
+    // Get all cycle history
+    const cycleHistory = await CycleHistory.find({
+      programme: { $in: programmeIds },
+    })
+      .populate("closedBy", "name")
+      .sort({ createdAt: -1 });
+
+    // Get all actions
+    const actions = await Action.find({
+      programme: { $in: programmeIds },
+    });
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Get earliest and latest dates from all programme activities
+    let earliestStartDate = null;
+    let latestEndDate = null;
+    let allActivities = [];
+
+    for (const prog of programmes) {
+      const activities = prog.extractedData?.activities || [];
+      allActivities = allActivities.concat(activities);
+
+      for (const activity of activities) {
+        const startDate = parseDate(activity.startDate);
+        const finishDate = parseDate(activity.finishDate);
+
+        if (startDate && (!earliestStartDate || startDate < earliestStartDate)) {
+          earliestStartDate = startDate;
+        }
+        if (finishDate && (!latestEndDate || finishDate > latestEndDate)) {
+          latestEndDate = finishDate;
+        }
+      }
+    }
+
+    // Calculate total weeks from programme span
+    const msPerDay = 1000 * 60 * 60 * 24;
+    let totalWeeksFromProgramme = 0;
+    let currentWeekNumber = 1;
+
+    if (earliestStartDate && latestEndDate) {
+      const totalDays = Math.ceil((latestEndDate - earliestStartDate) / msPerDay);
+      totalWeeksFromProgramme = Math.ceil(totalDays / 7);
+
+      // Calculate current week number
+      const daysSinceStart = Math.floor((today - earliestStartDate) / msPerDay);
+      currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
+    }
+
+    // Use cycle history count if available, otherwise use calculated weeks
+    const totalWeeks = cycleHistory.length > 0 ? cycleHistory.length : Math.min(currentWeekNumber, totalWeeksFromProgramme);
+
+    // Calculate weeks closed on time (Normal Close vs PM Override)
+    const weeksClosedOnTime = cycleHistory.filter(
+      (c) => c.closeType === "Normal Close"
+    ).length;
+    const pmOverrides = cycleHistory.filter(
+      (c) => c.closeType === "PM Override"
+    ).length;
+
+    // Calculate Weeks Closed On Time Score
+    // STRICT MODE: 0 weeks closed = 0 score (no estimates)
+    let weeksClosedOnTimeScore = 0;
+    if (cycleHistory.length > 0) {
+      weeksClosedOnTimeScore = Math.round((weeksClosedOnTime / cycleHistory.length) * 100);
+    }
+    // If no weeks closed, score remains 0
+
+    // Calculate overdue actions
+    const overdueActions = actions.filter(
+      (a) =>
+        a.status !== "Completed" &&
+        a.status !== "Cancelled" &&
+        new Date(a.dueDate) < today
+    );
+    const totalActions = actions.length;
+    const closedActions = actions.filter((a) => a.status === "Completed");
+
+    // Calculate Overdue Action Rate Score (Weight 25%)
+    const overdueRate =
+      totalActions > 0
+        ? Math.round((overdueActions.length / totalActions) * 100)
+        : 0;
+    const overdueActionRateScore = totalActions > 0 ? Math.max(0, 100 - overdueRate * 2) : 100;
+
+    // Calculate Action Closure Speed (Weight 20%)
+    const closureRate =
+      totalActions > 0
+        ? Math.round((closedActions.length / totalActions) * 100)
+        : 0;
+    const actionClosureSpeedScore = closureRate;
+
+    // Build weekly data from programme activities (not just cycle history)
+    const weeklyReadinessData = [];
+    const actionsData = [];
+    const ragTrendData = [];
+    const historicalWeeks = [];
+
+    // Helper to calculate RAG for activities in a specific week only
+    const calculateWeekRAG = (weekStartDate, weekEndDate, activities) => {
+      let green = 0, amber = 0, red = 0;
+
+      for (const activity of activities) {
+        const actStart = parseDate(activity.startDate);
+        const actFinish = parseDate(activity.finishDate);
+
+        if (!actStart) continue;
+
+        // Check if activity STARTS within this week OR is active during this week
+        // Activity is in this week if:
+        // 1. It starts within this week (actStart >= weekStart AND actStart <= weekEnd), OR
+        // 2. It spans this week (started before and finishes after)
+        const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+        const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+
+        if (!startsThisWeek && !spansThisWeek) continue;
+
+        // Check if activity is completed
+        const isCompleted = activity.status === "Completed" ||
+          (activity.startDate && activity.startDate.includes(" A")) ||
+          (activity.finishDate && activity.finishDate.includes(" A"));
+
+        if (isCompleted) {
+          green++;
+        } else if (actFinish && actFinish < weekEndDate) {
+          // Should have finished by this week - overdue
+          red++;
+        } else if (actStart <= weekEndDate) {
+          // Starting this week or already started - check if on track
+          // If it's a future week (weekStart > today), we predict based on preparation
+          if (weekStartDate > today) {
+            // Future week - assume on track unless blocked
+            if (activity.isBlocked) {
+              red++;
+            } else {
+              amber++; // Future activities are amber (need monitoring)
+            }
+          } else {
+            green++; // Current/past week activities that started
+          }
+        } else {
+          amber++; // Activity spans but hasn't started yet
+        }
+      }
+
+      return { green, amber, red, total: green + amber + red };
+    };
+
+    // Generate weekly data for ALL weeks from programme start to programme end
+    if (earliestStartDate) {
+      // Show all weeks in the programme (not just until today)
+      const weeksToGenerate = totalWeeksFromProgramme;
+
+      for (let weekNum = 1; weekNum <= weeksToGenerate; weekNum++) {
+        const weekStartDate = new Date(earliestStartDate);
+        weekStartDate.setDate(weekStartDate.getDate() + (weekNum - 1) * 7);
+
+        const weekEndDate = new Date(weekStartDate);
+        weekEndDate.setDate(weekStartDate.getDate() + 6);
+
+        const rag = calculateWeekRAG(weekStartDate, weekEndDate, allActivities);
+        const readinessPercent = rag.total > 0 ? Math.round((rag.green / rag.total) * 100) : 0;
+
+        // Find matching cycle history if exists
+        const matchingCycle = cycleHistory.find((c) => c.weekNumber === weekNum);
+
+        weeklyReadinessData.push({
+          week: `W${weekNum}`,
+          value: matchingCycle ?
+            Math.round(((matchingCycle.stats?.green || 0) / (matchingCycle.stats?.totalActivities || 1)) * 100) :
+            readinessPercent,
+        });
+
+        // Count actions for this week (created or due within this week)
+        const weekActions = actions.filter((a) => {
+          const createdAt = new Date(a.createdAt);
+          return createdAt >= weekStartDate && createdAt <= weekEndDate;
+        });
+        const weekClosedActions = actions.filter((a) => {
+          if (a.status !== "Completed" || !a.completedAt) return false;
+          const completedAt = new Date(a.completedAt);
+          return completedAt >= weekStartDate && completedAt <= weekEndDate;
+        });
+
+        actionsData.push({
+          week: `W${weekNum}`,
+          raised: matchingCycle?.stats?.actionsTotal || weekActions.length,
+          closed: matchingCycle?.stats?.actionsCompleted || weekClosedActions.length,
+        });
+
+        ragTrendData.push({
+          week: `W${weekNum}`,
+          green: matchingCycle?.stats?.green || rag.green,
+          amber: matchingCycle?.stats?.amber || rag.amber,
+          red: matchingCycle?.stats?.red || rag.red,
+        });
+
+        // Build historical weeks
+        const formatDate = (d) => {
+          const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+          return `${String(d.getDate()).padStart(2, "0")} ${months[d.getMonth()]} ${d.getFullYear()}`;
+        };
+
+        // Determine week status based on timing and data
+        let weekStatus;
+        let weekIcon;
+        let closeType;
+
+        if (matchingCycle) {
+          // Week has been closed
+          weekStatus = matchingCycle.closeType === "Normal Close" ? "Green" : "Amber";
+          weekIcon = matchingCycle.closeType === "Normal Close" ? "check" : "warning";
+          closeType = matchingCycle.closeType;
+        } else if (weekEndDate < today) {
+          // Past week - auto-calculated
+          weekStatus = rag.red > rag.green ? "Amber" : "Green";
+          weekIcon = weekStatus === "Green" ? "check" : "warning";
+          closeType = "Auto-calculated";
+        } else if (weekStartDate <= today && weekEndDate >= today) {
+          // Current week
+          weekStatus = "Current";
+          weekIcon = "current";
+          closeType = "In Progress";
+        } else {
+          // Future week
+          weekStatus = "Upcoming";
+          weekIcon = "upcoming";
+          closeType = "Upcoming";
+        }
+
+        historicalWeeks.push({
+          week: weekNum,
+          date: formatDate(weekEndDate),
+          status: weekStatus,
+          icon: weekIcon,
+          score: matchingCycle?.score || readinessPercent,
+          stats: matchingCycle?.stats || {
+            totalActivities: rag.total,
+            green: rag.green,
+            amber: rag.amber,
+            red: rag.red,
+            actionsTotal: weekActions.length,
+            actionsCompleted: weekClosedActions.length,
+          },
+          closeType: closeType,
+          notes: matchingCycle?.notes || "",
+        });
+      }
+    }
+
+    // Calculate average readiness from PAST and CURRENT weeks only (not future weeks)
+    const currentWeekIndex = Math.min(currentWeekNumber, weeklyReadinessData.length);
+    const pastAndCurrentWeeks = weeklyReadinessData.slice(0, currentWeekIndex);
+    const avgReadiness = pastAndCurrentWeeks.length > 0
+      ? Math.round(pastAndCurrentWeeks.reduce((sum, w) => sum + w.value, 0) / pastAndCurrentWeeks.length)
+      : 0;
+
+    // Calculate Readiness Trend Stability (Weight 15%)
+    // Only use past and current weeks, not future weeks
+    let readinessTrendScore = 65;
+    if (pastAndCurrentWeeks.length >= 2) {
+      const readinessValues = pastAndCurrentWeeks.map((w) => w.value);
+      const mean = readinessValues.reduce((a, b) => a + b, 0) / readinessValues.length;
+      const variance = readinessValues.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / readinessValues.length;
+      readinessTrendScore = Math.max(0, Math.min(100, 100 - Math.sqrt(variance)));
+    } else if (pastAndCurrentWeeks.length === 1) {
+      // Only 1 week - assume stable (100%)
+      readinessTrendScore = 100;
+    }
+
+    // Calculate PM Override Frequency Score
+    const pmOverrideRate = cycleHistory.length > 0
+      ? Math.round((pmOverrides / cycleHistory.length) * 100)
+      : 0;
+    const pmOverrideFrequencyScore = Math.max(0, 100 - pmOverrideRate * 2);
+
+    // Calculate DYNAMIC WEIGHTS based on scores
+    // Higher scores get more weight, proportional to their contribution
+    // Metrics with the same score will always have the same weight
+    const allScores = {
+      weeksClosedOnTime: weeksClosedOnTimeScore,
+      overdueActionRate: overdueActionRateScore,
+      actionClosureSpeed: actionClosureSpeedScore,
+      readinessTrendStability: Math.round(readinessTrendScore),
+      pmOverrideFrequency: pmOverrideFrequencyScore,
+    };
+
+    // Sum all scores
+    const totalScoreSum = Object.values(allScores).reduce((sum, score) => sum + score, 0);
+
+    // Calculate dynamic weights (proportional to each score)
+    // Use exact rounding without any adjustment
+    const dynamicWeights = {};
+    if (totalScoreSum > 0) {
+      for (const [key, score] of Object.entries(allScores)) {
+        const rawWeight = (score / totalScoreSum) * 100;
+        dynamicWeights[key] = Math.round(rawWeight);
+      }
+    } else {
+      // Equal distribution if no scores
+      for (const key of Object.keys(allScores)) {
+        dynamicWeights[key] = 20;
+      }
+    }
+
+    // Calculate overall governance score using dynamic weights
+    const governanceScore = Math.round(
+      (allScores.weeksClosedOnTime * dynamicWeights.weeksClosedOnTime +
+       allScores.overdueActionRate * dynamicWeights.overdueActionRate +
+       allScores.actionClosureSpeed * dynamicWeights.actionClosureSpeed +
+       allScores.readinessTrendStability * dynamicWeights.readinessTrendStability +
+       allScores.pmOverrideFrequency * dynamicWeights.pmOverrideFrequency) / 100
+    );
+
+    // Determine governance status based on score
+    let governanceStatus = "GREEN";
+    if (governanceScore < 50) governanceStatus = "RED";
+    else if (governanceScore < 70) governanceStatus = "AMBER";
+
+    // Calculate overdue trend
+    const recentOverdue = actions.filter(
+      (a) =>
+        a.status !== "Completed" &&
+        a.status !== "Cancelled" &&
+        new Date(a.dueDate) < today &&
+        new Date(a.createdAt) > new Date(today - 14 * 24 * 60 * 60 * 1000)
+    ).length;
+    const olderOverdue = actions.filter(
+      (a) =>
+        a.status !== "Completed" &&
+        a.status !== "Cancelled" &&
+        new Date(a.dueDate) < today &&
+        new Date(a.createdAt) <= new Date(today - 14 * 24 * 60 * 60 * 1000)
+    ).length;
+    const overdueTrend =
+      recentOverdue < olderOverdue
+        ? "Down"
+        : recentOverdue > olderOverdue
+          ? "Up"
+          : "Stable";
+
+    // Get blocked activities to determine recurring blockers
+    let blockerTypes = new Set();
+    for (const prog of programmes) {
+      const activities = prog.extractedData?.activities || [];
+      activities.forEach((a) => {
+        if (a.isBlocked && a.blocker) {
+          blockerTypes.add(a.blocker.split(" ")[0]);
+        }
+      });
+    }
+
+    // Build constraint intelligence data
+    const constraintData = [];
+    const blockerCounts = {};
+
+    for (const prog of programmes) {
+      const activities = prog.extractedData?.activities || [];
+      activities.forEach((a) => {
+        if (a.isBlocked && a.blocker) {
+          const blockerType = a.blocker;
+          if (!blockerCounts[blockerType]) {
+            blockerCounts[blockerType] = {
+              type: blockerType,
+              frequency: 0,
+              lastSeen: null,
+            };
+          }
+          blockerCounts[blockerType].frequency++;
+          const progDate = new Date(prog.createdAt);
+          if (!blockerCounts[blockerType].lastSeen || progDate > blockerCounts[blockerType].lastSeen) {
+            blockerCounts[blockerType].lastSeen = progDate;
+          }
+        }
+      });
+    }
+
+    Object.values(blockerCounts)
+      .sort((a, b) => b.frequency - a.frequency)
+      .slice(0, 6)
+      .forEach((blocker, index) => {
+        let lastSeenWeek = "Current";
+        if (blocker.lastSeen && earliestStartDate) {
+          const daysSinceStart = Math.floor((blocker.lastSeen - earliestStartDate) / msPerDay);
+          const weekNum = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
+          lastSeenWeek = `Week ${weekNum}`;
+        }
+
+        constraintData.push({
+          type: blocker.type,
+          frequency: blocker.frequency,
+          trend: index < 2 ? "up" : index < 4 ? "stable" : "down",
+          lastSeen: lastSeenWeek,
+        });
+      });
+
+    // Return response
+    return sendSuccess(res, {
+      governance: {
+        hasData: true,
+        score: governanceScore,
+        status: governanceStatus,
+        metrics: {
+          weeksClosedOnTime: {
+            score: allScores.weeksClosedOnTime,
+            weight: dynamicWeights.weeksClosedOnTime,
+            color: allScores.weeksClosedOnTime >= 70 ? "green" : allScores.weeksClosedOnTime >= 50 ? "amber" : "red",
+          },
+          overdueActionRate: {
+            score: allScores.overdueActionRate,
+            weight: dynamicWeights.overdueActionRate,
+            color: allScores.overdueActionRate >= 70 ? "green" : allScores.overdueActionRate >= 50 ? "amber" : "red",
+          },
+          actionClosureSpeed: {
+            score: allScores.actionClosureSpeed,
+            weight: dynamicWeights.actionClosureSpeed,
+            color: allScores.actionClosureSpeed >= 70 ? "green" : allScores.actionClosureSpeed >= 50 ? "amber" : "red",
+          },
+          readinessTrendStability: {
+            score: allScores.readinessTrendStability,
+            weight: dynamicWeights.readinessTrendStability,
+            color: allScores.readinessTrendStability >= 70 ? "green" : allScores.readinessTrendStability >= 50 ? "amber" : "red",
+          },
+          pmOverrideFrequency: {
+            score: allScores.pmOverrideFrequency,
+            weight: dynamicWeights.pmOverrideFrequency,
+            color: allScores.pmOverrideFrequency >= 70 ? "green" : allScores.pmOverrideFrequency >= 50 ? "amber" : "red",
+          },
+        },
+        stats: {
+          totalWeeks: totalWeeksFromProgramme || totalWeeks,
+          avgReadiness: `${avgReadiness}%`,
+          totalActionsRaised: totalActions,
+          totalClosed: closedActions.length,
+          overdueTrend,
+          recurringBlockers: blockerTypes.size,
+        },
+        weeklyReadinessData,
+        actionsData,
+        ragTrendData,
+        constraintData: constraintData.length > 0 ? constraintData : [
+          { type: "No blockers", frequency: 0, trend: "stable", lastSeen: "-" },
+        ],
+        historicalWeeks,
+      },
+    });
+  } catch (error) {
+    console.error("Governance dashboard error:", error);
+    return sendError(res, "Server error");
+  }
+});
+
 router.get("/weekly", protect, async (req, res) => {
   try {
     const { projectId } = req.query;
 
-    const projects = await Project.find({ status: { $ne: "Cancelled" } });
-    const projectIds = projects.map((p) => p._id);
+    let projects;
+    let projectIds;
+
+    if (projectId) {
+      const project = await Project.findById(projectId);
+      projects = project ? [project] : [];
+      projectIds = projects.map((p) => p._id);
+    } else if (req.admin.role === "planner") {
+      // Planners see projects they have access to
+      const accessibleProjectIds = await getPlannerAccessibleProjects(req.admin);
+      projects = await Project.find({
+        _id: { $in: accessibleProjectIds },
+        status: { $ne: "Cancelled" },
+      });
+      projectIds = projects.map((p) => p._id);
+    } else {
+      projects = await Project.find({ status: { $ne: "Cancelled" } });
+      projectIds = projects.map((p) => p._id);
+    }
 
     if (projects.length === 0) {
       return sendSuccess(res, {
@@ -395,16 +1038,35 @@ router.get("/weekly", protect, async (req, res) => {
     let closeDeadline = "";
     let cycleStatus = "Draft";
 
-    if (activeProgramme?.lookaheadStartDate) {
-      const startDate = new Date(activeProgramme.lookaheadStartDate);
-      const startOfYear = new Date(startDate.getFullYear(), 0, 1);
-      const days = Math.floor(
-        (startDate - startOfYear) / (24 * 60 * 60 * 1000),
-      );
-      weekNumber = `Week ${Math.ceil((days + 1) / 7)}`;
+    // Find the earliest activity start date from the programme
+    const programmeActivities = activeProgramme?.extractedData?.activities || [];
+    let earliestStartDate = null;
 
-      const endDate = new Date(startDate);
-      endDate.setDate(endDate.getDate() + 6);
+    for (const activity of programmeActivities) {
+      const actStartDate = parseDate(activity.startDate);
+      if (actStartDate && (!earliestStartDate || actStartDate < earliestStartDate)) {
+        earliestStartDate = actStartDate;
+      }
+    }
+
+    if (earliestStartDate) {
+      // Calculate weeks from programme start date to today
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      earliestStartDate.setHours(0, 0, 0, 0);
+
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const daysSinceStart = Math.floor((today - earliestStartDate) / msPerDay);
+      const weekNum = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
+
+      weekNumber = `Week ${weekNum}`;
+
+      // Calculate current week's start and end dates
+      const currentWeekStart = new Date(earliestStartDate);
+      currentWeekStart.setDate(currentWeekStart.getDate() + (weekNum - 1) * 7);
+
+      const currentWeekEnd = new Date(currentWeekStart);
+      currentWeekEnd.setDate(currentWeekStart.getDate() + 6);
 
       const formatDate = (d) => {
         const day = d.getDate();
@@ -425,29 +1087,10 @@ router.get("/weekly", protect, async (req, res) => {
         return `${day} ${months[d.getMonth()]} ${d.getFullYear()}`;
       };
 
-      const formatShort = (d) => {
-        const day = d.getDate();
-        const months = [
-          "Jan",
-          "Feb",
-          "Mar",
-          "Apr",
-          "May",
-          "Jun",
-          "Jul",
-          "Aug",
-          "Sep",
-          "Oct",
-          "Nov",
-          "Dec",
-        ];
-        return `${day}-${day + 6} ${months[d.getMonth()]} ${d.getFullYear()}`;
-      };
-
-      weekDates = `(${startDate.getDate()}-${endDate.getDate()} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][startDate.getMonth()]} ${startDate.getFullYear()})`;
-      weekOpened = formatDate(startDate);
-      closeDeadline = formatDate(endDate);
-      cycleStatus = activeProgramme.cycleStatus || "Draft";
+      weekDates = `(${currentWeekStart.getDate()}-${currentWeekEnd.getDate()} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][currentWeekStart.getMonth()]} ${currentWeekStart.getFullYear()})`;
+      weekOpened = formatDate(currentWeekStart);
+      closeDeadline = formatDate(currentWeekEnd);
+      cycleStatus = activeProgramme?.cycleStatus || "Draft";
     }
 
     const rawActivities = activeProgramme?.extractedData?.activities || [];

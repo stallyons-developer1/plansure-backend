@@ -50,6 +50,29 @@ const programmeSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    closedWeeks: [{
+      weekNumber: Number,
+      closedAt: Date,
+      closedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Admin",
+      },
+      closeType: {
+        type: String,
+        enum: ["Normal Close", "PM Override"],
+        default: "Normal Close",
+      },
+      stats: {
+        totalActivities: Number,
+        green: Number,
+        amber: Number,
+        red: Number,
+      },
+    }],
+    totalWeeks: {
+      type: Number,
+      default: 0,
+    },
     lookaheadWeeks: {
       type: Number,
       default: 6,

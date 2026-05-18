@@ -121,7 +121,283 @@ router.get("/", protect, async (req, res) => {
       .populate("programmes", "name status")
       .sort({ createdAt: -1 });
 
-    return sendSuccess(res, { projects });
+    // Enrich projects with activities count, open actions, and governance score
+    const CycleHistory = require("../models/CycleHistory");
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const enrichedProjects = await Promise.all(
+      projects.map(async (project) => {
+        const projectObj = project.toObject();
+
+        // Get all programmes for this project
+        const programmes = await Programme.find({
+          project: project._id,
+          status: { $in: ["processed", "pending"] },
+        });
+
+        // Get programme IDs for queries
+        const programmeIds = programmes.map((p) => p._id);
+
+        // Get cycle history to check closed weeks
+        const cycleHistory = await CycleHistory.find({
+          programme: { $in: programmeIds },
+        });
+
+        // Calculate total activities and weeks
+        let totalActivities = 0;
+        let completedActivities = 0;
+        let totalWeeks = 0;
+        let closedWeeks = cycleHistory.length;
+
+        // Helper to parse dates
+        const parseDateForProgress = (dateStr) => {
+          if (!dateStr) return null;
+          const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
+          const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+          const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
+          if (!match) return null;
+          const day = parseInt(match[1]);
+          const month = months[match[2]];
+          let year = parseInt(match[3]);
+          year = year < 50 ? 2000 + year : 1900 + year;
+          return new Date(year, month, day);
+        };
+
+        let earliestDate = null;
+        let latestDate = null;
+
+        for (const prog of programmes) {
+          const activities = prog.extractedData?.activities || [];
+          totalActivities += activities.length;
+
+          // Count completed activities
+          completedActivities += activities.filter(
+            (a) =>
+              a.status === "Completed" ||
+              (a.finishDate && a.finishDate.includes(" A"))
+          ).length;
+
+          // Calculate total weeks from programme duration or activity dates
+          const summary = prog.extractedData?.summary;
+          if (summary?.programmeDuration) {
+            const weekMatch = summary.programmeDuration.match(/(\d+)\s*weeks?/i);
+            if (weekMatch) {
+              totalWeeks = Math.max(totalWeeks, parseInt(weekMatch[1]));
+            }
+          }
+
+          // Fallback: calculate weeks from activity dates
+          for (const activity of activities) {
+            const startDate = parseDateForProgress(activity.startDate);
+            const finishDate = parseDateForProgress(activity.finishDate);
+            if (startDate && (!earliestDate || startDate < earliestDate)) {
+              earliestDate = startDate;
+            }
+            if (finishDate && (!latestDate || finishDate > latestDate)) {
+              latestDate = finishDate;
+            }
+          }
+        }
+
+        // Calculate totalWeeks from dates if not found in summary
+        if (totalWeeks === 0 && earliestDate && latestDate) {
+          const msPerDay = 1000 * 60 * 60 * 24;
+          const totalDays = Math.ceil((latestDate - earliestDate) / msPerDay);
+          totalWeeks = Math.ceil(totalDays / 7);
+        }
+
+        // Get actions data
+        const actions = programmeIds.length > 0
+          ? await Action.find({ programme: { $in: programmeIds } })
+          : [];
+
+        const openActionsCount = actions.filter(
+          (a) => a.status !== "Completed" && a.status !== "Cancelled"
+        ).length;
+
+        const overdueActions = actions.filter(
+          (a) =>
+            a.status !== "Completed" &&
+            a.status !== "Cancelled" &&
+            new Date(a.dueDate) < today
+        );
+
+        const closedActions = actions.filter((a) => a.status === "Completed");
+
+        // Calculate progress percentage based on closed weeks
+        // Progress = (Closed Weeks / Total Weeks) × 100
+        let progress = 0;
+        if (totalWeeks > 0 && closedWeeks > 0) {
+          progress = Math.round((closedWeeks / totalWeeks) * 100);
+        } else if (totalActivities > 0 && completedActivities > 0) {
+          // Fallback to activity-based progress
+          progress = Math.round((completedActivities / totalActivities) * 100);
+        }
+
+        // Determine if project should be marked as completed
+        // Project is complete if all weeks are closed OR all activities are completed
+        const isProjectComplete = (totalWeeks > 0 && closedWeeks >= totalWeeks) ||
+          (totalActivities > 0 && completedActivities === totalActivities);
+
+        // Update project status if it should be completed
+        if (isProjectComplete && project.status === "Active") {
+          await Project.findByIdAndUpdate(project._id, { status: "Completed" });
+          projectObj.status = "Completed";
+        }
+
+        // Calculate governance score using SAME logic as governance dashboard
+        let governanceScore = 0;
+
+        if (programmes.length > 0) {
+          // 1. Weeks Closed On Time Score
+          const weeksClosedOnTime = cycleHistory.filter(
+            (c) => c.closeType === "Normal Close"
+          ).length;
+          const weeksClosedOnTimeScore = cycleHistory.length > 0
+            ? Math.round((weeksClosedOnTime / cycleHistory.length) * 100)
+            : 0;
+
+          // 2. Overdue Action Rate Score
+          const overdueRate = actions.length > 0
+            ? Math.round((overdueActions.length / actions.length) * 100)
+            : 0;
+          const overdueActionRateScore = actions.length > 0
+            ? Math.max(0, 100 - overdueRate * 2)
+            : 100;
+
+          // 3. Action Closure Speed Score
+          const actionClosureSpeedScore = actions.length > 0
+            ? Math.round((closedActions.length / actions.length) * 100)
+            : 0;
+
+          // 4. Readiness Trend Stability Score - calculate from weekly readiness variance
+          // Helper to parse dates
+          const parseDate = (dateStr) => {
+            if (!dateStr) return null;
+            const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
+            const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+            const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
+            if (!match) return null;
+            const day = parseInt(match[1]);
+            const month = months[match[2]];
+            let year = parseInt(match[3]);
+            year = year < 50 ? 2000 + year : 1900 + year;
+            return new Date(year, month, day);
+          };
+
+          // Calculate weekly readiness values
+          let allActivities = [];
+          let earliestStartDate = null;
+          for (const prog of programmes) {
+            const activities = prog.extractedData?.activities || [];
+            allActivities = allActivities.concat(activities);
+            for (const activity of activities) {
+              const startDate = parseDate(activity.startDate);
+              if (startDate && (!earliestStartDate || startDate < earliestStartDate)) {
+                earliestStartDate = startDate;
+              }
+            }
+          }
+
+          let readinessTrendScore = 65;
+          if (earliestStartDate && allActivities.length > 0) {
+            const msPerDay = 1000 * 60 * 60 * 24;
+            const daysSinceStart = Math.floor((today - earliestStartDate) / msPerDay);
+            const currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
+
+            // Calculate readiness for each week up to current week
+            const weeklyReadinessValues = [];
+            for (let weekNum = 1; weekNum <= currentWeekNumber; weekNum++) {
+              const weekStartDate = new Date(earliestStartDate);
+              weekStartDate.setDate(weekStartDate.getDate() + (weekNum - 1) * 7);
+              const weekEndDate = new Date(weekStartDate);
+              weekEndDate.setDate(weekStartDate.getDate() + 6);
+
+              let green = 0, total = 0;
+              for (const activity of allActivities) {
+                const actStart = parseDate(activity.startDate);
+                const actFinish = parseDate(activity.finishDate);
+                if (!actStart) continue;
+
+                const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+                const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+                if (!startsThisWeek && !spansThisWeek) continue;
+
+                total++;
+                const isCompleted = activity.status === "Completed" ||
+                  (activity.startDate && activity.startDate.includes(" A")) ||
+                  (activity.finishDate && activity.finishDate.includes(" A"));
+                if (isCompleted) green++;
+              }
+
+              if (total > 0) {
+                weeklyReadinessValues.push(Math.round((green / total) * 100));
+              }
+            }
+
+            // Calculate stability from variance
+            if (weeklyReadinessValues.length >= 2) {
+              const mean = weeklyReadinessValues.reduce((a, b) => a + b, 0) / weeklyReadinessValues.length;
+              const variance = weeklyReadinessValues.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / weeklyReadinessValues.length;
+              readinessTrendScore = Math.max(0, Math.min(100, 100 - Math.sqrt(variance)));
+            } else if (weeklyReadinessValues.length === 1) {
+              readinessTrendScore = 100;
+            }
+          }
+
+          // 5. PM Override Frequency Score
+          const pmOverrides = cycleHistory.filter(
+            (c) => c.closeType === "PM Override"
+          ).length;
+          const pmOverrideRate = cycleHistory.length > 0
+            ? Math.round((pmOverrides / cycleHistory.length) * 100)
+            : 0;
+          const pmOverrideFrequencyScore = Math.max(0, 100 - pmOverrideRate * 2);
+
+          // Calculate dynamic weights
+          const allScores = {
+            weeksClosedOnTime: weeksClosedOnTimeScore,
+            overdueActionRate: overdueActionRateScore,
+            actionClosureSpeed: actionClosureSpeedScore,
+            readinessTrendStability: Math.round(readinessTrendScore),
+            pmOverrideFrequency: pmOverrideFrequencyScore,
+          };
+
+          const totalScoreSum = Object.values(allScores).reduce((sum, score) => sum + score, 0);
+
+          const dynamicWeights = {};
+          if (totalScoreSum > 0) {
+            for (const [key, score] of Object.entries(allScores)) {
+              dynamicWeights[key] = Math.round((score / totalScoreSum) * 100);
+            }
+          } else {
+            for (const key of Object.keys(allScores)) {
+              dynamicWeights[key] = 20;
+            }
+          }
+
+          // Calculate weighted governance score
+          governanceScore = Math.round(
+            (allScores.weeksClosedOnTime * dynamicWeights.weeksClosedOnTime +
+             allScores.overdueActionRate * dynamicWeights.overdueActionRate +
+             allScores.actionClosureSpeed * dynamicWeights.actionClosureSpeed +
+             allScores.readinessTrendStability * dynamicWeights.readinessTrendStability +
+             allScores.pmOverrideFrequency * dynamicWeights.pmOverrideFrequency) / 100
+          );
+        }
+
+        return {
+          ...projectObj,
+          totalActivities,
+          openActions: openActionsCount,
+          progress,
+          governanceScore,
+        };
+      })
+    );
+
+    return sendSuccess(res, { projects: enrichedProjects });
   } catch (error) {
     console.error(error);
     return sendError(res, "Server error");

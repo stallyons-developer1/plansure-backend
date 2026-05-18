@@ -1197,7 +1197,28 @@ router.post("/:id/close-cycle", protect, async (req, res) => {
       };
     });
 
-    const lookaheadActivities = activities.filter(
+    // Get only activities that START within the current week being closed
+    const weekStartDate = new Date(currentWeek.startDate);
+    const weekEndDate = new Date(currentWeek.endDate);
+    weekStartDate.setHours(0, 0, 0, 0);
+    weekEndDate.setHours(23, 59, 59, 999);
+
+    const weekActivities = activities.filter((a) => {
+      const actStart = parseDate(a.startDate);
+      const actFinish = parseDate(a.finishDate);
+      if (!actStart) return false;
+
+      // Activity is in this week if:
+      // 1. It starts within this week, OR
+      // 2. It spans this week (started before and finishes during/after)
+      const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+      const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+
+      return startsThisWeek || spansThisWeek;
+    });
+
+    // Fallback to lookahead activities if no week-specific activities found
+    const lookaheadActivities = weekActivities.length > 0 ? weekActivities : activities.filter(
       (a) =>
         a.ragStatus !== "Grey" &&
         a.weekZone &&
@@ -1308,12 +1329,63 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return sendError(res, "Access denied", 403);
     }
 
+    // Get weekNumber from query params (optional)
+    const requestedWeekNumber = req.query.weekNumber ? parseInt(req.query.weekNumber) : null;
+
     const Action = require("../models/Action");
     const actions = await Action.find({ programme: req.params.id })
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
     const today = new Date();
+
+    // Parse date helper
+    const parseActivityDate = (dateStr) => {
+      if (!dateStr) return null;
+      const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
+      const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+      const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
+      if (!match) return null;
+      const day = parseInt(match[1]);
+      const month = months[match[2]];
+      let year = parseInt(match[3]);
+      year = year < 50 ? 2000 + year : 1900 + year;
+      return new Date(year, month, day);
+    };
+
+    // Find programme start date for week calculations
+    let earliestDate = null;
+    for (const activity of programme.extractedData?.activities || []) {
+      const startDate = parseActivityDate(activity.startDate);
+      if (startDate && (!earliestDate || startDate < earliestDate)) {
+        earliestDate = startDate;
+      }
+    }
+
+    // Calculate current week number and week date range
+    let currentWeekNumber = 1;
+    let weekStartDate = earliestDate;
+    let weekEndDate = earliestDate ? new Date(earliestDate) : null;
+
+    if (earliestDate) {
+      earliestDate.setHours(0, 0, 0, 0);
+      const todayStart = new Date(today);
+      todayStart.setHours(0, 0, 0, 0);
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const daysSinceStart = Math.floor((todayStart - earliestDate) / msPerDay);
+      currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
+    }
+
+    // Use requested week or current week
+    const targetWeekNumber = requestedWeekNumber || currentWeekNumber;
+
+    // Calculate week date range
+    if (earliestDate) {
+      weekStartDate = new Date(earliestDate);
+      weekStartDate.setDate(earliestDate.getDate() + (targetWeekNumber - 1) * 7);
+      weekEndDate = new Date(weekStartDate);
+      weekEndDate.setDate(weekStartDate.getDate() + 6);
+    }
 
     const actionsByStatus = {
       open: actions.filter((a) => a.status === "Open").length,
@@ -1364,7 +1436,20 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       };
     });
 
-    const allActivities = activities.filter((a) => a.ragStatus !== "Grey");
+    // Filter activities to only those in the target week
+    const isActivityInWeek = (activity) => {
+      if (!weekStartDate || !weekEndDate) return true; // Show all if no date range
+      const actStart = parseActivityDate(activity.startDate);
+      const actFinish = parseActivityDate(activity.finishDate);
+      if (!actStart) return false;
+
+      // Activity is in week if it starts in this week OR spans this week
+      const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+      const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+      return startsThisWeek || spansThisWeek;
+    };
+
+    const allActivities = activities.filter((a) => a.ragStatus !== "Grey" && isActivityInWeek(a));
 
     const ragDistribution = {
       green: allActivities.filter((a) => a.ragStatus === "Green").length,
@@ -1448,6 +1533,13 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         dueDate: a.finishDate,
       }));
 
+    // Format dates for display
+    const formatDate = (d) => {
+      if (!d) return "";
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      return `${d.getDate()} ${months[d.getMonth()]}`;
+    };
+
     res.json({
       stats: {
         cycleStatus: programme.cycleStatus,
@@ -1476,6 +1568,12 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         _id: programme._id,
         name: programme.name,
         lastUpdated: programme.updatedAt,
+      },
+      weekInfo: {
+        weekNumber: targetWeekNumber,
+        currentWeekNumber: currentWeekNumber,
+        dateRange: weekStartDate && weekEndDate ? `${formatDate(weekStartDate)} - ${formatDate(weekEndDate)}` : "",
+        totalActivities: allActivities.length,
       },
     });
   } catch (error) {
@@ -1616,6 +1714,93 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
         programme.closedBy = req.admin._id;
         programme.isLocked = true;
 
+        // Create CycleHistory record for PM Override
+        const CycleHistory = require("../models/CycleHistory");
+        const Action = require("../models/Action");
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const lastCycle = await CycleHistory.findOne({
+          programme: req.params.id,
+        }).sort({ weekNumber: -1 });
+        const newWeekNumber = lastCycle ? lastCycle.weekNumber + 1 : 1;
+
+        // Find programme start date
+        const activities = programme.extractedData?.activities || [];
+        let earliestStartDate = null;
+        for (const act of activities) {
+          const actStart = parseDate(act.startDate);
+          if (actStart && (!earliestStartDate || actStart < earliestStartDate)) {
+            earliestStartDate = actStart;
+          }
+        }
+
+        // Calculate current week boundaries
+        let weekStartDate = today;
+        let weekEndDate = new Date(today);
+        weekEndDate.setDate(today.getDate() + 6);
+
+        if (earliestStartDate) {
+          const msPerDay = 1000 * 60 * 60 * 24;
+          const daysSinceStart = Math.floor((today - earliestStartDate) / msPerDay);
+          const currentWeekNum = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
+          weekStartDate = new Date(earliestStartDate);
+          weekStartDate.setDate(earliestStartDate.getDate() + (currentWeekNum - 1) * 7);
+          weekEndDate = new Date(weekStartDate);
+          weekEndDate.setDate(weekStartDate.getDate() + 6);
+        }
+        weekEndDate.setHours(23, 59, 59, 999);
+
+        // Get only activities for this specific week
+        const weekActivities = activities.filter((a) => {
+          const actStart = parseDate(a.startDate);
+          const actFinish = parseDate(a.finishDate);
+          if (!actStart) return false;
+          const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+          const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+          return startsThisWeek || spansThisWeek;
+        }).map((a) => ({
+          ...a,
+          ragStatus: calculateRAG(a, today),
+        }));
+
+        const actions = await Action.find({ programme: req.params.id });
+        const completedActions = actions.filter((a) => a.status === "Completed").length;
+
+        const greenCount = weekActivities.filter((a) => a.ragStatus === "Green").length;
+        const amberCount = weekActivities.filter((a) => a.ragStatus === "Amber").length;
+        const redCount = weekActivities.filter((a) => a.ragStatus === "Red").length;
+        const totalCount = weekActivities.length || 1;
+
+        const actionCompletion = actions.length > 0 ? (completedActions / actions.length) * 100 : 100;
+        const ragScore = (greenCount / totalCount) * 100;
+        const score = Math.round(ragScore * 0.7 + actionCompletion * 0.3);
+
+        await CycleHistory.create({
+          programme: req.params.id,
+          weekNumber: newWeekNumber,
+          weekLabel: `Week ${newWeekNumber}`,
+          dateRange: {
+            startDate: weekStartDate,
+            endDate: weekEndDate,
+          },
+          closeType: "PM Override",
+          score: score,
+          stats: {
+            totalActivities: weekActivities.length,
+            completed: weekActivities.filter((a) => a.status === "Completed").length,
+            green: greenCount,
+            amber: amberCount,
+            red: redCount,
+            blocked: weekActivities.filter((a) => a.isBlocked).length,
+            actionsCompleted: completedActions,
+            actionsTotal: actions.length,
+          },
+          closedBy: req.admin._id,
+          notes: overrideReason,
+        });
+
         await programme.save();
 
         return sendSuccess(
@@ -1652,6 +1837,96 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
       programme.closedAt = new Date();
       programme.closedBy = req.admin._id;
       programme.isLocked = true;
+
+      // Create CycleHistory record for governance tracking
+      const CycleHistory = require("../models/CycleHistory");
+      const Action = require("../models/Action");
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      // Get last cycle to determine week number
+      const lastCycle = await CycleHistory.findOne({
+        programme: req.params.id,
+      }).sort({ weekNumber: -1 });
+      const newWeekNumber = lastCycle ? lastCycle.weekNumber + 1 : 1;
+
+      // Calculate stats from activities - ONLY for current week
+      const activities = programme.extractedData?.activities || [];
+
+      // Find programme start date
+      let earliestStartDate = null;
+      for (const act of activities) {
+        const actStart = parseDate(act.startDate);
+        if (actStart && (!earliestStartDate || actStart < earliestStartDate)) {
+          earliestStartDate = actStart;
+        }
+      }
+
+      // Calculate current week boundaries
+      let weekStartDate = today;
+      let weekEndDate = new Date(today);
+      weekEndDate.setDate(today.getDate() + 6);
+
+      if (earliestStartDate) {
+        const msPerDay = 1000 * 60 * 60 * 24;
+        const daysSinceStart = Math.floor((today - earliestStartDate) / msPerDay);
+        const currentWeekNum = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
+        weekStartDate = new Date(earliestStartDate);
+        weekStartDate.setDate(earliestStartDate.getDate() + (currentWeekNum - 1) * 7);
+        weekEndDate = new Date(weekStartDate);
+        weekEndDate.setDate(weekStartDate.getDate() + 6);
+      }
+      weekEndDate.setHours(23, 59, 59, 999);
+
+      // Get only activities for this specific week
+      const weekActivities = activities.filter((a) => {
+        const actStart = parseDate(a.startDate);
+        const actFinish = parseDate(a.finishDate);
+        if (!actStart) return false;
+        const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+        const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+        return startsThisWeek || spansThisWeek;
+      }).map((a) => ({
+        ...a,
+        ragStatus: calculateRAG(a, today),
+      }));
+
+      const actions = await Action.find({ programme: req.params.id });
+      const completedActions = actions.filter((a) => a.status === "Completed").length;
+
+      const greenCount = weekActivities.filter((a) => a.ragStatus === "Green").length;
+      const amberCount = weekActivities.filter((a) => a.ragStatus === "Amber").length;
+      const redCount = weekActivities.filter((a) => a.ragStatus === "Red").length;
+      const totalCount = weekActivities.length || 1;
+
+      const actionCompletion = actions.length > 0 ? (completedActions / actions.length) * 100 : 100;
+      const ragScore = (greenCount / totalCount) * 100;
+      const score = Math.round(ragScore * 0.7 + actionCompletion * 0.3);
+
+      await CycleHistory.create({
+        programme: req.params.id,
+        weekNumber: newWeekNumber,
+        weekLabel: `Week ${newWeekNumber}`,
+        dateRange: {
+          startDate: weekStartDate,
+          endDate: weekEndDate,
+        },
+        closeType: "Normal Close",
+        score: score,
+        stats: {
+          totalActivities: weekActivities.length,
+          completed: weekActivities.filter((a) => a.status === "Completed").length,
+          green: greenCount,
+          amber: amberCount,
+          red: redCount,
+          blocked: weekActivities.filter((a) => a.isBlocked).length,
+          actionsCompleted: completedActions,
+          actionsTotal: actions.length,
+        },
+        closedBy: req.admin._id,
+        notes: "",
+      });
     }
 
     programme.cycleStatus = cycleStatus;
@@ -1764,7 +2039,7 @@ router.post("/recalculate-rag", protect, adminOnly, async (req, res) => {
       };
 
       programme.weekZones = weekZones;
-      programme.lookaheadStartDate = today;
+      // Don't reset lookaheadStartDate - it should stay as the original upload date
 
       await programme.save();
       totalUpdated++;
@@ -1840,7 +2115,7 @@ router.post("/:id/recalculate-rag", protect, adminOnly, async (req, res) => {
     };
 
     programme.weekZones = weekZones;
-    programme.lookaheadStartDate = today;
+    // Don't reset lookaheadStartDate - it should stay as the original upload date
 
     await programme.save();
 
@@ -1916,6 +2191,407 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
       res,
       {},
       "Programme and related actions deleted successfully",
+    );
+  } catch (error) {
+    console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
+// Clear all CycleHistory records (for fixing incorrect data)
+router.delete("/clear-cycle-history/all", protect, adminOnly, async (req, res) => {
+  try {
+    const CycleHistory = require("../models/CycleHistory");
+
+    const result = await CycleHistory.deleteMany({});
+
+    // Also unlock all programmes so they can be closed again
+    await Programme.updateMany(
+      { isLocked: true },
+      {
+        $set: {
+          isLocked: false,
+          cycleStatus: "Draft",
+          closeType: null,
+          closedAt: null,
+          closedBy: null
+        }
+      }
+    );
+
+    return sendSuccess(
+      res,
+      {
+        deletedCount: result.deletedCount,
+      },
+      `Cleared ${result.deletedCount} cycle history records. Programmes unlocked.`,
+    );
+  } catch (error) {
+    console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
+// Get programme weeks status (which weeks are closed, current week, etc.)
+router.get("/:id/weeks-status", protect, async (req, res) => {
+  try {
+    const programme = await Programme.findById(req.params.id);
+    if (!programme) {
+      return sendError(res, "Programme not found", 404);
+    }
+
+    const { hasAccess } = await checkProgrammeAccess(req.admin, req.params.id);
+    if (!hasAccess) {
+      return sendError(res, "Access denied", 403);
+    }
+
+    // Parse dates helper
+    const parseDate = (dateStr) => {
+      if (!dateStr) return null;
+      const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
+      const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+      const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
+      if (!match) return null;
+      const day = parseInt(match[1]);
+      const month = months[match[2]];
+      let year = parseInt(match[3]);
+      year = year < 50 ? 2000 + year : 1900 + year;
+      return new Date(year, month, day);
+    };
+
+    // Calculate total weeks from activities
+    const activities = programme.extractedData?.activities || [];
+    let earliestDate = null;
+    let latestDate = null;
+
+    for (const activity of activities) {
+      const startDate = parseDate(activity.startDate);
+      const finishDate = parseDate(activity.finishDate);
+      if (startDate && (!earliestDate || startDate < earliestDate)) {
+        earliestDate = startDate;
+      }
+      if (finishDate && (!latestDate || finishDate > latestDate)) {
+        latestDate = finishDate;
+      }
+    }
+
+    let totalWeeks = programme.totalWeeks || 0;
+    if (totalWeeks === 0 && earliestDate && latestDate) {
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const totalDays = Math.ceil((latestDate - earliestDate) / msPerDay);
+      totalWeeks = Math.ceil(totalDays / 7);
+      // Save totalWeeks to programme
+      programme.totalWeeks = totalWeeks;
+      await programme.save();
+    }
+
+    // Determine current week
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    let currentWeekNumber = 1;
+    if (earliestDate) {
+      earliestDate.setHours(0, 0, 0, 0);
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const daysSinceStart = Math.floor((today - earliestDate) / msPerDay);
+      currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
+    }
+
+    // Get closed weeks
+    const closedWeeks = programme.closedWeeks || [];
+    const closedWeekNumbers = closedWeeks.map(w => w.weekNumber);
+
+    // Build weeks array
+    const weeks = [];
+    for (let i = 1; i <= totalWeeks; i++) {
+      const weekStartDate = new Date(earliestDate);
+      weekStartDate.setDate(weekStartDate.getDate() + (i - 1) * 7);
+      const weekEndDate = new Date(weekStartDate);
+      weekEndDate.setDate(weekStartDate.getDate() + 6);
+
+      // Count activities in this week
+      let weekActivities = { total: 0, green: 0, amber: 0, red: 0 };
+      for (const activity of activities) {
+        const actStart = parseDate(activity.startDate);
+        const actFinish = parseDate(activity.finishDate);
+        if (!actStart) continue;
+
+        const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+        const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+        if (startsThisWeek || spansThisWeek) {
+          weekActivities.total++;
+          const isCompleted = activity.status === "Completed" ||
+            (activity.finishDate && activity.finishDate.includes(" A"));
+          if (isCompleted) {
+            weekActivities.green++;
+          } else if (actFinish && actFinish < today) {
+            weekActivities.red++;
+          } else {
+            weekActivities.amber++;
+          }
+        }
+      }
+
+      const isClosed = closedWeekNumbers.includes(i);
+      const closedWeekData = closedWeeks.find(w => w.weekNumber === i);
+
+      let status = "upcoming";
+      if (isClosed) {
+        status = "closed";
+      } else if (i === currentWeekNumber) {
+        status = "current";
+      } else if (i < currentWeekNumber) {
+        status = "past"; // Past but not closed
+      }
+
+      // Can close if: current or past week AND not already closed AND previous weeks are closed
+      const previousWeeksClosed = closedWeekNumbers.filter(n => n < i).length === i - 1;
+      const canClose = !isClosed && i <= currentWeekNumber && previousWeeksClosed;
+
+      weeks.push({
+        weekNumber: i,
+        startDate: weekStartDate,
+        endDate: weekEndDate,
+        status,
+        isClosed,
+        canClose,
+        closedAt: closedWeekData?.closedAt || null,
+        closeType: closedWeekData?.closeType || null,
+        stats: isClosed ? closedWeekData?.stats : weekActivities,
+      });
+    }
+
+    return sendSuccess(res, {
+      totalWeeks,
+      currentWeekNumber: Math.min(currentWeekNumber, totalWeeks),
+      closedWeeksCount: closedWeeks.length,
+      progress: totalWeeks > 0 ? Math.round((closedWeeks.length / totalWeeks) * 100) : 0,
+      isFullyClosed: closedWeeks.length >= totalWeeks,
+      weeks,
+    });
+  } catch (error) {
+    console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
+// Close a specific week within a programme
+router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
+  try {
+    const { closeType, notes } = req.body;
+    const weekNumber = parseInt(req.params.weekNumber);
+    const CycleHistory = require("../models/CycleHistory");
+
+    const programme = await Programme.findById(req.params.id);
+    if (!programme) {
+      return sendError(res, "Programme not found", 404);
+    }
+
+    const { hasAccess } = await checkProgrammeAccess(req.admin, req.params.id);
+    if (!hasAccess) {
+      return sendError(res, "Access denied", 403);
+    }
+
+    // Check if week is already closed
+    const closedWeeks = programme.closedWeeks || [];
+    if (closedWeeks.some(w => w.weekNumber === weekNumber)) {
+      return sendError(res, `Week ${weekNumber} is already closed`, 400);
+    }
+
+    // Check if previous weeks are closed (sequential closure required)
+    const closedWeekNumbers = closedWeeks.map(w => w.weekNumber);
+    for (let i = 1; i < weekNumber; i++) {
+      if (!closedWeekNumbers.includes(i)) {
+        return sendError(res, `Cannot close Week ${weekNumber}. Week ${i} must be closed first.`, 400);
+      }
+    }
+
+    // Parse dates helper
+    const parseDate = (dateStr) => {
+      if (!dateStr) return null;
+      const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
+      const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+      const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
+      if (!match) return null;
+      const day = parseInt(match[1]);
+      const month = months[match[2]];
+      let year = parseInt(match[3]);
+      year = year < 50 ? 2000 + year : 1900 + year;
+      return new Date(year, month, day);
+    };
+
+    // Find programme start date
+    const activities = programme.extractedData?.activities || [];
+    let earliestDate = null;
+    let latestDate = null;
+
+    for (const activity of activities) {
+      const startDate = parseDate(activity.startDate);
+      const finishDate = parseDate(activity.finishDate);
+      if (startDate && (!earliestDate || startDate < earliestDate)) {
+        earliestDate = startDate;
+      }
+      if (finishDate && (!latestDate || finishDate > latestDate)) {
+        latestDate = finishDate;
+      }
+    }
+
+    if (!earliestDate) {
+      return sendError(res, "Cannot determine programme start date", 400);
+    }
+
+    // Calculate week dates
+    const weekStartDate = new Date(earliestDate);
+    weekStartDate.setDate(weekStartDate.getDate() + (weekNumber - 1) * 7);
+    const weekEndDate = new Date(weekStartDate);
+    weekEndDate.setDate(weekStartDate.getDate() + 6);
+
+    // Calculate stats for this week
+    const today = new Date();
+    let weekStats = { totalActivities: 0, green: 0, amber: 0, red: 0 };
+
+    for (const activity of activities) {
+      const actStart = parseDate(activity.startDate);
+      const actFinish = parseDate(activity.finishDate);
+      if (!actStart) continue;
+
+      const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+      const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+
+      if (startsThisWeek || spansThisWeek) {
+        weekStats.totalActivities++;
+        const isCompleted = activity.status === "Completed" ||
+          (activity.finishDate && activity.finishDate.includes(" A"));
+        if (isCompleted) {
+          weekStats.green++;
+        } else if (actFinish && actFinish < today) {
+          weekStats.red++;
+        } else {
+          weekStats.amber++;
+        }
+      }
+    }
+
+    // Add to closedWeeks array
+    programme.closedWeeks.push({
+      weekNumber,
+      closedAt: new Date(),
+      closedBy: req.admin._id,
+      closeType: closeType || "Normal Close",
+      stats: weekStats,
+    });
+
+    // Calculate totalWeeks if not set
+    if (!programme.totalWeeks && earliestDate && latestDate) {
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const totalDays = Math.ceil((latestDate - earliestDate) / msPerDay);
+      programme.totalWeeks = Math.ceil(totalDays / 7);
+    }
+
+    // Check if all weeks are now closed
+    const totalWeeks = programme.totalWeeks || 0;
+    const isFullyClosed = programme.closedWeeks.length >= totalWeeks;
+
+    if (isFullyClosed) {
+      programme.cycleStatus = "Closed";
+      programme.isLocked = true;
+      programme.closedAt = new Date();
+      programme.closedBy = req.admin._id;
+      programme.closeType = closeType || "Normal Close";
+    }
+
+    await programme.save();
+
+    // Create CycleHistory record for governance tracking
+    const formatDateShort = (d) => {
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      return `${d.getDate().toString().padStart(2, "0")} ${months[d.getMonth()]} ${d.getFullYear()}`;
+    };
+
+    await CycleHistory.create({
+      programme: req.params.id,
+      weekNumber,
+      weekLabel: `Week ${weekNumber}`,
+      dateRange: {
+        startDate: weekStartDate,
+        endDate: weekEndDate,
+      },
+      closeType: closeType || "Normal Close",
+      score: weekStats.totalActivities > 0 ? Math.round((weekStats.green / weekStats.totalActivities) * 100) : 0,
+      stats: weekStats,
+      closedBy: req.admin._id,
+      notes: notes || "",
+    });
+
+    return sendSuccess(
+      res,
+      {
+        weekNumber,
+        closedAt: new Date(),
+        closeType: closeType || "Normal Close",
+        stats: weekStats,
+        progress: totalWeeks > 0 ? Math.round((programme.closedWeeks.length / totalWeeks) * 100) : 0,
+        isFullyClosed,
+      },
+      `Week ${weekNumber} closed successfully`,
+    );
+  } catch (error) {
+    console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
+// Reopen a closed week (admin only)
+router.post("/:id/reopen-week/:weekNumber", protect, adminOnly, async (req, res) => {
+  try {
+    const weekNumber = parseInt(req.params.weekNumber);
+    const CycleHistory = require("../models/CycleHistory");
+
+    const programme = await Programme.findById(req.params.id);
+    if (!programme) {
+      return sendError(res, "Programme not found", 404);
+    }
+
+    // Check if week is closed
+    const weekIndex = programme.closedWeeks.findIndex(w => w.weekNumber === weekNumber);
+    if (weekIndex === -1) {
+      return sendError(res, `Week ${weekNumber} is not closed`, 400);
+    }
+
+    // Can only reopen the last closed week
+    const maxClosedWeek = Math.max(...programme.closedWeeks.map(w => w.weekNumber));
+    if (weekNumber !== maxClosedWeek) {
+      return sendError(res, `Can only reopen the last closed week (Week ${maxClosedWeek})`, 400);
+    }
+
+    // Remove from closedWeeks
+    programme.closedWeeks.splice(weekIndex, 1);
+
+    // Unlock programme if it was fully closed
+    if (programme.isLocked) {
+      programme.isLocked = false;
+      programme.cycleStatus = "Execution";
+      programme.closedAt = null;
+      programme.closedBy = null;
+      programme.closeType = null;
+    }
+
+    await programme.save();
+
+    // Remove CycleHistory record
+    await CycleHistory.deleteOne({
+      programme: req.params.id,
+      weekNumber,
+    });
+
+    const totalWeeks = programme.totalWeeks || 0;
+
+    return sendSuccess(
+      res,
+      {
+        weekNumber,
+        progress: totalWeeks > 0 ? Math.round((programme.closedWeeks.length / totalWeeks) * 100) : 0,
+      },
+      `Week ${weekNumber} reopened successfully`,
     );
   } catch (error) {
     console.error(error);

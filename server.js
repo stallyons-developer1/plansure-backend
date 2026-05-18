@@ -102,6 +102,7 @@ app.use("/api/actions", require("./routes/actionRoutes"));
 app.use("/api/dashboard", require("./routes/dashboardRoutes"));
 app.use("/api/notifications", require("./routes/notificationRoutes"));
 app.use("/api/fcm", require("./routes/fcmRoutes"));
+app.use("/api/exports", require("./routes/exportRoutes"));
 
 const { protect, adminOnly } = require("./middleware/authMiddleware");
 const mongoose = require("mongoose");
