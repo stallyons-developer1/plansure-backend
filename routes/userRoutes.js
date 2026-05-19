@@ -440,6 +440,8 @@ router.get("/invite/verify/:token", async (req, res) => {
 router.get("/", protect, async (req, res) => {
   try {
     const { status, role, search } = req.query;
+    const Action = require("../models/Action");
+    const Programme = require("../models/Programme");
 
     const filter = {};
     if (status) filter.status = status;
@@ -457,25 +459,90 @@ router.get("/", protect, async (req, res) => {
       .populate("invitedBy", "name")
       .sort({ createdAt: -1 });
 
-    const formattedUsers = users.map((user) => ({
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      status: user.status,
-      projectAccess:
-        user.projects && user.projects.length > 0
-          ? user.projects.map((p) => p.name).join(", ")
-          : "All Projects",
-      lastLogin: user.lastLogin,
-      createdAt: user.createdAt,
-      initials: user.name
-        .split(" ")
-        .map((n) => n[0])
-        .join("")
-        .toUpperCase()
-        .slice(0, 2),
-    }));
+    // Get all projects for reference
+    const allProjects = await Project.find().select("_id name");
+    const projectMap = {};
+    allProjects.forEach((p) => {
+      projectMap[p._id.toString()] = p.name;
+    });
+
+    // Build formatted users with full project access (including via actions)
+    const formattedUsers = await Promise.all(
+      users.map(async (user) => {
+        let projectNames = [];
+
+        // For admin role, show "All Projects"
+        if (user.role === "admin") {
+          return {
+            _id: user._id,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            status: user.status,
+            projectAccess: "All Projects",
+            lastLogin: user.lastLogin,
+            createdAt: user.createdAt,
+            initials: user.name
+              .split(" ")
+              .map((n) => n[0])
+              .join("")
+              .toUpperCase()
+              .slice(0, 2),
+          };
+        }
+
+        // Get explicitly assigned projects (filter out deleted/null projects)
+        const validProjects = (user.projects || []).filter((p) => p && p._id && p.name);
+        const assignedProjectIds = new Set(
+          validProjects.map((p) => p._id.toString())
+        );
+        projectNames = validProjects.map((p) => p.name);
+
+        // Get projects where user has been assigned actions
+        const userActions = await Action.find({
+          $or: [
+            { assignee: user._id },
+            { "previousAssignees.user": user._id },
+          ],
+        }).select("programme");
+
+        const programmeIds = [
+          ...new Set(userActions.map((a) => a.programme?.toString()).filter(Boolean)),
+        ];
+
+        if (programmeIds.length > 0) {
+          const programmes = await Programme.find({
+            _id: { $in: programmeIds },
+          }).select("project");
+
+          programmes.forEach((prog) => {
+            const projId = prog.project?.toString();
+            if (projId && !assignedProjectIds.has(projId) && projectMap[projId]) {
+              assignedProjectIds.add(projId);
+              projectNames.push(projectMap[projId]);
+            }
+          });
+        }
+
+        return {
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          status: user.status,
+          projectAccess:
+            projectNames.length > 0 ? projectNames.join(", ") : "No Projects",
+          lastLogin: user.lastLogin,
+          createdAt: user.createdAt,
+          initials: user.name
+            .split(" ")
+            .map((n) => n[0])
+            .join("")
+            .toUpperCase()
+            .slice(0, 2),
+        };
+      })
+    );
 
     return sendSuccess(res, { users: formattedUsers });
   } catch (error) {

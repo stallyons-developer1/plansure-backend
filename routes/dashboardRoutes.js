@@ -580,12 +580,13 @@ router.get("/governance", protect, async (req, res) => {
     ).length;
 
     // Calculate Weeks Closed On Time Score
-    // STRICT MODE: 0 weeks closed = 0 score (no estimates)
+    // Score = (Normal Close weeks / Total Programme Weeks) × 100
+    // This measures how many weeks of the total project have been closed on time
     let weeksClosedOnTimeScore = 0;
-    if (cycleHistory.length > 0) {
-      weeksClosedOnTimeScore = Math.round((weeksClosedOnTime / cycleHistory.length) * 100);
+    if (totalWeeksFromProgramme > 0) {
+      weeksClosedOnTimeScore = Math.round((weeksClosedOnTime / totalWeeksFromProgramme) * 100);
     }
-    // If no weeks closed, score remains 0
+    // If no programme weeks, score remains 0
 
     // Calculate overdue actions
     const overdueActions = actions.filter(
@@ -789,11 +790,48 @@ router.get("/governance", protect, async (req, res) => {
       readinessTrendScore = 100;
     }
 
-    // Calculate PM Override Frequency Score
-    const pmOverrideRate = cycleHistory.length > 0
-      ? Math.round((pmOverrides / cycleHistory.length) * 100)
-      : 0;
-    const pmOverrideFrequencyScore = Math.max(0, 100 - pmOverrideRate * 2);
+    // Calculate PM Override Frequency Score - AVERAGED PER PROJECT
+    // Group cycle history by programme and calculate score for each project
+    const cyclesByProgramme = {};
+    for (const cycle of cycleHistory) {
+      const progId = cycle.programme?.toString() || 'unknown';
+      if (!cyclesByProgramme[progId]) {
+        cyclesByProgramme[progId] = { total: 0, pmOverrides: 0 };
+      }
+      cyclesByProgramme[progId].total++;
+      if (cycle.closeType === "PM Override") {
+        cyclesByProgramme[progId].pmOverrides++;
+      }
+    }
+
+    // Calculate PM Override score for each project and average them
+    // Include ALL programmes (even those without cycle history get 100 score)
+    let pmOverrideFrequencyScore = 100; // Default if no programmes
+    const allProgrammeScores = [];
+
+    // First, add scores for programmes WITH cycle history
+    // Score = (Normal Weeks / Total Weeks) × 100 (week-wise calculation)
+    for (const progId of Object.keys(cyclesByProgramme)) {
+      const prog = cyclesByProgramme[progId];
+      const normalWeeks = prog.total - prog.pmOverrides;
+      const projectScore = prog.total > 0 ? Math.round((normalWeeks / prog.total) * 100) : 100;
+      allProgrammeScores.push(projectScore);
+    }
+
+    // Add 100 score for programmes WITHOUT any cycle history (no PM overrides = perfect)
+    for (const prog of programmes) {
+      const progId = prog._id.toString();
+      if (!cyclesByProgramme[progId]) {
+        allProgrammeScores.push(100); // No cycles closed = no PM overrides
+      }
+    }
+
+    // Average all programme scores
+    if (allProgrammeScores.length > 0) {
+      const totalScore = allProgrammeScores.reduce((sum, s) => sum + s, 0);
+      pmOverrideFrequencyScore = Math.round(totalScore / allProgrammeScores.length);
+    }
+
 
     // Calculate DYNAMIC WEIGHTS based on scores
     // Higher scores get more weight, proportional to their contribution

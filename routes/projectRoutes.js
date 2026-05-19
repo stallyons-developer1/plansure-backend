@@ -228,11 +228,8 @@ router.get("/", protect, async (req, res) => {
         // Calculate progress percentage based on closed weeks
         // Progress = (Closed Weeks / Total Weeks) × 100
         let progress = 0;
-        if (totalWeeks > 0 && closedWeeks > 0) {
+        if (totalWeeks > 0) {
           progress = Math.round((closedWeeks / totalWeeks) * 100);
-        } else if (totalActivities > 0 && completedActivities > 0) {
-          // Fallback to activity-based progress
-          progress = Math.round((completedActivities / totalActivities) * 100);
         }
 
         // Determine if project should be marked as completed
@@ -250,28 +247,6 @@ router.get("/", protect, async (req, res) => {
         let governanceScore = 0;
 
         if (programmes.length > 0) {
-          // 1. Weeks Closed On Time Score
-          const weeksClosedOnTime = cycleHistory.filter(
-            (c) => c.closeType === "Normal Close"
-          ).length;
-          const weeksClosedOnTimeScore = cycleHistory.length > 0
-            ? Math.round((weeksClosedOnTime / cycleHistory.length) * 100)
-            : 0;
-
-          // 2. Overdue Action Rate Score
-          const overdueRate = actions.length > 0
-            ? Math.round((overdueActions.length / actions.length) * 100)
-            : 0;
-          const overdueActionRateScore = actions.length > 0
-            ? Math.max(0, 100 - overdueRate * 2)
-            : 100;
-
-          // 3. Action Closure Speed Score
-          const actionClosureSpeedScore = actions.length > 0
-            ? Math.round((closedActions.length / actions.length) * 100)
-            : 0;
-
-          // 4. Readiness Trend Stability Score - calculate from weekly readiness variance
           // Helper to parse dates
           const parseDate = (dateStr) => {
             if (!dateStr) return null;
@@ -286,19 +261,54 @@ router.get("/", protect, async (req, res) => {
             return new Date(year, month, day);
           };
 
-          // Calculate weekly readiness values
+          // Collect all activities and calculate date ranges
           let allActivities = [];
           let earliestStartDate = null;
+          let latestEndDate = null;
           for (const prog of programmes) {
             const activities = prog.extractedData?.activities || [];
             allActivities = allActivities.concat(activities);
             for (const activity of activities) {
               const startDate = parseDate(activity.startDate);
+              const finishDate = parseDate(activity.finishDate);
               if (startDate && (!earliestStartDate || startDate < earliestStartDate)) {
                 earliestStartDate = startDate;
               }
+              if (finishDate && (!latestEndDate || finishDate > latestEndDate)) {
+                latestEndDate = finishDate;
+              }
             }
           }
+
+          // Calculate total weeks from programme span
+          const msPerDay = 1000 * 60 * 60 * 24;
+          let totalWeeksFromProgramme = 0;
+          if (earliestStartDate && latestEndDate) {
+            const totalDays = Math.ceil((latestEndDate - earliestStartDate) / msPerDay);
+            totalWeeksFromProgramme = Math.ceil(totalDays / 7);
+          }
+
+          // 1. Weeks Closed On Time Score
+          // Score = (Normal Close weeks / Total Programme Weeks) × 100
+          const weeksClosedOnTime = cycleHistory.filter(
+            (c) => c.closeType === "Normal Close"
+          ).length;
+          const weeksClosedOnTimeScore = totalWeeksFromProgramme > 0
+            ? Math.round((weeksClosedOnTime / totalWeeksFromProgramme) * 100)
+            : 0;
+
+          // 2. Overdue Action Rate Score
+          const overdueRate = actions.length > 0
+            ? Math.round((overdueActions.length / actions.length) * 100)
+            : 0;
+          const overdueActionRateScore = actions.length > 0
+            ? Math.max(0, 100 - overdueRate * 2)
+            : 100;
+
+          // 3. Action Closure Speed Score
+          const actionClosureSpeedScore = actions.length > 0
+            ? Math.round((closedActions.length / actions.length) * 100)
+            : 0;
 
           // Calculate weekly readiness using SAME RAG logic as governance dashboard
           const calculateWeekRAG = (weekStartDate, weekEndDate, activities) => {
@@ -344,27 +354,11 @@ router.get("/", protect, async (req, res) => {
             return { green, amber, red, total: green + amber + red };
           };
 
-          // Calculate total weeks from programme span
-          let latestEndDate = null;
-          for (const activity of allActivities) {
-            const finishDate = parseDate(activity.finishDate);
-            if (finishDate && (!latestEndDate || finishDate > latestEndDate)) {
-              latestEndDate = finishDate;
-            }
-          }
-
+          // 4. Readiness Trend Stability Score
           let readinessTrendScore = 65;
           if (earliestStartDate && allActivities.length > 0) {
-            const msPerDay = 1000 * 60 * 60 * 24;
             const daysSinceStart = Math.floor((today - earliestStartDate) / msPerDay);
             const currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
-
-            // Calculate total weeks from programme span (same as dashboard)
-            let totalWeeksFromProgramme = 0;
-            if (earliestStartDate && latestEndDate) {
-              const totalDays = Math.ceil((latestEndDate - earliestStartDate) / msPerDay);
-              totalWeeksFromProgramme = Math.ceil(totalDays / 7);
-            }
 
             // Generate weekly readiness data for all weeks
             const weeklyReadinessData = [];
@@ -405,14 +399,15 @@ router.get("/", protect, async (req, res) => {
             }
           }
 
-          // 5. PM Override Frequency Score
+          // 5. PM Override Frequency Score (week-wise calculation)
+          // Score = (Normal Weeks / Total Weeks) × 100
           const pmOverrides = cycleHistory.filter(
             (c) => c.closeType === "PM Override"
           ).length;
-          const pmOverrideRate = cycleHistory.length > 0
-            ? Math.round((pmOverrides / cycleHistory.length) * 100)
-            : 0;
-          const pmOverrideFrequencyScore = Math.max(0, 100 - pmOverrideRate * 2);
+          const normalWeeks = cycleHistory.length - pmOverrides;
+          const pmOverrideFrequencyScore = cycleHistory.length > 0
+            ? Math.round((normalWeeks / cycleHistory.length) * 100)
+            : 100;
 
           // Calculate dynamic weights
           const allScores = {

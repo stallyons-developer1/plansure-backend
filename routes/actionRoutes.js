@@ -18,6 +18,66 @@ const checkProgrammeLocked = async (programmeId) => {
   return { locked: programme.isLocked, programme };
 };
 
+// Helper to parse activity dates
+const parseActivityDate = (dateStr) => {
+  if (!dateStr) return null;
+  const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
+  const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+  const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
+  if (!match) return null;
+  const day = parseInt(match[1]);
+  const month = months[match[2]];
+  let year = parseInt(match[3]);
+  year = year < 50 ? 2000 + year : 1900 + year;
+  return new Date(year, month, day);
+};
+
+// Check if project has ended (last activity date passed)
+const checkProjectEnded = (activities) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  let latestFinishDate = null;
+  for (const activity of activities || []) {
+    const finishDate = parseActivityDate(activity.finishDate);
+    if (finishDate && (!latestFinishDate || finishDate > latestFinishDate)) {
+      latestFinishDate = finishDate;
+    }
+  }
+
+  if (!latestFinishDate) return false;
+
+  latestFinishDate.setHours(23, 59, 59, 999);
+  return today > latestFinishDate;
+};
+
+// Helper function to update linked activity status when action is completed
+const updateLinkedActivityStatus = async (programmeId, activityId, isCompleted) => {
+  try {
+    const programme = await Programme.findById(programmeId);
+    if (!programme || !programme.extractedData?.activities) return;
+
+    const activityIndex = programme.extractedData.activities.findIndex(
+      (a) => a.activityId === activityId
+    );
+
+    if (activityIndex === -1) return;
+
+    if (isCompleted) {
+      // Mark activity as Complete and remove blocked/at-risk status
+      programme.extractedData.activities[activityIndex].activityStatus = "Complete";
+      programme.extractedData.activities[activityIndex].status = "Completed";
+      programme.extractedData.activities[activityIndex].ragStatus = "Green";
+      programme.extractedData.activities[activityIndex].isBlocked = false;
+      programme.extractedData.activities[activityIndex].blocker = "";
+    }
+
+    await programme.save();
+  } catch (error) {
+    console.error("Error updating linked activity status:", error);
+  }
+};
+
 router.post("/", protect, async (req, res) => {
   try {
     const {
@@ -58,6 +118,15 @@ router.post("/", protect, async (req, res) => {
         res,
         "This week is closed and read-only. Cannot create new actions.",
         403,
+      );
+    }
+
+    // Check if project has ended - no more actions allowed
+    if (checkProjectEnded(programme.extractedData?.activities)) {
+      return sendError(
+        res,
+        "Project has ended. No new actions can be created.",
+        400,
       );
     }
 
@@ -279,12 +348,21 @@ router.put("/:id", protect, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    const { locked } = await checkProgrammeLocked(action.programme);
+    const { locked, programme } = await checkProgrammeLocked(action.programme);
     if (locked) {
       return sendError(
         res,
         "This week is closed and read-only. Cannot update actions.",
         403,
+      );
+    }
+
+    // Check if project has ended - no more actions allowed
+    if (programme && checkProjectEnded(programme.extractedData?.activities)) {
+      return sendError(
+        res,
+        "Project has ended. No actions can be updated.",
+        400,
       );
     }
 
@@ -338,6 +416,14 @@ router.put("/:id", protect, async (req, res) => {
       action.status = status;
       if (status === "Completed") {
         action.completedAt = new Date();
+        // Update linked activity status to Complete
+        if (action.linkedActivity?.activityId) {
+          await updateLinkedActivityStatus(
+            action.programme,
+            action.linkedActivity.activityId,
+            true
+          );
+        }
       } else {
         action.completedAt = null;
       }
@@ -447,12 +533,21 @@ router.patch("/:id/complete", protect, async (req, res) => {
       }
     }
 
-    const { locked } = await checkProgrammeLocked(action.programme);
+    const { locked, programme } = await checkProgrammeLocked(action.programme);
     if (locked) {
       return sendError(
         res,
         "This week is closed and read-only. Cannot modify actions.",
         403,
+      );
+    }
+
+    // Check if project has ended - no more actions allowed
+    if (programme && checkProjectEnded(programme.extractedData?.activities)) {
+      return sendError(
+        res,
+        "Project has ended. No actions can be modified.",
+        400,
       );
     }
 
@@ -464,6 +559,14 @@ router.patch("/:id/complete", protect, async (req, res) => {
     } else {
       action.status = "Completed";
       action.completedAt = new Date();
+      // Update linked activity status to Complete
+      if (action.linkedActivity?.activityId) {
+        await updateLinkedActivityStatus(
+          action.programme,
+          action.linkedActivity.activityId,
+          true
+        );
+      }
     }
 
     await action.save();
