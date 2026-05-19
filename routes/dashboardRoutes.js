@@ -871,47 +871,127 @@ router.get("/governance", protect, async (req, res) => {
       });
     }
 
-    // Build constraint intelligence data
+    // Build constraint intelligence data from overdue activities across all projects
     const constraintData = [];
-    const blockerCounts = {};
+    const constraintMap = {};
 
+    // Helper function to categorize activity by type
+    const categorizeActivity = (activity) => {
+      const name = (activity.activityName || "").toLowerCase();
+      const blocker = activity.blocker || "";
+
+      // If has explicit blocker, use that
+      if (blocker) return blocker;
+
+      // Categorize by activity name patterns
+      if (name.includes("material") || name.includes("delivery") || name.includes("procurement")) {
+        return "Material Delivery";
+      }
+      if (name.includes("approval") || name.includes("permit") || name.includes("sign-off")) {
+        return "Approvals & Permits";
+      }
+      if (name.includes("design") || name.includes("drawing")) {
+        return "Design & Drawings";
+      }
+      if (name.includes("resource") || name.includes("manpower") || name.includes("labour")) {
+        return "Resource Availability";
+      }
+      if (name.includes("inspection") || name.includes("test") || name.includes("quality")) {
+        return "Inspection & Testing";
+      }
+      if (name.includes("subcontractor") || name.includes("vendor")) {
+        return "Subcontractor Delays";
+      }
+      if (name.includes("weather") || name.includes("site")) {
+        return "Site Conditions";
+      }
+
+      return "Other Delays";
+    };
+
+    // Get overdue activities from each project
     for (const prog of programmes) {
       const activities = prog.extractedData?.activities || [];
+      const projectId = prog.project?.toString();
+      const projectName = projects.find(p => p._id.toString() === projectId)?.name || "Unknown";
+
       activities.forEach((a) => {
-        if (a.isBlocked && a.blocker) {
-          const blockerType = a.blocker;
-          if (!blockerCounts[blockerType]) {
-            blockerCounts[blockerType] = {
-              type: blockerType,
-              frequency: 0,
+        const finishDate = a.finishDate ? new Date(a.finishDate) : null;
+        const isOverdue = finishDate && finishDate < today && a.status !== "Completed";
+
+        if (isOverdue || (a.isBlocked && a.blocker)) {
+          const constraintType = categorizeActivity(a);
+
+          if (!constraintMap[constraintType]) {
+            constraintMap[constraintType] = {
+              type: constraintType,
+              projects: new Set(),
+              activities: [],
               lastSeen: null,
+              previousWeekCount: 0,
+              currentWeekCount: 0,
             };
           }
-          blockerCounts[blockerType].frequency++;
-          const progDate = new Date(prog.createdAt);
-          if (!blockerCounts[blockerType].lastSeen || progDate > blockerCounts[blockerType].lastSeen) {
-            blockerCounts[blockerType].lastSeen = progDate;
+
+          constraintMap[constraintType].projects.add(projectId);
+          constraintMap[constraintType].activities.push({
+            activityId: a.activityId,
+            activityName: a.activityName,
+            projectName: projectName,
+            finishDate: a.finishDate,
+          });
+
+          const activityDate = finishDate || new Date(prog.createdAt);
+          if (!constraintMap[constraintType].lastSeen || activityDate > constraintMap[constraintType].lastSeen) {
+            constraintMap[constraintType].lastSeen = activityDate;
+          }
+
+          // Track for trend calculation (last 7 days vs previous 7 days)
+          const daysSinceOverdue = Math.floor((today - activityDate) / msPerDay);
+          if (daysSinceOverdue <= 7) {
+            constraintMap[constraintType].currentWeekCount++;
+          } else if (daysSinceOverdue <= 14) {
+            constraintMap[constraintType].previousWeekCount++;
           }
         }
       });
     }
 
-    Object.values(blockerCounts)
-      .sort((a, b) => b.frequency - a.frequency)
+    // Convert to array and calculate trends
+    Object.values(constraintMap)
+      .sort((a, b) => b.projects.size - a.projects.size)
       .slice(0, 6)
-      .forEach((blocker, index) => {
-        let lastSeenWeek = "Current";
-        if (blocker.lastSeen && earliestStartDate) {
-          const daysSinceStart = Math.floor((blocker.lastSeen - earliestStartDate) / msPerDay);
-          const weekNum = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
-          lastSeenWeek = `Week ${weekNum}`;
+      .forEach((constraint) => {
+        // Calculate trend: compare current week vs previous week
+        let trend = "stable";
+        if (constraint.currentWeekCount > constraint.previousWeekCount) {
+          trend = "up"; // Getting worse
+        } else if (constraint.currentWeekCount < constraint.previousWeekCount) {
+          trend = "down"; // Improving
+        }
+
+        // Format last seen date
+        let lastSeenStr = "-";
+        if (constraint.lastSeen) {
+          const daysSince = Math.floor((today - constraint.lastSeen) / msPerDay);
+          if (daysSince === 0) {
+            lastSeenStr = "Today";
+          } else if (daysSince === 1) {
+            lastSeenStr = "Yesterday";
+          } else if (daysSince < 7) {
+            lastSeenStr = `${daysSince} days ago`;
+          } else {
+            const weekNum = Math.ceil(daysSince / 7);
+            lastSeenStr = `${weekNum} week${weekNum > 1 ? "s" : ""} ago`;
+          }
         }
 
         constraintData.push({
-          type: blocker.type,
-          frequency: blocker.frequency,
-          trend: index < 2 ? "up" : index < 4 ? "stable" : "down",
-          lastSeen: lastSeenWeek,
+          type: constraint.type,
+          frequency: constraint.projects.size, // Number of projects affected
+          trend: trend,
+          lastSeen: lastSeenStr,
+          activities: constraint.activities.slice(0, 5), // Top 5 activities for detail
         });
       });
 

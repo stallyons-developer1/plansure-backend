@@ -300,48 +300,107 @@ router.get("/", protect, async (req, res) => {
             }
           }
 
+          // Calculate weekly readiness using SAME RAG logic as governance dashboard
+          const calculateWeekRAG = (weekStartDate, weekEndDate, activities) => {
+            let green = 0, amber = 0, red = 0;
+
+            for (const activity of activities) {
+              const actStart = parseDate(activity.startDate);
+              const actFinish = parseDate(activity.finishDate);
+
+              if (!actStart) continue;
+
+              const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+              const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+
+              if (!startsThisWeek && !spansThisWeek) continue;
+
+              const isCompleted = activity.status === "Completed" ||
+                (activity.startDate && activity.startDate.includes(" A")) ||
+                (activity.finishDate && activity.finishDate.includes(" A"));
+
+              if (isCompleted) {
+                green++;
+              } else if (actFinish && actFinish < weekEndDate) {
+                // Should have finished by this week - overdue
+                red++;
+              } else if (actStart <= weekEndDate) {
+                // Starting this week or already started - check if on track
+                if (weekStartDate > today) {
+                  // Future week - assume on track unless blocked
+                  if (activity.isBlocked) {
+                    red++;
+                  } else {
+                    amber++; // Future activities are amber (need monitoring)
+                  }
+                } else {
+                  green++; // Current/past week activities that started
+                }
+              } else {
+                amber++; // Activity spans but hasn't started yet
+              }
+            }
+
+            return { green, amber, red, total: green + amber + red };
+          };
+
+          // Calculate total weeks from programme span
+          let latestEndDate = null;
+          for (const activity of allActivities) {
+            const finishDate = parseDate(activity.finishDate);
+            if (finishDate && (!latestEndDate || finishDate > latestEndDate)) {
+              latestEndDate = finishDate;
+            }
+          }
+
           let readinessTrendScore = 65;
           if (earliestStartDate && allActivities.length > 0) {
             const msPerDay = 1000 * 60 * 60 * 24;
             const daysSinceStart = Math.floor((today - earliestStartDate) / msPerDay);
             const currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
 
-            // Calculate readiness for each week up to current week
-            const weeklyReadinessValues = [];
-            for (let weekNum = 1; weekNum <= currentWeekNumber; weekNum++) {
+            // Calculate total weeks from programme span (same as dashboard)
+            let totalWeeksFromProgramme = 0;
+            if (earliestStartDate && latestEndDate) {
+              const totalDays = Math.ceil((latestEndDate - earliestStartDate) / msPerDay);
+              totalWeeksFromProgramme = Math.ceil(totalDays / 7);
+            }
+
+            // Generate weekly readiness data for all weeks
+            const weeklyReadinessData = [];
+            const weeksToGenerate = totalWeeksFromProgramme || currentWeekNumber;
+
+            for (let weekNum = 1; weekNum <= weeksToGenerate; weekNum++) {
               const weekStartDate = new Date(earliestStartDate);
               weekStartDate.setDate(weekStartDate.getDate() + (weekNum - 1) * 7);
               const weekEndDate = new Date(weekStartDate);
               weekEndDate.setDate(weekStartDate.getDate() + 6);
 
-              let green = 0, total = 0;
-              for (const activity of allActivities) {
-                const actStart = parseDate(activity.startDate);
-                const actFinish = parseDate(activity.finishDate);
-                if (!actStart) continue;
+              const rag = calculateWeekRAG(weekStartDate, weekEndDate, allActivities);
+              const readinessPercent = rag.total > 0 ? Math.round((rag.green / rag.total) * 100) : 0;
 
-                const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
-                const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
-                if (!startsThisWeek && !spansThisWeek) continue;
+              // Find matching cycle history if exists
+              const matchingCycle = cycleHistory.find((c) => c.weekNumber === weekNum);
 
-                total++;
-                const isCompleted = activity.status === "Completed" ||
-                  (activity.startDate && activity.startDate.includes(" A")) ||
-                  (activity.finishDate && activity.finishDate.includes(" A"));
-                if (isCompleted) green++;
-              }
-
-              if (total > 0) {
-                weeklyReadinessValues.push(Math.round((green / total) * 100));
-              }
+              weeklyReadinessData.push({
+                week: `W${weekNum}`,
+                value: matchingCycle ?
+                  Math.round(((matchingCycle.stats?.green || 0) / (matchingCycle.stats?.totalActivities || 1)) * 100) :
+                  readinessPercent,
+              });
             }
 
-            // Calculate stability from variance
-            if (weeklyReadinessValues.length >= 2) {
-              const mean = weeklyReadinessValues.reduce((a, b) => a + b, 0) / weeklyReadinessValues.length;
-              const variance = weeklyReadinessValues.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / weeklyReadinessValues.length;
+            // Only use past and current weeks (same as dashboard)
+            const currentWeekIndex = Math.min(currentWeekNumber, weeklyReadinessData.length);
+            const pastAndCurrentWeeks = weeklyReadinessData.slice(0, currentWeekIndex);
+
+            // Calculate stability from variance (same as dashboard)
+            if (pastAndCurrentWeeks.length >= 2) {
+              const readinessValues = pastAndCurrentWeeks.map((w) => w.value);
+              const mean = readinessValues.reduce((a, b) => a + b, 0) / readinessValues.length;
+              const variance = readinessValues.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / readinessValues.length;
               readinessTrendScore = Math.max(0, Math.min(100, 100 - Math.sqrt(variance)));
-            } else if (weeklyReadinessValues.length === 1) {
+            } else if (pastAndCurrentWeeks.length === 1) {
               readinessTrendScore = 100;
             }
           }
