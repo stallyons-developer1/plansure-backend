@@ -871,109 +871,155 @@ router.get("/governance", protect, async (req, res) => {
       });
     }
 
-    // Build constraint intelligence data from overdue activities across all projects
+    // Build constraint intelligence data using DYNAMIC activity analysis
     const constraintData = [];
-    const constraintMap = {};
+    const activityTypeMap = {};
 
-    // Helper function to categorize activity by type
-    const categorizeActivity = (activity) => {
-      const name = (activity.activityName || "").toLowerCase();
-      const blocker = activity.blocker || "";
+    // Helper function to extract activity type dynamically from name
+    const extractActivityType = (activityName) => {
+      const name = (activityName || "").toLowerCase().trim();
 
-      // If has explicit blocker, use that
-      if (blocker) return blocker;
+      // Remove common prefixes (activity IDs, numbers, etc.)
+      const cleanName = name
+        .replace(/^[a-z]{1,3}[-_]?\d+[-_:]?\s*/i, "") // Remove IDs like "A1-001", "WP-FW-001"
+        .replace(/^(phase|stage|step|task)\s*\d*[-:]?\s*/i, "") // Remove "Phase 1", "Stage 2"
+        .replace(/\s*(phase|stage)\s*\d*$/i, "") // Remove trailing "Phase 1"
+        .replace(/[-_]/g, " ")
+        .trim();
 
-      // Categorize by activity name patterns
-      if (name.includes("material") || name.includes("delivery") || name.includes("procurement")) {
-        return "Material Delivery";
-      }
-      if (name.includes("approval") || name.includes("permit") || name.includes("sign-off")) {
-        return "Approvals & Permits";
-      }
-      if (name.includes("design") || name.includes("drawing")) {
-        return "Design & Drawings";
-      }
-      if (name.includes("resource") || name.includes("manpower") || name.includes("labour")) {
-        return "Resource Availability";
-      }
-      if (name.includes("inspection") || name.includes("test") || name.includes("quality")) {
-        return "Inspection & Testing";
-      }
-      if (name.includes("subcontractor") || name.includes("vendor")) {
-        return "Subcontractor Delays";
-      }
-      if (name.includes("weather") || name.includes("site")) {
-        return "Site Conditions";
+      // Extract main activity type (first 2-3 key words)
+      const words = cleanName.split(/\s+/).filter(w => w.length > 2);
+
+      // Common construction activity patterns - group similar activities
+      const activityPatterns = {
+        "Foundation": ["foundation", "footing", "pile", "piling", "excavation", "ground"],
+        "Structural": ["steel", "structure", "column", "beam", "slab", "concrete", "rebar", "structural"],
+        "MEP Works": ["mep", "electrical", "plumbing", "hvac", "mechanical", "piping", "wiring"],
+        "Facade & Cladding": ["facade", "cladding", "curtain", "glazing", "external", "envelope"],
+        "Interior Fit-Out": ["interior", "fit-out", "fitout", "partition", "ceiling", "flooring", "tiling", "painting", "plastering"],
+        "Roofing": ["roof", "roofing", "waterproof", "membrane"],
+        "Site Works": ["site", "mobilization", "survey", "clearing", "demolition"],
+        "Testing & Commissioning": ["test", "testing", "commission", "commissioning", "inspection", "handover", "snag"],
+        "Design & Approvals": ["design", "drawing", "approval", "permit", "submittal"],
+        "Procurement": ["material", "delivery", "procurement", "supply", "order"],
+      };
+
+      // Find matching pattern
+      for (const [type, keywords] of Object.entries(activityPatterns)) {
+        if (keywords.some(kw => cleanName.includes(kw))) {
+          return type;
+        }
       }
 
-      return "Other Delays";
+      // If no pattern matched, use first 2 meaningful words as type
+      if (words.length >= 2) {
+        return words.slice(0, 2).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+      } else if (words.length === 1) {
+        return words[0].charAt(0).toUpperCase() + words[0].slice(1);
+      }
+
+      return "General Works";
     };
 
-    // Get overdue activities from each project
+    // Step 1: Collect ALL activities from all projects with their status
+    const allActivitiesByType = {};
+
     for (const prog of programmes) {
       const activities = prog.extractedData?.activities || [];
       const projectId = prog.project?.toString();
       const projectName = projects.find(p => p._id.toString() === projectId)?.name || "Unknown";
 
       activities.forEach((a) => {
-        const finishDate = a.finishDate ? new Date(a.finishDate) : null;
-        const isOverdue = finishDate && finishDate < today && a.status !== "Completed";
+        const activityType = extractActivityType(a.activityName);
+        const finishDate = parseDate(a.finishDate);
 
-        if (isOverdue || (a.isBlocked && a.blocker)) {
-          const constraintType = categorizeActivity(a);
+        // Determine activity status
+        const isCompleted = a.status === "Completed" ||
+          (a.finishDate && a.finishDate.includes(" A"));
+        const isOverdue = finishDate && finishDate < today && !isCompleted;
+        const isOnTime = finishDate && finishDate >= today && !isCompleted;
 
-          if (!constraintMap[constraintType]) {
-            constraintMap[constraintType] = {
-              type: constraintType,
-              projects: new Set(),
-              activities: [],
-              lastSeen: null,
-              previousWeekCount: 0,
-              currentWeekCount: 0,
-            };
-          }
+        if (!allActivitiesByType[activityType]) {
+          allActivitiesByType[activityType] = {
+            type: activityType,
+            projectsWithOverdue: new Set(),
+            projectsWithOnTime: new Set(),
+            projectsWithCompleted: new Set(),
+            overdueActivities: [],
+            lastOverdueDate: null,
+            totalOverdue: 0,
+            totalOnTime: 0,
+            totalCompleted: 0,
+          };
+        }
 
-          constraintMap[constraintType].projects.add(projectId);
-          constraintMap[constraintType].activities.push({
+        const typeData = allActivitiesByType[activityType];
+
+        // Only track overdue and completed activities (ignore future/on-time)
+        if (isOverdue) {
+          typeData.projectsWithOverdue.add(projectId);
+          typeData.totalOverdue++;
+          typeData.overdueActivities.push({
             activityId: a.activityId,
             activityName: a.activityName,
             projectName: projectName,
             finishDate: a.finishDate,
+            status: "Overdue",
           });
-
-          const activityDate = finishDate || new Date(prog.createdAt);
-          if (!constraintMap[constraintType].lastSeen || activityDate > constraintMap[constraintType].lastSeen) {
-            constraintMap[constraintType].lastSeen = activityDate;
+          if (!typeData.lastOverdueDate || finishDate > typeData.lastOverdueDate) {
+            typeData.lastOverdueDate = finishDate;
           }
-
-          // Track for trend calculation (last 7 days vs previous 7 days)
-          const daysSinceOverdue = Math.floor((today - activityDate) / msPerDay);
-          if (daysSinceOverdue <= 7) {
-            constraintMap[constraintType].currentWeekCount++;
-          } else if (daysSinceOverdue <= 14) {
-            constraintMap[constraintType].previousWeekCount++;
-          }
+        } else if (isCompleted) {
+          typeData.projectsWithCompleted.add(projectId);
+          typeData.totalCompleted++;
         }
+        // Note: Future/on-time activities are ignored for constraint intelligence
       });
     }
 
-    // Convert to array and calculate trends
-    Object.values(constraintMap)
-      .sort((a, b) => b.projects.size - a.projects.size)
-      .slice(0, 6)
-      .forEach((constraint) => {
-        // Calculate trend: compare current week vs previous week
+    // Step 2: Calculate trends by comparing across projects
+    // Trend logic:
+    // - "down" = some projects have this activity completed/on-time while others have it overdue (improving)
+    // - "stable" = same activity overdue in multiple projects (consistent issue across projects)
+    // - "up" = only 1 project has this activity overdue (unique/new problem)
+
+    Object.values(allActivitiesByType)
+      .filter(typeData => typeData.totalOverdue > 0) // Only show types with overdue activities
+      .sort((a, b) => b.projectsWithOverdue.size - a.projectsWithOverdue.size || b.totalOverdue - a.totalOverdue)
+      // No limit - show all constraint types
+      .forEach((typeData) => {
         let trend = "stable";
-        if (constraint.currentWeekCount > constraint.previousWeekCount) {
-          trend = "up"; // Getting worse
-        } else if (constraint.currentWeekCount < constraint.previousWeekCount) {
-          trend = "down"; // Improving
+
+        const overdueProjects = typeData.projectsWithOverdue.size;
+        const completedProjects = typeData.projectsWithCompleted.size;
+        // Only consider overdue and completed (future activities ignored)
+        const totalProjectsWithThisType = new Set([
+          ...typeData.projectsWithOverdue,
+          ...typeData.projectsWithCompleted,
+        ]).size;
+
+        // Smart trend calculation:
+        // DOWN = One project completed, other overdue (someone fixed it - improving)
+        // STABLE = Same activity overdue in multiple projects (consistent issue)
+        // UP = Only 1 project has this activity overdue (unique/new problem)
+
+        if (totalProjectsWithThisType > 1) {
+          if (completedProjects > 0) {
+            // Some projects have completed, others overdue = improving trend
+            trend = "down";
+          } else if (overdueProjects > 1) {
+            // Same activity overdue in multiple projects = consistent issue
+            trend = "stable";
+          }
+        } else {
+          // Only 1 project has this activity type = unique/new problem
+          trend = "up";
         }
 
         // Format last seen date
         let lastSeenStr = "-";
-        if (constraint.lastSeen) {
-          const daysSince = Math.floor((today - constraint.lastSeen) / msPerDay);
+        if (typeData.lastOverdueDate) {
+          const daysSince = Math.floor((today - typeData.lastOverdueDate) / msPerDay);
           if (daysSince === 0) {
             lastSeenStr = "Today";
           } else if (daysSince === 1) {
@@ -987,11 +1033,19 @@ router.get("/governance", protect, async (req, res) => {
         }
 
         constraintData.push({
-          type: constraint.type,
-          frequency: constraint.projects.size, // Number of projects affected
+          type: typeData.type,
+          frequency: overdueProjects, // Number of projects with overdue activities of this type
           trend: trend,
           lastSeen: lastSeenStr,
-          activities: constraint.activities.slice(0, 5), // Top 5 activities for detail
+          activities: typeData.overdueActivities.slice(0, 5),
+          // Additional context for UI
+          stats: {
+            overdueCount: typeData.totalOverdue,
+            completedCount: typeData.totalCompleted,
+            onTimeCount: typeData.totalOnTime,
+            projectsAffected: overdueProjects,
+            projectsCompleted: completedProjects,
+          },
         });
       });
 
