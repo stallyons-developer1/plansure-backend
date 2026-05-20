@@ -548,14 +548,6 @@ router.get("/governance", protect, async (req, res) => {
       const projectId = prog.project?.toString();
       const projectName = projectMap[projectId] || "Unknown Project";
 
-      // Add project info to each activity
-      const activitiesWithProject = activities.map(act => ({
-        ...act,
-        projectId,
-        projectName,
-      }));
-      allActivities = allActivities.concat(activitiesWithProject);
-
       for (const activity of activities) {
         const startDate = parseDate(activity.startDate);
         const finishDate = parseDate(activity.finishDate);
@@ -566,6 +558,14 @@ router.get("/governance", protect, async (req, res) => {
         if (finishDate && (!latestEndDate || finishDate > latestEndDate)) {
           latestEndDate = finishDate;
         }
+
+        // Add activity with project info (convert Mongoose subdoc to plain object)
+        const activityObj = activity.toObject ? activity.toObject() : activity;
+        allActivities.push({
+          ...activityObj,
+          projectId,
+          projectName,
+        });
       }
     }
 
@@ -634,6 +634,7 @@ router.get("/governance", protect, async (req, res) => {
     const historicalWeeks = [];
 
     // Helper to calculate RAG for activities in a specific week only
+    // Helper to calculate RAG counts using stored ragStatus (same as Activities & Lookahead)
     const calculateWeekRAG = (weekStartDate, weekEndDate, activities) => {
       let green = 0, amber = 0, red = 0;
 
@@ -644,36 +645,22 @@ router.get("/governance", protect, async (req, res) => {
         if (!actStart) continue;
 
         // Check if activity STARTS within this week OR is active during this week
-        // Activity is in this week if:
-        // 1. It starts within this week (actStart >= weekStart AND actStart <= weekEnd), OR
-        // 2. It spans this week (started before and finishes after)
         const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
         const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
 
         if (!startsThisWeek && !spansThisWeek) continue;
 
-        // Check if activity is completed
-        const isCompleted = activity.status === "Completed" ||
-          (activity.startDate && activity.startDate.includes(" A")) ||
-          (activity.finishDate && activity.finishDate.includes(" A"));
+        // Use the stored ragStatus from the activity (same as Activities & Lookahead page)
+        const ragStatus = activity.ragStatus || "Grey";
 
-        if (isCompleted) {
+        if (ragStatus === "Green") {
           green++;
-        } else if (actFinish && actFinish < today) {
-          // Activity should have finished by now but isn't completed - RED (overdue)
-          red++;
-        } else if (actFinish && actFinish < weekEndDate) {
-          // Should have finished within this week but not completed yet
-          // If we're past this week, it's red; otherwise amber
-          if (weekEndDate < today) {
-            red++;
-          } else {
-            amber++;
-          }
-        } else {
-          // Activity is ongoing or hasn't finished yet - AMBER (in progress/monitoring needed)
+        } else if (ragStatus === "Amber") {
           amber++;
+        } else if (ragStatus === "Red") {
+          red++;
         }
+        // Grey activities are not counted in RAG totals
       }
 
       return { green, amber, red, total: green + amber + red };
@@ -777,21 +764,14 @@ router.get("/governance", protect, async (req, res) => {
 
           if (!startsThisWeek && !spansThisWeek) continue;
 
-          // Calculate RAG for this activity in this week
+          // Check if activity is completed
           const isCompleted = activity.status === "Completed" ||
             (activity.startDate && activity.startDate.includes(" A")) ||
             (activity.finishDate && activity.finishDate.includes(" A"));
 
-          let activityRAG;
-          if (isCompleted) {
-            activityRAG = "Green";
-          } else if (actFinish && actFinish < today) {
-            activityRAG = "Red";
-          } else if (actFinish && actFinish < weekEndDate) {
-            activityRAG = weekEndDate < today ? "Red" : "Amber";
-          } else {
-            activityRAG = "Amber";
-          }
+          // Use the stored ragStatus from the activity (same as Activities & Lookahead page)
+          // This ensures consistency across all views
+          const activityRAG = activity.ragStatus || "Grey";
 
           weekActivities.push({
             activityId: activity.activityId,
