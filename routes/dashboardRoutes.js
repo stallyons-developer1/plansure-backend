@@ -748,6 +748,55 @@ router.get("/governance", protect, async (req, res) => {
           closeType = "Upcoming";
         }
 
+        // Get activities with their week-specific RAG for this week
+        const weekActivities = [];
+        for (const activity of allActivities) {
+          const actStart = parseDate(activity.startDate);
+          const actFinish = parseDate(activity.finishDate);
+
+          if (!actStart) continue;
+
+          // Check if activity is in this week
+          const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+          const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+
+          if (!startsThisWeek && !spansThisWeek) continue;
+
+          // Calculate RAG for this activity in this week
+          const isCompleted = activity.status === "Completed" ||
+            (activity.startDate && activity.startDate.includes(" A")) ||
+            (activity.finishDate && activity.finishDate.includes(" A"));
+
+          let activityRAG;
+          if (isCompleted) {
+            activityRAG = "Green";
+          } else if (actFinish && actFinish < today) {
+            activityRAG = "Red";
+          } else if (actFinish && actFinish < weekEndDate) {
+            activityRAG = weekEndDate < today ? "Red" : "Amber";
+          } else {
+            activityRAG = "Amber";
+          }
+
+          weekActivities.push({
+            activityId: activity.activityId,
+            activityName: activity.activityName,
+            startDate: activity.startDate,
+            finishDate: activity.finishDate,
+            duration: activity.duration,
+            ragStatus: activityRAG,
+            activityStatus: activity.activityStatus || "Ready",
+            ownerName: activity.ownerName || "-",
+            isCompleted: isCompleted,
+          });
+        }
+
+        // Sort activities by RAG (Red first, then Amber, then Green)
+        weekActivities.sort((a, b) => {
+          const ragOrder = { Red: 1, Amber: 2, Green: 3 };
+          return (ragOrder[a.ragStatus] || 4) - (ragOrder[b.ragStatus] || 4);
+        });
+
         historicalWeeks.push({
           week: weekNum,
           date: `${formatDate(weekStartDate)} - ${formatDate(weekEndDate)}`,
@@ -766,6 +815,7 @@ router.get("/governance", protect, async (req, res) => {
           },
           closeType: closeType,
           notes: matchingCycle?.notes || "",
+          activities: weekActivities,
         });
       }
     }
