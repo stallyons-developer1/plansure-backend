@@ -672,9 +672,11 @@ router.get("/governance", protect, async (req, res) => {
       for (let weekNum = 1; weekNum <= weeksToGenerate; weekNum++) {
         const weekStartDate = new Date(earliestStartDate);
         weekStartDate.setDate(weekStartDate.getDate() + (weekNum - 1) * 7);
+        weekStartDate.setHours(0, 0, 0, 0);
 
         const weekEndDate = new Date(weekStartDate);
         weekEndDate.setDate(weekStartDate.getDate() + 6);
+        weekEndDate.setHours(23, 59, 59, 999);
 
         const rag = calculateWeekRAG(weekStartDate, weekEndDate, allActivities);
         const readinessPercent = rag.total > 0 ? Math.round((rag.green / rag.total) * 100) : 0;
