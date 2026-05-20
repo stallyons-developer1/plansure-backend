@@ -46,7 +46,7 @@ const calculateRAG = (activity, today) => {
   if (isCompleted) return "Green";
   if (!startDate) return "Grey";
 
-  const msPerDay = 1000 * 60 * 60 * 1000 * 24;
+  const msPerDay = 1000 * 60 * 60 * 24;
   const daysUntilStart = Math.ceil((startDate - today) / msPerDay);
   const weeksUntilStart = Math.ceil(daysUntilStart / 7);
 
@@ -161,10 +161,69 @@ router.post("/weekly-plan", protect, async (req, res) => {
     const activities = activeProgramme.extractedData?.activities || [];
     const today = new Date();
 
-    // Filter only green activities
+    // Helper to parse date strings
+    const parseActivityDate = (dateStr) => {
+      if (!dateStr) return null;
+      const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
+      const months = {
+        Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+        Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+      };
+      const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
+      if (!match) return null;
+      const day = parseInt(match[1]);
+      const month = months[match[2]];
+      let year = parseInt(match[3]);
+      year = year < 50 ? 2000 + year : 1900 + year;
+      return new Date(year, month, day);
+    };
+
+    // Find programme start date (earliest activity)
+    let earliestDate = null;
+    for (const activity of activities) {
+      const startDate = parseActivityDate(activity.startDate);
+      if (startDate && (!earliestDate || startDate < earliestDate)) {
+        earliestDate = startDate;
+      }
+    }
+
+    // Calculate current week number and 2-week date range
+    let currentWeekNumber = 1;
+    let weekStartDate = earliestDate;
+    let weekEndDate = earliestDate ? new Date(earliestDate) : null;
+
+    if (earliestDate) {
+      earliestDate.setHours(0, 0, 0, 0);
+      const todayStart = new Date(today);
+      todayStart.setHours(0, 0, 0, 0);
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const daysSinceStart = Math.floor((todayStart - earliestDate) / msPerDay);
+      currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
+
+      // Calculate 2-week date range (current week and next week)
+      weekStartDate = new Date(earliestDate);
+      weekStartDate.setDate(earliestDate.getDate() + (currentWeekNumber - 1) * 7);
+      weekEndDate = new Date(weekStartDate);
+      weekEndDate.setDate(weekStartDate.getDate() + 13); // 2 weeks = 14 days
+    }
+
+    // Helper to check if activity is in current 2-week period
+    const isActivityInWeek = (activity) => {
+      if (!weekStartDate || !weekEndDate) return true;
+      const actStart = parseActivityDate(activity.startDate);
+      const actFinish = parseActivityDate(activity.finishDate);
+      if (!actStart) return false;
+
+      // Activity is in week if it starts in this period OR spans this period
+      const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+      const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+      return startsThisWeek || spansThisWeek;
+    };
+
+    // Filter only green activities IN the current 2-week period
     const greenActivities = activities.filter((activity) => {
       const rag = calculateRAG(activity, today);
-      return rag === "Green";
+      return rag === "Green" && isActivityInWeek(activity);
     });
 
     // Get actions for this programme
@@ -181,20 +240,8 @@ router.post("/weekly-plan", protect, async (req, res) => {
       return !hasOpenAction;
     });
 
-    // Calculate current week
-    let currentWeek = "N/A";
-    if (activeProgramme.lookaheadStartDate) {
-      const startOfYear = new Date(
-        new Date(activeProgramme.lookaheadStartDate).getFullYear(),
-        0,
-        1
-      );
-      const days = Math.floor(
-        (new Date(activeProgramme.lookaheadStartDate) - startOfYear) /
-          (24 * 60 * 60 * 1000)
-      );
-      currentWeek = `W${Math.ceil((days + 1) / 7)}`;
-    }
+    // Use calculated week number for the 2-week period
+    const currentWeek = `W${currentWeekNumber}-${currentWeekNumber + 1}`;
 
     // Create Excel workbook
     const workbook = new ExcelJS.Workbook();
