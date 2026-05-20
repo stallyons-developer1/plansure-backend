@@ -644,24 +644,20 @@ router.get("/governance", protect, async (req, res) => {
 
         if (isCompleted) {
           green++;
-        } else if (actFinish && actFinish < weekEndDate) {
-          // Should have finished by this week - overdue
+        } else if (actFinish && actFinish < today) {
+          // Activity should have finished by now but isn't completed - RED (overdue)
           red++;
-        } else if (actStart <= weekEndDate) {
-          // Starting this week or already started - check if on track
-          // If it's a future week (weekStart > today), we predict based on preparation
-          if (weekStartDate > today) {
-            // Future week - assume on track unless blocked
-            if (activity.isBlocked) {
-              red++;
-            } else {
-              amber++; // Future activities are amber (need monitoring)
-            }
+        } else if (actFinish && actFinish < weekEndDate) {
+          // Should have finished within this week but not completed yet
+          // If we're past this week, it's red; otherwise amber
+          if (weekEndDate < today) {
+            red++;
           } else {
-            green++; // Current/past week activities that started
+            amber++;
           }
         } else {
-          amber++; // Activity spans but hasn't started yet
+          // Activity is ongoing or hasn't finished yet - AMBER (in progress/monitoring needed)
+          amber++;
         }
       }
 
@@ -752,7 +748,9 @@ router.get("/governance", protect, async (req, res) => {
 
         historicalWeeks.push({
           week: weekNum,
-          date: formatDate(weekEndDate),
+          date: `${formatDate(weekStartDate)} - ${formatDate(weekEndDate)}`,
+          startDate: formatDate(weekStartDate),
+          endDate: formatDate(weekEndDate),
           status: weekStatus,
           icon: weekIcon,
           score: matchingCycle?.score || readinessPercent,
