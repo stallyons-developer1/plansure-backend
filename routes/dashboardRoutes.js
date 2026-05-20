@@ -537,9 +537,24 @@ router.get("/governance", protect, async (req, res) => {
     let latestEndDate = null;
     let allActivities = [];
 
+    // Build a map of project IDs to project names
+    const projectMap = {};
+    for (const project of projects) {
+      projectMap[project._id.toString()] = project.name;
+    }
+
     for (const prog of programmes) {
       const activities = prog.extractedData?.activities || [];
-      allActivities = allActivities.concat(activities);
+      const projectId = prog.project?.toString();
+      const projectName = projectMap[projectId] || "Unknown Project";
+
+      // Add project info to each activity
+      const activitiesWithProject = activities.map(act => ({
+        ...act,
+        projectId,
+        projectName,
+      }));
+      allActivities = allActivities.concat(activitiesWithProject);
 
       for (const activity of activities) {
         const startDate = parseDate(activity.startDate);
@@ -788,6 +803,7 @@ router.get("/governance", protect, async (req, res) => {
             activityStatus: activity.activityStatus || "Ready",
             ownerName: activity.ownerName || "-",
             isCompleted: isCompleted,
+            projectName: activity.projectName || "Unknown",
           });
         }
 
