@@ -1416,18 +1416,43 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       weekEndDate.setDate(weekStartDate.getDate() + 13); // 2 weeks = 14 days
     }
 
-    const actionsByStatus = {
-      open: actions.filter((a) => a.status === "Open").length,
-      inProgress: actions.filter((a) => a.status === "In Progress").length,
-      closed: actions.filter((a) => a.status === "Completed").length,
-      overdue: actions.filter(
-        (a) =>
-          a.dueDate < today &&
-          a.status !== "Completed" &&
-          a.status !== "Cancelled",
-      ).length,
+    // Get closed weeks from programme
+    const closedWeeks = programme.closedWeeks || [];
+    console.log(`[weekly-control] closedWeeks count: ${closedWeeks.length}, weekNumbers: ${closedWeeks.map(w => w.weekNumber).join(', ')}`);
+    console.log(`[weekly-control] targetWeekNumber: ${targetWeekNumber}`);
+
+    // Find the most recently closed week (by closedAt timestamp)
+    const mostRecentClosure = closedWeeks.length > 0
+      ? closedWeeks.reduce((latest, week) =>
+          !latest || new Date(week.closedAt) > new Date(latest.closedAt) ? week : latest, null)
+      : null;
+
+    console.log(`[weekly-control] mostRecentClosure: week ${mostRecentClosure?.weekNumber} at ${mostRecentClosure?.closedAt}`);
+
+    // Helper to check if an action should be excluded because it's from a closed week cycle
+    // Logic: If action was created BEFORE the most recent week closure, and it's not completed, exclude it
+    const isActionFromClosedWeek = (actionCreatedAt, actionStatus, actionTitle = '') => {
+      if (!actionCreatedAt || closedWeeks.length === 0) return false;
+
+      // Actions that are completed or cancelled should not be excluded
+      if (actionStatus === 'Completed' || actionStatus === 'Cancelled') return false;
+
+      const actionDate = new Date(actionCreatedAt);
+
+      // If the action was created BEFORE the most recent week was closed,
+      // it means this action was from a previous week cycle that has now been PM Override'd
+      if (mostRecentClosure && mostRecentClosure.closedAt) {
+        const closureDate = new Date(mostRecentClosure.closedAt);
+        if (actionDate < closureDate) {
+          console.log(`[weekly-control] Action "${actionTitle}" created ${actionDate.toISOString()} is BEFORE closure ${closureDate.toISOString()} - excluding`);
+          return true;
+        }
+      }
+
+      return false;
     };
 
+    // Build action map first (needed for filtering)
     const actionMap = {};
     actions.forEach((action) => {
       const actId = action.linkedActivity.activityId;
@@ -1443,10 +1468,12 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         priority: action.priority || "Medium",
         assignee: action.assignee?.name || "-",
         dueDate: action.dueDate,
+        createdAt: action.createdAt, // Include createdAt for closed week filtering
         isOverdue:
           action.dueDate < today &&
           action.status !== "Completed" &&
           action.status !== "Cancelled",
+        isFromClosedWeek: isActionFromClosedWeek(action.createdAt, action.status, action.title), // Flag if from closed week
       });
     });
 
@@ -1485,6 +1512,33 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     const activitiesInWeek = activities.filter((a) => isActivityInWeek(a));
     const allActivities = activitiesInWeek.filter((a) => a.ragStatus !== "Grey");
 
+    // Get all actions linked to activities in the current week
+    // EXCLUDE actions that were created during a week that has been closed (PM Override)
+    const actionsInWeek = [];
+    allActivities.forEach((a) => {
+      if (a.linkedActions && a.linkedActions.length > 0) {
+        a.linkedActions.forEach((action) => {
+          console.log(`[weekly-control] Action "${action.title}" isFromClosedWeek: ${action.isFromClosedWeek}, status: ${action.status}`);
+          // Skip actions from closed weeks - they were already handled via PM Override
+          if (!action.isFromClosedWeek) {
+            actionsInWeek.push(action);
+          }
+        });
+      }
+    });
+
+    console.log(`[weekly-control] actionsInWeek count after filter: ${actionsInWeek.length}`);
+
+    // Calculate action stats based ONLY on actions for activities in this week
+    // (already excludes actions from closed weeks via the filter above)
+    const actionsByStatus = {
+      open: actionsInWeek.filter((a) => a.status === "Open").length,
+      inProgress: actionsInWeek.filter((a) => a.status === "In Progress").length,
+      closed: actionsInWeek.filter((a) => a.status === "Completed").length,
+      overdue: actionsInWeek.filter((a) => a.isOverdue).length,
+    };
+    console.log(`[weekly-control] actionsByStatus:`, actionsByStatus);
+
     const ragDistribution = {
       green: allActivities.filter((a) => a.ragStatus === "Green").length,
       amber: allActivities.filter((a) => a.ragStatus === "Amber").length,
@@ -1492,6 +1546,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     };
 
     // Blocked/Risk Activities - show At Risk or Blocked activities for these 2 weeks
+    // Exclude actions from closed weeks
     const blockedRiskActivities = allActivities
       .filter(
         (a) => a.activityStatus !== "Complete" &&
@@ -1499,10 +1554,12 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       )
       .slice(0, 20)
       .map((a) => {
+        // Filter out actions from closed weeks first
+        const activeActions = a.linkedActions.filter((act) => !act.isFromClosedWeek);
         // Get the first open/overdue action for this activity
-        const openAction = a.linkedActions.find((act) => act.status !== "Completed" && act.status !== "Cancelled");
-        const overdueAction = a.linkedActions.find((act) => act.isOverdue);
-        const linkedAction = overdueAction || openAction || a.linkedActions[0];
+        const openAction = activeActions.find((act) => act.status !== "Completed" && act.status !== "Cancelled");
+        const overdueAction = activeActions.find((act) => act.isOverdue);
+        const linkedAction = overdueAction || openAction || activeActions[0];
 
         return {
           activityId: a.activityId,
@@ -1538,22 +1595,30 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       actionsByStatus.overdue === 0;
 
     // Weekly Plan Preview - show activities with actions for these 2 weeks
+    // Exclude actions from closed weeks
     const weeklyPlanPreview = allActivities
-      .filter((a) => a.linkedActions && a.linkedActions.length > 0)
+      .filter((a) => {
+        // Only include if there are actions not from closed weeks
+        const activeActions = a.linkedActions?.filter((act) => !act.isFromClosedWeek) || [];
+        return activeActions.length > 0;
+      })
       .slice(0, 20)
-      .map((a) => ({
-        activityId: a.activityId,
-        activityName: a.activityName,
-        weekZone: a.weekZone || "-",
-        startDate: a.startDate,
-        finishDate: a.finishDate,
-        duration: a.duration,
-        ragStatus: a.ragStatus,
-        owner: a.ownerName || "",
-        activityStatus: a.activityStatus || "Ready",
-        actionsCount: a.linkedActions.length,
-        openActionsCount: a.linkedActions.filter((act) => act.status !== "Completed" && act.status !== "Cancelled").length,
-      }));
+      .map((a) => {
+        const activeActions = a.linkedActions.filter((act) => !act.isFromClosedWeek);
+        return {
+          activityId: a.activityId,
+          activityName: a.activityName,
+          weekZone: a.weekZone || "-",
+          startDate: a.startDate,
+          finishDate: a.finishDate,
+          duration: a.duration,
+          ragStatus: a.ragStatus,
+          owner: a.ownerName || "",
+          activityStatus: a.activityStatus || "Ready",
+          actionsCount: activeActions.length,
+          openActionsCount: activeActions.filter((act) => act.status !== "Completed" && act.status !== "Cancelled").length,
+        };
+      });
 
     // Planner To-Do - show open actions for these 2 weeks
     const formatActionDate = (d) => {
@@ -1567,8 +1632,13 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     allActivities.forEach((a) => {
       if (a.linkedActions && a.linkedActions.length > 0) {
         // Add each open action as a separate to-do item
+        // Exclude actions from closed weeks (PM Override'd weeks)
         a.linkedActions
-          .filter((action) => action.status !== "Completed" && action.status !== "Cancelled")
+          .filter((action) =>
+            action.status !== "Completed" &&
+            action.status !== "Cancelled" &&
+            !action.isFromClosedWeek // Exclude actions from closed weeks
+          )
           .forEach((action) => {
             plannerToDo.push({
               activityId: a.activityId,
@@ -2569,38 +2639,55 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       }
     }
 
-    // Add to closedWeeks array
-    programme.closedWeeks.push({
-      weekNumber,
-      closedAt: new Date(),
-      closedBy: req.admin._id,
-      closeType: closeType || "Normal Close",
-      stats: weekStats,
-    });
-
     // Calculate totalWeeks if not set
-    if (!programme.totalWeeks && earliestDate && latestDate) {
+    let calculatedTotalWeeks = programme.totalWeeks;
+    if (!calculatedTotalWeeks && earliestDate && latestDate) {
       const msPerDay = 1000 * 60 * 60 * 24;
       const totalDays = Math.ceil((latestDate - earliestDate) / msPerDay);
-      programme.totalWeeks = Math.ceil(totalDays / 7);
+      calculatedTotalWeeks = Math.ceil(totalDays / 7);
     }
 
-    // Check if all weeks are now closed
-    const totalWeeks = programme.totalWeeks || 0;
-    const isFullyClosed = programme.closedWeeks.length >= totalWeeks;
+    // Check if all weeks will be closed after this
+    const currentClosedCount = (programme.closedWeeks || []).length;
+    const isFullyClosed = (currentClosedCount + 1) >= calculatedTotalWeeks;
 
+    // Build update object
+    const updateData = {
+      $push: {
+        closedWeeks: {
+          weekNumber,
+          closedAt: new Date(),
+          closedBy: req.admin._id,
+          closeType: closeType || "Normal Close",
+          stats: weekStats,
+        }
+      },
+      $set: {
+        cycleStatus: isFullyClosed ? "Closed" : "Uploaded",
+        totalWeeks: calculatedTotalWeeks,
+      }
+    };
+
+    // Add fully closed fields if applicable
     if (isFullyClosed) {
-      programme.cycleStatus = "Closed";
-      programme.isLocked = true;
-      programme.closedAt = new Date();
-      programme.closedBy = req.admin._id;
-      programme.closeType = closeType || "Normal Close";
-    } else {
-      // Reset cycle status to Uploaded for the next week's cycle
-      programme.cycleStatus = "Uploaded";
+      updateData.$set.isLocked = true;
+      updateData.$set.closedAt = new Date();
+      updateData.$set.closedBy = req.admin._id;
+      updateData.$set.closeType = closeType || "Normal Close";
     }
 
-    await programme.save();
+    // Use findByIdAndUpdate with $push for atomic update
+    const updatedProgramme = await Programme.findByIdAndUpdate(
+      req.params.id,
+      updateData,
+      { new: true }
+    );
+
+    if (!updatedProgramme) {
+      return sendError(res, "Failed to update programme", 500);
+    }
+
+    console.log(`[close-week] Week ${weekNumber} closed. Total closed weeks: ${updatedProgramme.closedWeeks.length}`);
 
     // Create CycleHistory record for governance tracking
     const formatDateShort = (d) => {
@@ -2623,6 +2710,7 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       notes: notes || "",
     });
 
+    const totalWeeks = calculatedTotalWeeks || 0;
     return sendSuccess(
       res,
       {
@@ -2630,7 +2718,7 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
         closedAt: new Date(),
         closeType: closeType || "Normal Close",
         stats: weekStats,
-        progress: totalWeeks > 0 ? Math.round((programme.closedWeeks.length / totalWeeks) * 100) : 0,
+        progress: totalWeeks > 0 ? Math.round((updatedProgramme.closedWeeks.length / totalWeeks) * 100) : 0,
         isFullyClosed,
       },
       `Week ${weekNumber} closed successfully`,
