@@ -555,6 +555,7 @@ router.post(
         },
         uploadedBy: req.admin._id,
         status: "processed",
+        closedWeeks: [], // Reset closed weeks for new upload
       });
 
       return sendSuccess(
@@ -1718,6 +1719,12 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         inProgress: actionsByStatus.inProgress,
         closed: actionsByStatus.closed,
         overdue: actionsByStatus.overdue,
+      },
+      weeklyActionsByStatus: {
+        open: weeklyActionsByStatus.open,
+        inProgress: weeklyActionsByStatus.inProgress,
+        closed: weeklyActionsByStatus.closed,
+        overdue: weeklyActionsByStatus.overdue,
       },
       blockedRiskActivities: blockedRiskActivities,
       weeklyPlanPreview: weeklyPlanPreview,
