@@ -121,14 +121,15 @@ router.post("/", protect, async (req, res) => {
       );
     }
 
+    // TEMPORARILY COMMENTED OUT FOR TESTING
     // Check if project has ended - no more actions allowed
-    if (checkProjectEnded(programme.extractedData?.activities)) {
-      return sendError(
-        res,
-        "Project has ended. No new actions can be created.",
-        400,
-      );
-    }
+    // if (checkProjectEnded(programme.extractedData?.activities)) {
+    //   return sendError(
+    //     res,
+    //     "Project has ended. No new actions can be created.",
+    //     400,
+    //   );
+    // }
 
     if (!["Meeting Open", "Execution"].includes(programme.cycleStatus)) {
       return sendError(
@@ -363,14 +364,15 @@ router.put("/:id", protect, async (req, res) => {
       );
     }
 
+    // TEMPORARILY COMMENTED OUT FOR TESTING
     // Check if project has ended - no more actions allowed
-    if (programme && checkProjectEnded(programme.extractedData?.activities)) {
-      return sendError(
-        res,
-        "Project has ended. No actions can be updated.",
-        400,
-      );
-    }
+    // if (programme && checkProjectEnded(programme.extractedData?.activities)) {
+    //   return sendError(
+    //     res,
+    //     "Project has ended. No actions can be updated.",
+    //     400,
+    //   );
+    // }
 
     if (programmeId) {
       const programme = await Programme.findById(programmeId);
@@ -552,14 +554,15 @@ router.patch("/:id/complete", protect, async (req, res) => {
       );
     }
 
+    // TEMPORARILY COMMENTED OUT FOR TESTING
     // Check if project has ended - no more actions allowed
-    if (programme && checkProjectEnded(programme.extractedData?.activities)) {
-      return sendError(
-        res,
-        "Project has ended. No actions can be modified.",
-        400,
-      );
-    }
+    // if (programme && checkProjectEnded(programme.extractedData?.activities)) {
+    //   return sendError(
+    //     res,
+    //     "Project has ended. No actions can be modified.",
+    //     400,
+    //   );
+    // }
 
     const wasCompleted = action.status === "Completed";
 

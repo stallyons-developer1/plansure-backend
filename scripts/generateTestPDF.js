@@ -2,10 +2,10 @@ const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
 
-// Generate test PDF with activities from Jan 1, 2026 to May 20, 2026
+// Generate test PDF similar to Alpha Construction Project format
 const generateTestPDF = () => {
   const doc = new PDFDocument({ size: 'A4', layout: 'landscape' });
-  const outputPath = path.join(__dirname, '..', 'uploads', 'programmes', 'test_programme_jan_may_2026.pdf');
+  const outputPath = path.join(__dirname, '..', 'uploads', 'programmes', 'test_programme_may_2026.pdf');
 
   // Ensure directory exists
   const dir = path.dirname(outputPath);
@@ -17,129 +17,114 @@ const generateTestPDF = () => {
   doc.pipe(writeStream);
 
   // Helper to format date as DD-Mon-YY
-  const formatDate = (date) => {
+  const formatDate = (date, addA = false) => {
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const day = String(date.getDate()).padStart(2, '0');
     const month = months[date.getMonth()];
     const year = String(date.getFullYear()).slice(-2);
-    return `${day}-${month}-${year}`;
+    return `${day}-${month}-${year}${addA ? ' A' : ''}`;
   };
 
-  // Generate activities spread across Jan 1 - May 20, 2026
-  const activities = [];
-  const startDate = new Date(2026, 0, 1); // Jan 1, 2026
-  const endDate = new Date(2026, 4, 21);  // May 21, 2026
+  // Define activities similar to the Alpha Construction Project
+  const activities = [
+    { id: 'TST-PROG', name: 'Test Construction Programme', duration: 20, start: new Date(2026, 4, 1), finish: new Date(2026, 4, 20), isHeader: true },
+    { id: 'TST-001', name: 'Site Preparation', duration: 3, start: new Date(2026, 4, 1), finish: new Date(2026, 4, 3), completed: true },
+    { id: 'TST-002', name: 'Foundation Layout', duration: 2, start: new Date(2026, 4, 2), finish: new Date(2026, 4, 3), completed: true },
+    { id: 'TST-003', name: 'Excavation Work', duration: 3, start: new Date(2026, 4, 4), finish: new Date(2026, 4, 6), completed: true },
+    { id: 'TST-004', name: 'Concrete Pouring Phase 1', duration: 2, start: new Date(2026, 4, 5), finish: new Date(2026, 4, 6), completed: true },
+    { id: 'TST-005', name: 'Steel Framework Installation', duration: 4, start: new Date(2026, 4, 7), finish: new Date(2026, 4, 10), completed: false },
+    { id: 'TST-006', name: 'Electrical Conduit Rough-In', duration: 3, start: new Date(2026, 4, 8), finish: new Date(2026, 4, 10), completed: false },
+    { id: 'TST-007', name: 'Plumbing First Fix', duration: 3, start: new Date(2026, 4, 9), finish: new Date(2026, 4, 11), completed: false },
+    { id: 'TST-008', name: 'Roof Structure Assembly', duration: 4, start: new Date(2026, 4, 11), finish: new Date(2026, 4, 14), completed: false },
+    { id: 'TST-009', name: 'Wall Framing', duration: 3, start: new Date(2026, 4, 12), finish: new Date(2026, 4, 14), completed: false },
+    { id: 'TST-010', name: 'Window Installation', duration: 2, start: new Date(2026, 4, 15), finish: new Date(2026, 4, 16), completed: false },
+    { id: 'TST-011', name: 'External Cladding', duration: 3, start: new Date(2026, 4, 16), finish: new Date(2026, 4, 18), completed: false },
+    { id: 'TST-012', name: 'Final Inspection Prep', duration: 2, start: new Date(2026, 4, 19), finish: new Date(2026, 4, 20), completed: false },
+  ];
 
-  // Calculate total weeks (~20 weeks)
-  const msPerDay = 1000 * 60 * 60 * 24;
-  const totalDays = Math.ceil((endDate - startDate) / msPerDay);
-  const totalWeeks = Math.ceil(totalDays / 7);
+  const projectStart = new Date(2026, 4, 1);
+  const projectEnd = new Date(2026, 4, 20);
 
-  console.log(`Generating PDF with activities spanning ${totalWeeks} weeks`);
-  console.log(`Date range: ${formatDate(startDate)} to ${formatDate(endDate)}`);
-
-  // Create activities - 2-3 per week
-  let activityId = 1000;
-  for (let week = 0; week < totalWeeks; week++) {
-    const weekStart = new Date(startDate);
-    weekStart.setDate(startDate.getDate() + week * 7);
-
-    // 2-3 activities per week
-    const activitiesThisWeek = 2 + (week % 2); // alternates between 2 and 3
-
-    for (let i = 0; i < activitiesThisWeek; i++) {
-      const actStart = new Date(weekStart);
-      actStart.setDate(weekStart.getDate() + i * 2);
-
-      const actEnd = new Date(actStart);
-      actEnd.setDate(actStart.getDate() + 3 + (i % 3)); // 3-5 day duration
-
-      // Don't go past end date
-      if (actStart > endDate) break;
-      if (actEnd > endDate) actEnd.setTime(endDate.getTime());
-
-      activities.push({
-        id: `A${activityId++}`,
-        name: `Activity ${activityId - 1000} - Week ${week + 1}`,
-        start: formatDate(actStart),
-        finish: formatDate(actEnd),
-      });
-    }
-  }
-
-  console.log(`Total activities: ${activities.length}`);
+  console.log(`Generating PDF with ${activities.length} activities`);
+  console.log(`Date range: ${formatDate(projectStart)} to ${formatDate(projectEnd)}`);
 
   // Title
-  doc.fontSize(16).font('Helvetica-Bold').text('Test Programme - Jan to May 2026', { align: 'center' });
-  doc.moveDown();
-  doc.fontSize(10).font('Helvetica').text(`Generated: ${new Date().toISOString()}`, { align: 'center' });
-  doc.moveDown(2);
+  doc.fontSize(14).font('Helvetica-Bold').text('Test Construction Project / May 2026', 50, 30);
+  doc.fontSize(10).font('Helvetica').text('21/05/2026', 700, 30);
 
-  // Table header
-  const tableTop = doc.y;
-  const colWidths = [80, 250, 100, 100];
-  const headers = ['Activity ID', 'Activity Name', 'Start', 'Finish'];
+  // Table setup
+  const tableTop = 60;
+  const colWidths = [70, 200, 60, 80, 80];
+  const headers = ['Activity ID', 'Activity Name', 'Duration', 'Start', 'Finish'];
+  const rowHeight = 22;
 
-  doc.font('Helvetica-Bold').fontSize(10);
+  // Draw header background
+  doc.fillColor('#666666').rect(50, tableTop, 490, rowHeight).fill();
+
+  // Header text
+  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(9);
   let x = 50;
   headers.forEach((header, i) => {
-    doc.text(header, x, tableTop, { width: colWidths[i] });
+    doc.text(header, x + 5, tableTop + 6, { width: colWidths[i] - 10 });
     x += colWidths[i];
   });
 
-  doc.moveTo(50, tableTop + 15).lineTo(750, tableTop + 15).stroke();
-
   // Table rows
-  doc.font('Helvetica').fontSize(9);
-  let y = tableTop + 20;
+  let y = tableTop + rowHeight;
 
   activities.forEach((activity, index) => {
-    // New page if needed
-    if (y > 500) {
-      doc.addPage();
-      y = 50;
+    const isHeader = activity.isHeader;
 
-      // Repeat header on new page
-      doc.font('Helvetica-Bold').fontSize(10);
-      x = 50;
-      headers.forEach((header, i) => {
-        doc.text(header, x, y, { width: colWidths[i] });
-        x += colWidths[i];
-      });
-      doc.moveTo(50, y + 15).lineTo(750, y + 15).stroke();
-      y += 20;
-      doc.font('Helvetica').fontSize(9);
+    // Row background
+    if (isHeader) {
+      doc.fillColor('#D35400').rect(50, y, 490, rowHeight).fill();
+      doc.fillColor('#ffffff');
+    } else {
+      doc.fillColor(index % 2 === 0 ? '#f9f9f9' : '#ffffff').rect(50, y, 490, rowHeight).fill();
+      doc.fillColor('#333333');
     }
 
-    x = 50;
-    doc.text(activity.id, x, y, { width: colWidths[0] });
-    x += colWidths[0];
-    doc.text(activity.name, x, y, { width: colWidths[1] });
-    x += colWidths[1];
-    doc.text(activity.start, x, y, { width: colWidths[2] });
-    x += colWidths[2];
-    doc.text(activity.finish, x, y, { width: colWidths[3] });
+    // Draw cell borders
+    doc.strokeColor('#dddddd').lineWidth(0.5);
+    doc.rect(50, y, 490, rowHeight).stroke();
 
-    y += 15;
+    // Row content
+    doc.font(isHeader ? 'Helvetica-Bold' : 'Helvetica').fontSize(9);
+    x = 50;
+
+    // Activity ID
+    doc.text(activity.id, x + 5, y + 6, { width: colWidths[0] - 10 });
+    x += colWidths[0];
+
+    // Activity Name
+    doc.text(activity.name, x + 5, y + 6, { width: colWidths[1] - 10 });
+    x += colWidths[1];
+
+    // Duration
+    doc.text(String(activity.duration), x + 5, y + 6, { width: colWidths[2] - 10, align: 'center' });
+    x += colWidths[2];
+
+    // Start
+    doc.text(formatDate(activity.start), x + 5, y + 6, { width: colWidths[3] - 10, align: 'center' });
+    x += colWidths[3];
+
+    // Finish (with 'A' suffix if completed)
+    doc.text(formatDate(activity.finish, activity.completed), x + 5, y + 6, { width: colWidths[4] - 10, align: 'center' });
+
+    y += rowHeight;
   });
 
-  // Summary at the end
-  doc.addPage();
-  doc.fontSize(14).font('Helvetica-Bold').text('Summary', { align: 'center' });
-  doc.moveDown();
-  doc.fontSize(11).font('Helvetica');
-  doc.text(`Total Activities: ${activities.length}`);
-  doc.text(`Date Range: ${formatDate(startDate)} to ${formatDate(endDate)}`);
-  doc.text(`Total Weeks: ${totalWeeks}`);
-  doc.text(`First Activity: ${activities[0].name} (${activities[0].start})`);
-  doc.text(`Last Activity: ${activities[activities.length - 1].name} (${activities[activities.length - 1].finish})`);
+  // Footer
+  doc.fillColor('#666666').fontSize(8).font('Helvetica');
+  doc.text('Generated by PlanSure | Test Programme', 50, y + 20);
 
   doc.end();
 
   writeStream.on('finish', () => {
     console.log(`\nPDF created successfully!`);
     console.log(`Location: ${outputPath}`);
-    console.log(`\nYou can now upload this PDF to test the Close-Out Eligible flow.`);
+    console.log(`\nActivities with 'A' suffix (completed): ${activities.filter(a => a.completed).length}`);
+    console.log(`Activities without 'A' suffix (in progress): ${activities.filter(a => !a.completed && !a.isHeader).length}`);
   });
 };
 
