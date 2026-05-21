@@ -41,6 +41,10 @@ const actionSchema = new mongoose.Schema(
       ref: "Admin",
       required: true,
     },
+    assigneeName: {
+      type: String,
+      trim: true,
+    },
     previousAssignees: [
       {
         user: {

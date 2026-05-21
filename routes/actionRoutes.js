@@ -138,6 +138,11 @@ router.post("/", protect, async (req, res) => {
       );
     }
 
+    // Get assignee name
+    const Admin = require("../models/Admin");
+    const assigneeUser = await Admin.findById(assignee).select("name");
+    const assigneeName = assigneeUser?.name || "";
+
     const action = await Action.create({
       programme: programmeId,
       linkedActivity: {
@@ -149,6 +154,7 @@ router.post("/", protect, async (req, res) => {
       type: type || "Required",
       priority: priority || "Medium",
       assignee,
+      assigneeName,
       dueDate,
       createdBy: req.admin._id,
     });
@@ -409,6 +415,10 @@ router.put("/:id", protect, async (req, res) => {
         });
       }
       action.assignee = assignee;
+      // Update assigneeName
+      const Admin = require("../models/Admin");
+      const newAssigneeUser = await Admin.findById(assignee).select("name");
+      action.assigneeName = newAssigneeUser?.name || "";
     }
 
     if (dueDate) action.dueDate = dueDate;

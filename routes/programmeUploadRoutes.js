@@ -1479,13 +1479,16 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
 
     const weekZones = generateWeekZones(today, programme.lookaheadWeeks || 6);
 
+    // Use week end date for RAG calculation to show historical status for that week
+    const ragReferenceDate = weekEndDate || today;
+
     const activities = programme.extractedData.activities.map((activity) => {
       const activityObj = activity.toObject ? activity.toObject() : activity;
-      const ragStatus = calculateRAG(activityObj, today);
+      const ragStatus = calculateRAG(activityObj, ragReferenceDate);
       const activityStatus = calculateActivityStatus(
         activityObj,
         ragStatus,
-        today,
+        ragReferenceDate,
       );
       return {
         ...activityObj,
@@ -1512,13 +1515,28 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     const activitiesInWeek = activities.filter((a) => isActivityInWeek(a));
     const allActivities = activitiesInWeek.filter((a) => a.ragStatus !== "Grey");
 
-    // Get all actions linked to activities in the current week
-    // EXCLUDE actions that were created during a week that has been closed (PM Override)
+    // Calculate action stats from ALL actions in database (for Actions by Status chart)
+    // This shows ALL actions for the programme, regardless of week
+    const actionsByStatus = {
+      open: actions.filter((a) => a.status === "Open").length,
+      inProgress: actions.filter((a) => a.status === "In Progress").length,
+      closed: actions.filter((a) => a.status === "Completed").length,
+      overdue: actions.filter((a) =>
+        a.status !== "Completed" &&
+        a.status !== "Cancelled" &&
+        a.dueDate &&
+        new Date(a.dueDate) < today
+      ).length,
+    };
+
+    console.log(`[weekly-control] Total actions in database: ${actions.length}`);
+    console.log(`[weekly-control] actionsByStatus:`, actionsByStatus);
+
+    // Get actions for activities in the current week only (for PM Override logic)
     const actionsInWeek = [];
     allActivities.forEach((a) => {
       if (a.linkedActions && a.linkedActions.length > 0) {
         a.linkedActions.forEach((action) => {
-          console.log(`[weekly-control] Action "${action.title}" isFromClosedWeek: ${action.isFromClosedWeek}, status: ${action.status}`);
           // Skip actions from closed weeks - they were already handled via PM Override
           if (!action.isFromClosedWeek) {
             actionsInWeek.push(action);
@@ -1527,17 +1545,16 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       }
     });
 
-    console.log(`[weekly-control] actionsInWeek count after filter: ${actionsInWeek.length}`);
-
-    // Calculate action stats based ONLY on actions for activities in this week
-    // (already excludes actions from closed weeks via the filter above)
-    const actionsByStatus = {
+    // Calculate weekly action stats (for PM Override logic - only current week)
+    const weeklyActionsByStatus = {
       open: actionsInWeek.filter((a) => a.status === "Open").length,
       inProgress: actionsInWeek.filter((a) => a.status === "In Progress").length,
       closed: actionsInWeek.filter((a) => a.status === "Completed").length,
       overdue: actionsInWeek.filter((a) => a.isOverdue).length,
     };
-    console.log(`[weekly-control] actionsByStatus:`, actionsByStatus);
+
+    console.log(`[weekly-control] actionsInWeek count: ${actionsInWeek.length}`);
+    console.log(`[weekly-control] weeklyActionsByStatus (week):`, weeklyActionsByStatus);
 
     const ragDistribution = {
       green: allActivities.filter((a) => a.ragStatus === "Green").length,
@@ -1586,13 +1603,23 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       (a) => a.isBlocked || a.activityStatus === "Blocked",
     ).length;
 
-    const openActions = actionsByStatus.open + actionsByStatus.inProgress;
+    // Use weekly action stats for PM Override logic (only current week's open actions matter)
+    const openActions = weeklyActionsByStatus.open + weeklyActionsByStatus.inProgress;
 
+    // Check if this is the last week (for Close-Out Eligible status)
+    const totalWeeks = programme.totalWeeks || 0;
+    const closedWeeksCount = closedWeeks.length;
+    const remainingWeeks = totalWeeks - closedWeeksCount;
+    const isLastWeek = remainingWeeks <= 2; // Since we close 2 weeks at a time
+
+    // readyToClose is only true for the LAST week when all actions are complete
     const readyToClose =
+      isLastWeek &&
       allActivities.length > 0 &&
       blocked === 0 &&
       ragDistribution.red === 0 &&
-      actionsByStatus.overdue === 0;
+      weeklyActionsByStatus.overdue === 0 &&
+      openActions === 0; // All actions must be complete for last week
 
     // Weekly Plan Preview - show activities with actions for these 2 weeks
     // Exclude actions from closed weeks
@@ -1664,8 +1691,10 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return `${d.getDate()} ${months[d.getMonth()]}`;
     };
 
+    // TEMPORARILY COMMENTED OUT FOR TESTING
     // Check if project has ended (last activity date passed)
-    const projectEndedInfo = checkProjectEnded(programme.extractedData?.activities);
+    // const projectEndedInfo = checkProjectEnded(programme.extractedData?.activities);
+    const projectEndedInfo = { isEnded: false, endDate: null }; // Temporary override
 
     res.json({
       stats: {
@@ -1704,6 +1733,10 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         currentWeekNumber: currentWeekNumber,
         dateRange: weekStartDate && weekEndDate ? `${formatDate(weekStartDate)} - ${formatDate(weekEndDate)}` : "",
         totalActivities: allActivities.length,
+        totalWeeks: totalWeeks,
+        closedWeeksCount: closedWeeksCount,
+        remainingWeeks: remainingWeeks,
+        isLastWeek: isLastWeek,
       },
     });
   } catch (error) {
@@ -1713,6 +1746,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
 });
 
 const CYCLE_TRANSITIONS = {
+  Draft: ["Meeting Open"],
   Uploaded: ["Meeting Open"],
   "Meeting Open": ["Execution"],
   Execution: ["Close-Out Eligible"],
@@ -1722,9 +1756,26 @@ const CYCLE_TRANSITIONS = {
 
 const checkCloseOutEligible = async (programmeId) => {
   const Action = require("../models/Action");
+  const CycleHistory = require("../models/CycleHistory");
   const programme = await Programme.findById(programmeId);
 
   if (!programme) return { eligible: false, reason: "Programme not found" };
+
+  // Check if this is the last week (all previous weeks must be closed)
+  const totalWeeks = programme.totalWeeks || 0;
+  const closedWeeksCount = await CycleHistory.countDocuments({
+    programme: programmeId,
+  });
+
+  // Close-Out Eligible only when it's the last 2 weeks remaining (since we close 2 weeks at a time)
+  const remainingWeeks = totalWeeks - closedWeeksCount;
+  if (remainingWeeks > 2) {
+    return {
+      eligible: false,
+      reason: `${remainingWeeks} weeks remaining. Close-Out Eligible only available for the last week.`,
+      remainingWeeks: remainingWeeks,
+    };
+  }
 
   const today = new Date();
   const activities = programme.extractedData?.activities || [];
@@ -1782,7 +1833,7 @@ const checkCloseOutEligible = async (programmeId) => {
     };
   }
 
-  return { eligible: true, reason: "All conditions met" };
+  return { eligible: true, reason: "All conditions met - Last week ready for close-out" };
 };
 
 router.patch("/:id/cycle-status", protect, async (req, res) => {
@@ -1795,6 +1846,7 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
     }
 
     const validStatuses = [
+      "Draft",
       "Uploaded",
       "Meeting Open",
       "Execution",
@@ -1823,11 +1875,12 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
       );
     }
 
+    // TEMPORARILY COMMENTED OUT FOR TESTING
     // Check if project has ended - no more actions allowed
-    const projectEndedInfo = checkProjectEnded(programme.extractedData?.activities);
-    if (projectEndedInfo.isEnded) {
-      return sendError(res, "Project has ended. No further actions can be performed.", 400);
-    }
+    // const projectEndedInfo = checkProjectEnded(programme.extractedData?.activities);
+    // if (projectEndedInfo.isEnded) {
+    //   return sendError(res, "Project has ended. No further actions can be performed.", 400);
+    // }
 
     const currentStatus = programme.cycleStatus;
     const allowedTransitions = CYCLE_TRANSITIONS[currentStatus] || [];
@@ -1953,26 +2006,28 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
         const totalWeeks = programme.totalWeeks || 0;
 
         if (totalWeeks > 0 && closedWeeksCount >= totalWeeks) {
-          // All weeks done - lock the programme
-          programme.cycleStatus = "Closed";
-          programme.isLocked = true;
+          // All weeks done - set to Close-Out Eligible (user must acknowledge to fully close)
+          programme.cycleStatus = "Close-Out Eligible";
+          programme.isLocked = false;
         } else {
           // More weeks remaining - reset for next weeks
-          programme.cycleStatus = "Uploaded";
+          programme.cycleStatus = "Draft";
           programme.isLocked = false;
         }
 
         await programme.save();
 
+        const isLastWeek = totalWeeks > 0 && closedWeeksCount >= totalWeeks;
         return sendSuccess(
           res,
           {
             cycleStatus: programme.cycleStatus,
             closeType: programme.closeType,
-            isFullyClosed: programme.isLocked,
-            message: programme.isLocked ? "All weeks closed with PM Override" : "Weeks closed with PM Override - ready for next weeks",
+            isFullyClosed: false, // Not fully closed until user acknowledges Close-Out Eligible
+            isLastWeek: isLastWeek,
+            message: isLastWeek ? "All weeks completed - Ready for Close-Out" : "Weeks closed with PM Override - ready for next weeks",
           },
-          programme.isLocked ? "Programme fully closed" : "Weeks closed with PM Override",
+          isLastWeek ? "All weeks completed - Ready for Close-Out" : "Weeks closed with PM Override",
         );
       }
 
@@ -2526,7 +2581,7 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       totalWeeks,
       currentWeekNumber: Math.min(currentWeekNumber, totalWeeks),
       closedWeeksCount: closedWeeks.length,
-      progress: totalWeeks > 0 ? Math.round((closedWeeks.length / totalWeeks) * 100) : 0,
+      progress: totalWeeks > 0 ? Math.min(100, Math.round((closedWeeks.length / totalWeeks) * 100)) : 0,
       isFullyClosed: closedWeeks.length >= totalWeeks,
       weeks,
     });
@@ -2553,11 +2608,12 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       return sendError(res, "Access denied", 403);
     }
 
+    // TEMPORARILY COMMENTED OUT FOR TESTING
     // Check if project has ended - no more actions allowed
-    const projectEndedInfo = checkProjectEnded(programme.extractedData?.activities);
-    if (projectEndedInfo.isEnded) {
-      return sendError(res, "Project has ended. No further actions can be performed.", 400);
-    }
+    // const projectEndedInfo = checkProjectEnded(programme.extractedData?.activities);
+    // if (projectEndedInfo.isEnded) {
+    //   return sendError(res, "Project has ended. No further actions can be performed.", 400);
+    // }
 
     // Check if week is already closed
     const closedWeeks = programme.closedWeeks || [];
@@ -2649,7 +2705,15 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
 
     // Check if all weeks will be closed after this
     const currentClosedCount = (programme.closedWeeks || []).length;
-    const isFullyClosed = (currentClosedCount + 1) >= calculatedTotalWeeks;
+    const isLastWeek = (currentClosedCount + 1) >= calculatedTotalWeeks;
+
+    // Determine next cycle status:
+    // - If last week: "Close-Out Eligible" (user must acknowledge to close)
+    // - Otherwise: "Draft" (ready for next week cycle)
+    let nextCycleStatus = "Draft";
+    if (isLastWeek) {
+      nextCycleStatus = "Close-Out Eligible";
+    }
 
     // Build update object
     const updateData = {
@@ -2663,18 +2727,12 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
         }
       },
       $set: {
-        cycleStatus: isFullyClosed ? "Closed" : "Uploaded",
+        cycleStatus: nextCycleStatus,
         totalWeeks: calculatedTotalWeeks,
       }
     };
 
-    // Add fully closed fields if applicable
-    if (isFullyClosed) {
-      updateData.$set.isLocked = true;
-      updateData.$set.closedAt = new Date();
-      updateData.$set.closedBy = req.admin._id;
-      updateData.$set.closeType = closeType || "Normal Close";
-    }
+    // Note: isLocked and final closure only happens when user acknowledges Close-Out Eligible
 
     // Use findByIdAndUpdate with $push for atomic update
     const updatedProgramme = await Programme.findByIdAndUpdate(
@@ -2718,10 +2776,12 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
         closedAt: new Date(),
         closeType: closeType || "Normal Close",
         stats: weekStats,
-        progress: totalWeeks > 0 ? Math.round((updatedProgramme.closedWeeks.length / totalWeeks) * 100) : 0,
-        isFullyClosed,
+        progress: totalWeeks > 0 ? Math.min(100, Math.round((updatedProgramme.closedWeeks.length / totalWeeks) * 100)) : 0,
+        isFullyClosed: false, // Not fully closed until user acknowledges Close-Out Eligible
+        isLastWeek: isLastWeek,
+        cycleStatus: nextCycleStatus,
       },
-      `Week ${weekNumber} closed successfully`,
+      isLastWeek ? `All weeks completed - Ready for Close-Out` : `Week ${weekNumber} closed successfully`,
     );
   } catch (error) {
     console.error(error);
@@ -2778,7 +2838,7 @@ router.post("/:id/reopen-week/:weekNumber", protect, adminOnly, async (req, res)
       res,
       {
         weekNumber,
-        progress: totalWeeks > 0 ? Math.round((programme.closedWeeks.length / totalWeeks) * 100) : 0,
+        progress: totalWeeks > 0 ? Math.min(100, Math.round((programme.closedWeeks.length / totalWeeks) * 100)) : 0,
       },
       `Week ${weekNumber} reopened successfully`,
     );

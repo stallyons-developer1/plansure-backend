@@ -226,10 +226,10 @@ router.get("/", protect, async (req, res) => {
         const closedActions = actions.filter((a) => a.status === "Completed");
 
         // Calculate progress percentage based on closed weeks
-        // Progress = (Closed Weeks / Total Weeks) × 100
+        // Progress = (Closed Weeks / Total Weeks) × 100, capped at 100%
         let progress = 0;
         if (totalWeeks > 0) {
-          progress = Math.round((closedWeeks / totalWeeks) * 100);
+          progress = Math.min(100, Math.round((closedWeeks / totalWeeks) * 100));
         }
 
         // Determine if project should be marked as completed
