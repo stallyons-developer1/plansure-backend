@@ -10,6 +10,7 @@ const Action = require("../models/Action");
 const Export = require("../models/Export");
 const { protect } = require("../middleware/authMiddleware");
 const { sendError, sendSuccess } = require("../utils/errorResponse");
+const auditLogger = require("../utils/auditLogger");
 
 // Ensure exports directory exists
 const exportsDir = path.join(__dirname, "../uploads/exports");
@@ -145,6 +146,9 @@ router.get("/history", protect, async (req, res) => {
 // POST /api/exports/weekly-plan - Generate Weekly Plan export (green activities only)
 router.post("/weekly-plan", protect, async (req, res) => {
   try {
+    // Get weekNumber from request body (sent from frontend)
+    const requestedWeekNumber = req.body.weekNumber ? parseInt(req.body.weekNumber) : null;
+
     const projects = await Project.find({ status: { $ne: "Cancelled" } });
     const projectIds = projects.map((p) => p._id);
 
@@ -200,7 +204,12 @@ router.post("/weekly-plan", protect, async (req, res) => {
       const daysSinceStart = Math.floor((todayStart - earliestDate) / msPerDay);
       currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
 
-      // Calculate 2-week date range (current week and next week)
+      // Use requested week number if provided, otherwise use calculated current week
+      if (requestedWeekNumber) {
+        currentWeekNumber = requestedWeekNumber;
+      }
+
+      // Calculate 2-week date range based on the week number
       weekStartDate = new Date(earliestDate);
       weekStartDate.setDate(earliestDate.getDate() + (currentWeekNumber - 1) * 7);
       weekEndDate = new Date(weekStartDate);
@@ -220,10 +229,21 @@ router.post("/weekly-plan", protect, async (req, res) => {
       return startsThisWeek || spansThisWeek;
     };
 
-    // Filter only green activities IN the current 2-week period
+    // Determine if this is a historical week (week end date is before today)
+    const isHistoricalWeek = weekEndDate && weekEndDate < today;
+
+    // Filter activities IN the current 2-week period
+    // For historical weeks: include all activities in that week (RAG doesn't apply to past)
+    // For current/future weeks: filter by Green RAG status
     const greenActivities = activities.filter((activity) => {
+      if (!isActivityInWeek(activity)) return false;
+
+      // For historical weeks, include all activities in that week
+      if (isHistoricalWeek) return true;
+
+      // For current/future weeks, only include Green activities
       const rag = calculateRAG(activity, today);
-      return rag === "Green" && isActivityInWeek(activity);
+      return rag === "Green";
     });
 
     // Get actions for this programme
@@ -300,6 +320,15 @@ router.post("/weekly-plan", protect, async (req, res) => {
       },
     });
 
+    // Audit log: Weekly plan exported
+    await auditLogger.weeklyPlanExported(
+      req,
+      req.admin,
+      activeProgramme.project,
+      currentWeekNumber,
+      activitiesWithNoOpenActions.length
+    );
+
     // Send file
     res.setHeader(
       "Content-Type",
@@ -319,6 +348,9 @@ router.post("/weekly-plan", protect, async (req, res) => {
 // POST /api/exports/planner-todo - Generate Planner To-Do export (outstanding actions)
 router.post("/planner-todo", protect, async (req, res) => {
   try {
+    // Get weekNumber from request body (sent from frontend)
+    const requestedWeekNumber = req.body.weekNumber ? parseInt(req.body.weekNumber) : null;
+
     const projects = await Project.find({ status: { $ne: "Cancelled" } });
     const projectIds = projects.map((p) => p._id);
 
@@ -333,14 +365,88 @@ router.post("/planner-todo", protect, async (req, res) => {
 
     const activeProgramme = programmes[0];
     const programmeIds = programmes.map((p) => p._id);
+    const activities = activeProgramme.extractedData?.activities || [];
+
+    // Helper to parse date strings
+    const parseActivityDate = (dateStr) => {
+      if (!dateStr) return null;
+      const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
+      const months = {
+        Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+        Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+      };
+      const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
+      if (!match) return null;
+      const day = parseInt(match[1]);
+      const month = months[match[2]];
+      let year = parseInt(match[3]);
+      year = year < 50 ? 2000 + year : 1900 + year;
+      return new Date(year, month, day);
+    };
+
+    // Find programme start date (earliest activity)
+    let earliestDate = null;
+    for (const activity of activities) {
+      const startDate = parseActivityDate(activity.startDate);
+      if (startDate && (!earliestDate || startDate < earliestDate)) {
+        earliestDate = startDate;
+      }
+    }
+
+    // Calculate week date range for filtering
+    let weekStartDate = null;
+    let weekEndDate = null;
+    let currentWeekNumber = 1;
+
+    if (earliestDate && requestedWeekNumber) {
+      earliestDate.setHours(0, 0, 0, 0);
+      currentWeekNumber = requestedWeekNumber;
+
+      // Calculate 2-week date range based on the requested week number
+      weekStartDate = new Date(earliestDate);
+      weekStartDate.setDate(earliestDate.getDate() + (currentWeekNumber - 1) * 7);
+      weekEndDate = new Date(weekStartDate);
+      weekEndDate.setDate(weekStartDate.getDate() + 13); // 2 weeks = 14 days
+    }
 
     // Get all open actions
-    const actions = await Action.find({
+    let actions = await Action.find({
       programme: { $in: programmeIds },
       status: { $nin: ["Completed", "Cancelled"] },
     })
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
+
+    // Filter actions by week if weekNumber was provided
+    if (weekStartDate && weekEndDate) {
+      actions = actions.filter((action) => {
+        // Check if action's due date falls within the week range
+        if (action.dueDate) {
+          const dueDate = new Date(action.dueDate);
+          if (dueDate >= weekStartDate && dueDate <= weekEndDate) {
+            return true;
+          }
+        }
+        // Also include if linked activity is in this week
+        if (action.linkedActivity?.activityId) {
+          const linkedActivity = activities.find(
+            (a) => a.activityId === action.linkedActivity.activityId
+          );
+          if (linkedActivity) {
+            const actStart = parseActivityDate(linkedActivity.startDate);
+            const actFinish = parseActivityDate(linkedActivity.finishDate);
+            if (actStart) {
+              const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+              const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+              if (startsThisWeek || spansThisWeek) {
+                return true;
+              }
+            }
+          }
+        }
+        return false;
+      });
+    }
 
     const today = new Date();
     const overdueActions = actions.filter(
@@ -350,9 +456,9 @@ router.post("/planner-todo", protect, async (req, res) => {
       (a) => new Date(a.dueDate) >= today
     );
 
-    // Calculate current week
-    let currentWeek = "N/A";
-    if (activeProgramme.lookaheadStartDate) {
+    // Calculate current week label
+    let currentWeek = requestedWeekNumber ? `W${requestedWeekNumber}` : "N/A";
+    if (!requestedWeekNumber && activeProgramme.lookaheadStartDate) {
       const startOfYear = new Date(
         new Date(activeProgramme.lookaheadStartDate).getFullYear(),
         0,
@@ -481,6 +587,15 @@ router.post("/planner-todo", protect, async (req, res) => {
       },
     });
 
+    // Audit log: Planner to-do exported
+    await auditLogger.plannerTodoExported(
+      req,
+      req.admin,
+      activeProgramme.project,
+      currentWeekNumber,
+      actions.length
+    );
+
     // Send file
     res.setHeader(
       "Content-Type",
@@ -509,6 +624,22 @@ router.get("/download/:id", protect, async (req, res) => {
     if (!exportRecord.filePath || !fs.existsSync(exportRecord.filePath)) {
       return sendError(res, "Export file not found", 404);
     }
+
+    // Audit log: Export downloaded
+    await auditLogger.log({
+      action: "EXPORT_DOWNLOADED",
+      req,
+      user: req.admin,
+      resourceType: "Export",
+      resourceId: exportRecord._id,
+      resourceName: exportRecord.fileName,
+      project: exportRecord.project,
+      description: `Downloaded export "${exportRecord.fileName}"`,
+      metadata: {
+        exportType: exportRecord.type,
+        week: exportRecord.week,
+      },
+    });
 
     res.setHeader(
       "Content-Type",

@@ -10,6 +10,7 @@ const {
   sendSuccess,
   validateRequired,
 } = require("../utils/errorResponse");
+const auditLogger = require("../utils/auditLogger");
 
 router.post("/", protect, adminOnly, async (req, res) => {
   try {
@@ -34,6 +35,9 @@ router.post("/", protect, adminOnly, async (req, res) => {
     const populatedProject = await Project.findById(project._id)
       .populate("createdBy", "name email")
       .populate("team.user", "name email");
+
+    // Log project creation
+    await auditLogger.projectCreated(req, req.admin, populatedProject);
 
     return sendSuccess(
       res,
@@ -521,6 +525,17 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
       return sendError(res, "Project not found", 404);
     }
 
+    // Store old values for audit log
+    const oldValues = {
+      name: project.name,
+      phase: project.phase,
+      description: project.description,
+      startDate: project.startDate,
+      endDate: project.endDate,
+      status: project.status,
+    };
+    const oldStatus = project.status;
+
     if (name) project.name = name;
     if (phase) project.phase = phase;
     if (description !== undefined) project.description = description;
@@ -533,6 +548,18 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
     const updatedProject = await Project.findById(project._id)
       .populate("createdBy", "name email")
       .populate("team.user", "name email");
+
+    // Log project update
+    const newValues = { name, phase, description, startDate, endDate, status };
+    await auditLogger.projectUpdated(req, req.admin, updatedProject, {
+      before: oldValues,
+      after: newValues,
+    });
+
+    // Log status change separately if status changed
+    if (status && status !== oldStatus) {
+      await auditLogger.projectStatusChanged(req, req.admin, updatedProject, oldStatus, status);
+    }
 
     return sendSuccess(
       res,
@@ -552,6 +579,17 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
     if (!project) {
       return sendError(res, "Project not found", 404);
     }
+
+    // Log project deletion before deleting
+    await auditLogger.log({
+      action: "PROJECT_DELETED",
+      req,
+      user: req.admin,
+      resourceType: "Project",
+      resourceId: project._id,
+      resourceName: project.name,
+      description: `Deleted project "${project.name}"`,
+    });
 
     await Project.findByIdAndDelete(req.params.id);
 
@@ -593,6 +631,13 @@ router.post("/:id/team", protect, adminOnly, async (req, res) => {
       "name email",
     );
 
+    // Find the added member for audit log
+    const Admin = require("../models/Admin");
+    const addedMember = await Admin.findById(userId).select("name email");
+    if (addedMember) {
+      await auditLogger.teamMemberAdded(req, req.admin, project, addedMember, role);
+    }
+
     return sendSuccess(
       res,
       { team: updatedProject.team },
@@ -611,10 +656,19 @@ router.delete("/:id/team/:userId", protect, adminOnly, async (req, res) => {
       return sendError(res, "Project not found", 404);
     }
 
+    // Find the member being removed for audit log
+    const Admin = require("../models/Admin");
+    const removedMember = await Admin.findById(req.params.userId).select("name email");
+
     project.team = project.team.filter(
       (member) => member.user.toString() !== req.params.userId,
     );
     await project.save();
+
+    // Log team member removal
+    if (removedMember) {
+      await auditLogger.teamMemberRemoved(req, req.admin, project, removedMember);
+    }
 
     return sendSuccess(res, {}, "Team member removed successfully");
   } catch (error) {

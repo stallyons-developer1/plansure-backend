@@ -11,6 +11,7 @@ const {
   validateRequired,
 } = require("../utils/errorResponse");
 const { sendPushForNotification } = require("../services/fcmService");
+const auditLogger = require("../utils/auditLogger");
 
 const checkProgrammeLocked = async (programmeId) => {
   const programme = await Programme.findById(programmeId);
@@ -163,6 +164,9 @@ router.post("/", protect, async (req, res) => {
     const populatedAction = await Action.findById(action._id)
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
+
+    // Audit log: Action created
+    await auditLogger.actionCreated(req, req.admin, populatedAction, programme.project);
 
     if (assignee.toString() !== req.admin._id.toString()) {
       await Notification.create({
@@ -355,6 +359,10 @@ router.put("/:id", protect, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
+    // Store old values for audit logging
+    const oldStatus = action.status;
+    const oldAssignee = action.assignee?.toString();
+
     const { locked, programme } = await checkProgrammeLocked(action.programme);
     if (locked) {
       return sendError(
@@ -447,6 +455,38 @@ router.put("/:id", protect, async (req, res) => {
       .populate("assignee", "name email")
       .populate("createdBy", "name email")
       .populate("programme", "name");
+
+    // Audit logging
+    if (status && status !== oldStatus) {
+      // Status change
+      await auditLogger.actionStatusChanged(
+        req,
+        req.admin,
+        updatedAction,
+        oldStatus,
+        status,
+        programme?.project
+      );
+    }
+    if (wasReassigned) {
+      // Reassignment
+      const Admin = require("../models/Admin");
+      const oldAssigneeUser = await Admin.findById(oldAssignee).select("name");
+      await auditLogger.log({
+        action: "ACTION_REASSIGNED",
+        req,
+        user: req.admin,
+        resourceType: "Action",
+        resourceId: updatedAction._id,
+        resourceName: updatedAction.title,
+        project: programme?.project,
+        description: `Reassigned action "${updatedAction.title}" from ${oldAssigneeUser?.name || "Unknown"} to ${updatedAction.assignee?.name}`,
+        metadata: {
+          previousAssignee: oldAssigneeUser?.name,
+          newAssignee: updatedAction.assignee?.name,
+        },
+      });
+    }
 
     if (wasReassigned && assignee !== req.admin._id.toString()) {
       const programmeForNotif = await Programme.findById(action.programme);
@@ -588,6 +628,20 @@ router.patch("/:id/complete", protect, async (req, res) => {
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
+    // Audit logging for completion toggle
+    if (!wasCompleted && action.status === "Completed") {
+      await auditLogger.actionCompleted(req, req.admin, updatedAction, programme?.project);
+    } else if (wasCompleted && action.status === "Open") {
+      await auditLogger.actionStatusChanged(
+        req,
+        req.admin,
+        updatedAction,
+        "Completed",
+        "Open",
+        programme?.project
+      );
+    }
+
     if (!wasCompleted && action.status === "Completed") {
       const programmeForNotif = await Programme.findById(action.programme);
 
@@ -626,13 +680,14 @@ router.patch("/:id/complete", protect, async (req, res) => {
 
 router.delete("/:id", protect, async (req, res) => {
   try {
-    const action = await Action.findById(req.params.id);
+    const action = await Action.findById(req.params.id)
+      .populate("programme", "project");
 
     if (!action) {
       return sendError(res, "Action not found", 404);
     }
 
-    const { locked } = await checkProgrammeLocked(action.programme);
+    const { locked } = await checkProgrammeLocked(action.programme._id || action.programme);
     if (locked) {
       return sendError(
         res,
@@ -640,6 +695,23 @@ router.delete("/:id", protect, async (req, res) => {
         403,
       );
     }
+
+    // Audit log before deletion
+    await auditLogger.log({
+      action: "ACTION_DELETED",
+      req,
+      user: req.admin,
+      resourceType: "Action",
+      resourceId: action._id,
+      resourceName: action.title,
+      project: action.programme?.project,
+      description: `Deleted action "${action.title}"`,
+      metadata: {
+        linkedActivity: action.linkedActivity?.activityName,
+        status: action.status,
+        priority: action.priority,
+      },
+    });
 
     await Action.findByIdAndDelete(req.params.id);
 
