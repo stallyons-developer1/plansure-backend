@@ -72,6 +72,8 @@ const calculateRAG = (activity, today) => {
   // Check if completed (status or "A" suffix in dates means Actual/Complete)
   const isCompleted =
     activity.status === "Completed" ||
+    activity.activityStatus === "Complete" ||
+    activity.activityStatus === "Completed" ||
     (activity.startDate && activity.startDate.includes(" A")) ||
     (activity.finishDate && activity.finishDate.includes(" A"));
 

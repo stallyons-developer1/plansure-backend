@@ -2860,4 +2860,53 @@ router.post("/:id/reopen-week/:weekNumber", protect, adminOnly, async (req, res)
   }
 });
 
+// Link programme to a project
+router.patch("/:id/link-project", protect, async (req, res) => {
+  try {
+    const { projectId } = req.body;
+
+    if (!projectId) {
+      return sendValidationError(res, [
+        { field: "projectId", message: "Project ID is required" },
+      ]);
+    }
+
+    const programme = await Programme.findById(req.params.id);
+    if (!programme) {
+      return sendError(res, "Programme not found", 404);
+    }
+
+    // Verify project exists
+    const project = await Project.findById(projectId);
+    if (!project) {
+      return sendError(res, "Project not found", 404);
+    }
+
+    // Update programme with project
+    programme.project = projectId;
+    await programme.save();
+
+    // Audit log: Programme linked to project
+    await auditLogger.log({
+      action: "PROGRAMME_LINKED",
+      req,
+      user: req.admin,
+      resourceType: "Programme",
+      resourceId: programme._id,
+      resourceName: programme.name,
+      project,
+      description: `Linked programme "${programme.name}" to project "${project.name}"`,
+    });
+
+    return sendSuccess(
+      res,
+      { programme: { _id: programme._id, project: projectId } },
+      "Programme linked to project successfully"
+    );
+  } catch (error) {
+    console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
 module.exports = router;
