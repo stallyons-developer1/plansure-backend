@@ -13,6 +13,7 @@ const {
   sendSuccess,
   validateRequired,
 } = require("../utils/errorResponse");
+const auditLogger = require("../utils/auditLogger");
 
 const pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js");
 
@@ -557,6 +558,10 @@ router.post(
         status: "processed",
         closedWeeks: [], // Reset closed weeks for new upload
       });
+
+      // Audit log: Programme uploaded
+      const projectDoc = project ? await Project.findById(project).select("name") : null;
+      await auditLogger.programmeUploaded(req, req.admin, programme, projectDoc);
 
       return sendSuccess(
         res,
