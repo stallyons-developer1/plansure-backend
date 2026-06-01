@@ -198,6 +198,10 @@ router.get("/stats", protect, async (req, res) => {
     }
 
     const today = new Date();
+    // Start of today (midnight) - actions are only overdue after due date has fully passed
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
     for (const prog of programmes) {
       const activities = prog.extractedData?.activities || [];
 
@@ -222,7 +226,7 @@ router.get("/stats", protect, async (req, res) => {
       (a) =>
         a.status !== "Completed" &&
         a.status !== "Cancelled" &&
-        new Date(a.dueDate) < new Date(),
+        new Date(a.dueDate) < startOfToday,
     );
     const pendingActions = openActions.length - overdueActions.length;
 
@@ -1315,6 +1319,9 @@ router.get("/weekly", protect, async (req, res) => {
 
     const rawActivities = activeProgramme?.extractedData?.activities || [];
     const today = new Date();
+    // Start of today (midnight) - actions are only overdue after due date has fully passed
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
 
     let greenCount = 0;
     let amberCount = 0;
@@ -1351,7 +1358,7 @@ router.get("/weekly", protect, async (req, res) => {
       (a) =>
         a.status !== "Completed" &&
         a.status !== "Cancelled" &&
-        new Date(a.dueDate) < new Date(),
+        new Date(a.dueDate) < startOfToday,
     );
 
     const readyForClose = overdueActions.length === 0 && blockedCount === 0;
@@ -1375,7 +1382,7 @@ router.get("/weekly", protect, async (req, res) => {
             ? `ACT-${String(linkedAction._id).slice(-4).toUpperCase()}`
             : "-",
           status:
-            linkedAction && new Date(linkedAction.dueDate) < today
+            linkedAction && new Date(linkedAction.dueDate) < startOfToday
               ? "Overdue"
               : "Open",
         };

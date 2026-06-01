@@ -448,7 +448,9 @@ router.post("/planner-todo", protect, async (req, res) => {
       });
     }
 
+    // Start of today (midnight) - actions are only overdue after due date has fully passed
     const today = new Date();
+    today.setHours(0, 0, 0, 0);
     const overdueActions = actions.filter(
       (a) => new Date(a.dueDate) < today
     );

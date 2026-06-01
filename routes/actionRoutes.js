@@ -736,6 +736,10 @@ router.get("/stats/summary", protect, async (req, res) => {
       ];
     }
 
+    // Start of today (midnight) - actions are only overdue after due date has fully passed
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
     const stats = await Action.aggregate([
       { $match: filter },
       {
@@ -756,7 +760,7 @@ router.get("/stats/summary", protect, async (req, res) => {
               $cond: [
                 {
                   $and: [
-                    { $lt: ["$dueDate", new Date()] },
+                    { $lt: ["$dueDate", startOfToday] },
                     { $ne: ["$status", "Completed"] },
                     { $ne: ["$status", "Cancelled"] },
                   ],

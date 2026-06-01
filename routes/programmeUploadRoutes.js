@@ -121,24 +121,19 @@ const calculateRAG = (activity, today) => {
 
   const msPerDay = 1000 * 60 * 60 * 24;
   const daysUntilStart = Math.ceil((startDate - today) / msPerDay);
-  const weeksUntilStart = Math.ceil(daysUntilStart / 7);
 
-  if (daysUntilStart < 0) {
-    if (finishDate && finishDate < today) {
-      return "Red";
-    }
-    return "Green";
+  // Only show activities that have started (startDate <= today)
+  // Activities that haven't started yet are excluded (Grey)
+  if (daysUntilStart > 0) {
+    return "Grey"; // Not started yet - exclude from RAG distribution
   }
 
-  if (weeksUntilStart <= 2) {
-    return "Green";
-  } else if (weeksUntilStart <= 4) {
-    return "Amber";
-  } else if (weeksUntilStart <= 6) {
-    return "Red";
-  } else {
-    return "Grey";
+  // Activity has started - check if it's overdue or in progress
+  if (finishDate && finishDate < today) {
+    return "Red"; // Overdue - should have finished by now
   }
+
+  return "Green"; // In progress - started but not yet due
 };
 
 const generateWeekZones = (startDate, numWeeks = 6) => {
@@ -933,6 +928,9 @@ router.get("/:id/lookahead", protect, async (req, res) => {
     });
 
     const today = new Date();
+    // Start of today (midnight) - actions are only overdue after due date has fully passed
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
     const weekZones = generateWeekZones(today, programme.lookaheadWeeks || 6);
 
     const activities = programme.extractedData.activities.map((activity) => {
@@ -982,7 +980,7 @@ router.get("/:id/lookahead", protect, async (req, res) => {
       completed: actions.filter((a) => a.status === "Completed").length,
       overdue: actions.filter(
         (a) =>
-          a.dueDate < today &&
+          a.dueDate < startOfToday &&
           a.status !== "Completed" &&
           a.status !== "Cancelled",
       ).length,
@@ -1140,6 +1138,9 @@ router.get("/:id/overview", protect, async (req, res) => {
 
     const actions = await Action.find({ programme: req.params.id });
     const today = new Date();
+    // Start of today (midnight) - actions are only overdue after due date has fully passed
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
 
     const weekZones = generateWeekZones(today, programme.lookaheadWeeks || 6);
 
@@ -1179,7 +1180,7 @@ router.get("/:id/overview", protect, async (req, res) => {
 
     const overdueActions = actions.filter(
       (a) =>
-        a.dueDate < today &&
+        a.dueDate < startOfToday &&
         a.status !== "Completed" &&
         a.status !== "Cancelled",
     ).length;
@@ -1426,6 +1427,9 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       .populate("createdBy", "name email");
 
     const today = new Date();
+    // Start of today (midnight) - actions are only overdue after due date has fully passed
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
 
     // Parse date helper
     const parseActivityDate = (dateStr) => {
@@ -1529,7 +1533,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         dueDate: action.dueDate,
         createdAt: action.createdAt, // Include createdAt for closed week filtering
         isOverdue:
-          action.dueDate < today &&
+          action.dueDate < startOfToday &&
           action.status !== "Completed" &&
           action.status !== "Cancelled",
         isFromClosedWeek: isActionFromClosedWeek(action.createdAt, action.status, action.title), // Flag if from closed week
@@ -1584,7 +1588,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         a.status !== "Completed" &&
         a.status !== "Cancelled" &&
         a.dueDate &&
-        new Date(a.dueDate) < today
+        new Date(a.dueDate) < startOfToday
       ).length,
     };
 
@@ -1843,6 +1847,9 @@ const checkCloseOutEligible = async (programmeId) => {
   }
 
   const today = new Date();
+  // Start of today (midnight) - actions are only overdue after due date has fully passed
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
   const activities = programme.extractedData?.activities || [];
 
   const greenActivities = activities.filter((a) => {
@@ -1878,7 +1885,7 @@ const checkCloseOutEligible = async (programmeId) => {
     (a) =>
       a.status !== "Completed" &&
       a.status !== "Cancelled" &&
-      new Date(a.dueDate) < today,
+      new Date(a.dueDate) < startOfToday,
   );
 
   if (overdueActions.length > 0) {
