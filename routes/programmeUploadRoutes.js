@@ -661,7 +661,22 @@ router.get("/", protect, async (req, res) => {
       .populate("uploadedBy", "name email")
       .sort({ createdAt: -1 });
 
-    return sendSuccess(res, { programmes });
+    const baseUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    const programmesWithUrl = programmes.map(prog => {
+      let fileUrl = null;
+      if (prog.filePath) {
+        // Extract relative path from absolute path (uploads/programmes/...)
+        const uploadsIndex = prog.filePath.indexOf('uploads/');
+        const relativePath = uploadsIndex !== -1 ? prog.filePath.substring(uploadsIndex) : prog.filePath;
+        fileUrl = `${baseUrl}/${relativePath}`;
+      }
+      return {
+        ...prog.toObject(),
+        fileUrl
+      };
+    });
+
+    return sendSuccess(res, { programmes: programmesWithUrl });
   } catch (error) {
     console.error(error);
     return sendError(res, "Server error");
@@ -696,7 +711,19 @@ router.get("/by-project/:projectId", protect, async (req, res) => {
       return sendSuccess(res, { programme: null });
     }
 
-    return sendSuccess(res, { programme });
+    const baseUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    let fileUrl = null;
+    if (programme.filePath) {
+      const uploadsIndex = programme.filePath.indexOf('uploads/');
+      const relativePath = uploadsIndex !== -1 ? programme.filePath.substring(uploadsIndex) : programme.filePath;
+      fileUrl = `${baseUrl}/${relativePath}`;
+    }
+    const programmeWithUrl = {
+      ...programme.toObject(),
+      fileUrl
+    };
+
+    return sendSuccess(res, { programme: programmeWithUrl });
   } catch (error) {
     console.error(error);
     return sendError(res, "Server error");
@@ -718,12 +745,26 @@ router.get("/project/:projectId/history", protect, async (req, res) => {
       .populate("uploadedBy", "name email")
       .sort({ createdAt: -1 });
 
+    const baseUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    const addFileUrl = (prog) => {
+      let fileUrl = null;
+      if (prog.filePath) {
+        const uploadsIndex = prog.filePath.indexOf('uploads/');
+        const relativePath = uploadsIndex !== -1 ? prog.filePath.substring(uploadsIndex) : prog.filePath;
+        fileUrl = `${baseUrl}/${relativePath}`;
+      }
+      return {
+        ...prog.toObject(),
+        fileUrl
+      };
+    };
+
     const currentProgramme = programmes.find((p) => p.cycleStatus !== "Closed");
     const history = programmes.filter((p) => p.cycleStatus === "Closed");
 
     return sendSuccess(res, {
-      currentProgramme: currentProgramme || null,
-      history,
+      currentProgramme: currentProgramme ? addFileUrl(currentProgramme) : null,
+      history: history.map(addFileUrl),
       canUploadNew:
         !currentProgramme || currentProgramme.cycleStatus === "Closed",
     });
@@ -837,7 +878,19 @@ router.get("/:id", protect, async (req, res) => {
       return sendError(res, "Access denied", 403);
     }
 
-    return sendSuccess(res, { programme });
+    const baseUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    let fileUrl = null;
+    if (programme.filePath) {
+      const uploadsIndex = programme.filePath.indexOf('uploads/');
+      const relativePath = uploadsIndex !== -1 ? programme.filePath.substring(uploadsIndex) : programme.filePath;
+      fileUrl = `${baseUrl}/${relativePath}`;
+    }
+    const programmeWithUrl = {
+      ...programme.toObject(),
+      fileUrl
+    };
+
+    return sendSuccess(res, { programme: programmeWithUrl });
   } catch (error) {
     console.error(error);
     return sendError(res, "Server error");
