@@ -41,7 +41,7 @@ const getPlannerAccessibleProjects = async (admin) => {
 
 const parseDate = (dateStr) => {
   if (!dateStr) return null;
-  const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
+  const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
   const months = {
     Jan: 0,
     Feb: 1,
@@ -523,6 +523,9 @@ router.get("/governance", protect, async (req, res) => {
 
     const programmeIds = programmes.map((p) => p._id);
 
+    console.log(`[governance] Found ${projects.length} projects, ${programmes.length} programmes`);
+    console.log(`[governance] Programme IDs:`, programmeIds);
+
     // Get all cycle history
     const cycleHistory = await CycleHistory.find({
       programme: { $in: programmeIds },
@@ -530,10 +533,24 @@ router.get("/governance", protect, async (req, res) => {
       .populate("closedBy", "name")
       .sort({ createdAt: -1 });
 
+    console.log(`[governance] Found ${cycleHistory.length} cycle history records`);
+
+    // Only show governance data if at least one week has been closed
+    if (cycleHistory.length === 0) {
+      return sendSuccess(res, {
+        governance: {
+          hasData: false,
+          message: "No weeks closed yet. Governance data will appear after you close your first week.",
+        },
+      });
+    }
+
     // Get all actions
     const actions = await Action.find({
       programme: { $in: programmeIds },
     });
+
+    console.log(`[governance] Found ${actions.length} actions`);
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -609,27 +626,28 @@ router.get("/governance", protect, async (req, res) => {
     }
     // If no programme weeks, score remains 0
 
-    // Calculate overdue actions
-    const overdueActions = actions.filter(
-      (a) =>
-        a.status !== "Completed" &&
-        a.status !== "Cancelled" &&
-        new Date(a.dueDate) < today
-    );
-    const totalActions = actions.length;
-    const closedActions = actions.filter((a) => a.status === "Completed");
+    // Calculate metrics ONLY from closed weeks (cycleHistory)
+    // Sum up stats from all closed weeks
+    let totalActionsFromClosedWeeks = 0;
+    let closedActionsFromClosedWeeks = 0;
+    for (const cycle of cycleHistory) {
+      totalActionsFromClosedWeeks += cycle.stats?.actionsTotal || 0;
+      closedActionsFromClosedWeeks += cycle.stats?.actionsCompleted || 0;
+    }
 
     // Calculate Overdue Action Rate Score (Weight 25%)
+    // Since overdue is not stored in cycle history, calculate from difference
+    const overdueFromClosedWeeks = Math.max(0, totalActionsFromClosedWeeks - closedActionsFromClosedWeeks);
     const overdueRate =
-      totalActions > 0
-        ? Math.round((overdueActions.length / totalActions) * 100)
+      totalActionsFromClosedWeeks > 0
+        ? Math.round((overdueFromClosedWeeks / totalActionsFromClosedWeeks) * 100)
         : 0;
-    const overdueActionRateScore = totalActions > 0 ? Math.max(0, 100 - overdueRate * 2) : 100;
+    const overdueActionRateScore = totalActionsFromClosedWeeks > 0 ? Math.max(0, 100 - overdueRate * 2) : 100;
 
     // Calculate Action Closure Speed (Weight 20%)
     const closureRate =
-      totalActions > 0
-        ? Math.round((closedActions.length / totalActions) * 100)
+      totalActionsFromClosedWeeks > 0
+        ? Math.round((closedActionsFromClosedWeeks / totalActionsFromClosedWeeks) * 100)
         : 0;
     const actionClosureSpeedScore = closureRate;
 
@@ -692,35 +710,26 @@ router.get("/governance", protect, async (req, res) => {
         // Find matching cycle history if exists
         const matchingCycle = cycleHistory.find((c) => c.weekNumber === weekNum);
 
+        // Only show data from formally closed weeks
         weeklyReadinessData.push({
           week: `W${weekNum}`,
           value: matchingCycle ?
             Math.round(((matchingCycle.stats?.green || 0) / (matchingCycle.stats?.totalActivities || 1)) * 100) :
-            readinessPercent,
+            0,
         });
 
-        // Count actions for this week (created or due within this week)
-        const weekActions = actions.filter((a) => {
-          const createdAt = new Date(a.createdAt);
-          return createdAt >= weekStartDate && createdAt <= weekEndDate;
-        });
-        const weekClosedActions = actions.filter((a) => {
-          if (a.status !== "Completed" || !a.completedAt) return false;
-          const completedAt = new Date(a.completedAt);
-          return completedAt >= weekStartDate && completedAt <= weekEndDate;
-        });
-
+        // Only show data from formally closed weeks
         actionsData.push({
           week: `W${weekNum}`,
-          raised: matchingCycle?.stats?.actionsTotal || weekActions.length,
-          closed: matchingCycle?.stats?.actionsCompleted || weekClosedActions.length,
+          raised: matchingCycle ? matchingCycle.stats?.actionsTotal || 0 : 0,
+          closed: matchingCycle ? matchingCycle.stats?.actionsCompleted || 0 : 0,
         });
 
         ragTrendData.push({
           week: `W${weekNum}`,
-          green: matchingCycle?.stats?.green || rag.green,
-          amber: matchingCycle?.stats?.amber || rag.amber,
-          red: matchingCycle?.stats?.red || rag.red,
+          green: matchingCycle ? matchingCycle.stats?.green || 0 : 0,
+          amber: matchingCycle ? matchingCycle.stats?.amber || 0 : 0,
+          red: matchingCycle ? matchingCycle.stats?.red || 0 : 0,
         });
 
         // Build historical weeks
@@ -812,8 +821,8 @@ router.get("/governance", protect, async (req, res) => {
             green: rag.green,
             amber: rag.amber,
             red: rag.red,
-            actionsTotal: weekActions.length,
-            actionsCompleted: weekClosedActions.length,
+            actionsTotal: 0,
+            actionsCompleted: 0,
           },
           closeType: closeType,
           notes: matchingCycle?.notes || "",
@@ -928,27 +937,9 @@ router.get("/governance", protect, async (req, res) => {
     if (governanceScore < 50) governanceStatus = "RED";
     else if (governanceScore < 70) governanceStatus = "AMBER";
 
-    // Calculate overdue trend
-    const recentOverdue = actions.filter(
-      (a) =>
-        a.status !== "Completed" &&
-        a.status !== "Cancelled" &&
-        new Date(a.dueDate) < today &&
-        new Date(a.createdAt) > new Date(today - 14 * 24 * 60 * 60 * 1000)
-    ).length;
-    const olderOverdue = actions.filter(
-      (a) =>
-        a.status !== "Completed" &&
-        a.status !== "Cancelled" &&
-        new Date(a.dueDate) < today &&
-        new Date(a.createdAt) <= new Date(today - 14 * 24 * 60 * 60 * 1000)
-    ).length;
-    const overdueTrend =
-      recentOverdue < olderOverdue
-        ? "Down"
-        : recentOverdue > olderOverdue
-          ? "Up"
-          : "Stable";
+    // Calculate overdue trend from closed weeks only
+    // Since we don't have historical overdue data per week, use stable
+    const overdueTrend = "Stable";
 
     // Get blocked activities to determine recurring blockers
     let blockerTypes = new Set();
@@ -1140,6 +1131,7 @@ router.get("/governance", protect, async (req, res) => {
       });
 
     // Return response
+    console.log(`[governance] Returning data with score: ${governanceScore}, status: ${governanceStatus}`);
     return sendSuccess(res, {
       governance: {
         hasData: true,
@@ -1175,8 +1167,8 @@ router.get("/governance", protect, async (req, res) => {
         stats: {
           totalWeeks: totalWeeksFromProgramme || totalWeeks,
           avgReadiness: `${avgReadiness}%`,
-          totalActionsRaised: totalActions,
-          totalClosed: closedActions.length,
+          totalActionsRaised: totalActionsFromClosedWeeks,
+          totalClosed: closedActionsFromClosedWeeks,
           overdueTrend,
           recurringBlockers: blockerTypes.size,
         },
@@ -1190,7 +1182,8 @@ router.get("/governance", protect, async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Governance dashboard error:", error);
+    console.error("[governance] ERROR:", error);
+    console.error("[governance] Stack:", error.stack);
     return sendError(res, "Server error");
   }
 });

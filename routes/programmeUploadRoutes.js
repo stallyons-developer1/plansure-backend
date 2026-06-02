@@ -56,7 +56,7 @@ const checkProgrammeAccess = async (user, programmeId, projectId = null) => {
 
 const parseDate = (dateStr) => {
   if (!dateStr) return null;
-  const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
+  const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
   const months = {
     Jan: 0,
     Feb: 1,
@@ -431,7 +431,12 @@ router.post(
             activity.startDateParsed = parseDate(activity.startDate);
             activity.finishDateParsed = parseDate(activity.finishDate);
 
-            if (activity.finishDate.includes(" A")) {
+            // Check for B suffix (Blocked) - must check before A
+            if (activity.finishDate.includes(" B") || activity.startDate.includes(" B")) {
+              activity.isBlocked = true;
+              activity.status = "In Progress";
+              activity.activityStatus = "Blocked";
+            } else if (activity.finishDate.includes(" A")) {
               activity.status = "Completed";
             } else if (
               activity.startDate.includes(" A") &&
@@ -1086,12 +1091,14 @@ router.patch("/:id/activity/:activityId", protect, async (req, res) => {
 
     if (owner !== undefined) activity.owner = owner;
     if (ownerName !== undefined) activity.ownerName = ownerName;
-    if (activityStatus !== undefined) activity.activityStatus = activityStatus;
     if (notes !== undefined) activity.notes = notes;
     if (isBlocked !== undefined) activity.isBlocked = isBlocked;
     if (blocker !== undefined) activity.blocker = blocker;
 
-    if (isBlocked !== undefined) {
+    // Set activityStatus - if explicitly provided, use that; otherwise recalculate
+    if (activityStatus !== undefined) {
+      activity.activityStatus = activityStatus;
+    } else if (isBlocked !== undefined) {
       const today = new Date();
       activity.activityStatus = calculateActivityStatus(
         activity,
@@ -1434,7 +1441,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     // Parse date helper
     const parseActivityDate = (dateStr) => {
       if (!dateStr) return null;
-      const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
+      const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
       const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
       const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
       if (!match) return null;
@@ -1548,7 +1555,8 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     const activities = programme.extractedData.activities.map((activity) => {
       const activityObj = activity.toObject ? activity.toObject() : activity;
       const ragStatus = calculateRAG(activityObj, ragReferenceDate);
-      const activityStatus = calculateActivityStatus(
+      // Use stored activityStatus if exists, otherwise calculate
+      const activityStatus = activityObj.activityStatus || calculateActivityStatus(
         activityObj,
         ragStatus,
         ragReferenceDate,
@@ -1646,6 +1654,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
           activityName: a.activityName,
           ragStatus: a.ragStatus,
           activityStatus: a.activityStatus,
+          isBlocked: a.isBlocked || a.activityStatus === "Blocked",
           owner: linkedAction?.assignee || "-",
           blocker: a.activityStatus === "Blocked"
             ? (a.blocker || "Activity blocked")
@@ -1791,6 +1800,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       blockedRiskActivities: blockedRiskActivities,
       weeklyPlanPreview: weeklyPlanPreview,
       plannerToDo: plannerToDoLimited,
+      programmeId: programme._id,
       programme: {
         _id: programme._id,
         name: programme.name,
@@ -2537,7 +2547,7 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
     // Parse dates helper
     const parseDate = (dateStr) => {
       if (!dateStr) return null;
-      const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
+      const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
       const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
       const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
       if (!match) return null;
@@ -2623,6 +2633,10 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       const isClosed = closedWeekNumbers.includes(i);
       const closedWeekData = closedWeeks.find(w => w.weekNumber === i);
 
+      // Calculate 2-week end date (since UI shows 2 weeks at a time)
+      const twoWeekEndDate = new Date(weekStartDate);
+      twoWeekEndDate.setDate(weekStartDate.getDate() + 13); // 2 weeks = 14 days (0-13)
+
       let status = "upcoming";
       if (isClosed) {
         status = "closed";
@@ -2632,17 +2646,39 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
         status = "past"; // Past but not closed
       }
 
-      // Can close if: current or past week AND not already closed AND previous weeks are closed
+      // Can close if:
+      // 1. Not already closed
+      // 2. Previous weeks are closed
+      // 3. Today >= 2-week end date (the 2-week period must have completed)
       const previousWeeksClosed = closedWeekNumbers.filter(n => n < i).length === i - 1;
-      const canClose = !isClosed && i <= currentWeekNumber && previousWeeksClosed;
+      const twoWeekPeriodEnded = today >= twoWeekEndDate;
+      const canClose = !isClosed && previousWeeksClosed && twoWeekPeriodEnded;
+
+      // Provide reason if cannot close
+      let canCloseReason = null;
+      if (!canClose) {
+        if (isClosed) {
+          canCloseReason = "Already closed";
+        } else if (!previousWeeksClosed) {
+          canCloseReason = "Previous weeks must be closed first";
+        } else if (!twoWeekPeriodEnded) {
+          const formatDate = (d) => {
+            const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            return `${d.getDate()} ${months[d.getMonth()]}`;
+          };
+          canCloseReason = `Week closes after ${formatDate(twoWeekEndDate)}`;
+        }
+      }
 
       weeks.push({
         weekNumber: i,
         startDate: weekStartDate,
         endDate: weekEndDate,
+        twoWeekEndDate,
         status,
         isClosed,
         canClose,
+        canCloseReason,
         closedAt: closedWeekData?.closedAt || null,
         closeType: closedWeekData?.closeType || null,
         stats: isClosed ? closedWeekData?.stats : weekActivities,
@@ -2704,7 +2740,7 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
     // Parse dates helper
     const parseDate = (dateStr) => {
       if (!dateStr) return null;
-      const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
+      const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
       const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
       const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
       if (!match) return null;
@@ -2735,15 +2771,33 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       return sendError(res, "Cannot determine programme start date", 400);
     }
 
-    // Calculate week dates
+    // Calculate week dates (2-week view: weeks X and X+1)
     const weekStartDate = new Date(earliestDate);
     weekStartDate.setDate(weekStartDate.getDate() + (weekNumber - 1) * 7);
     const weekEndDate = new Date(weekStartDate);
     weekEndDate.setDate(weekStartDate.getDate() + 6);
 
-    // Calculate stats for this week
+    // The UI displays 2 weeks at a time (Week X and X+1), so calculate the 2-week end date
+    const twoWeekEndDate = new Date(weekStartDate);
+    twoWeekEndDate.setDate(weekStartDate.getDate() + 13); // 2 weeks = 14 days (0-13)
+
+    // Check if today's date has reached or passed the 2-week period end date
     const today = new Date();
-    let weekStats = { totalActivities: 0, green: 0, amber: 0, red: 0 };
+    const todayStart = new Date(today);
+    todayStart.setHours(0, 0, 0, 0);
+    const twoWeekEndDateStart = new Date(twoWeekEndDate);
+    twoWeekEndDateStart.setHours(0, 0, 0, 0);
+
+    if (todayStart < twoWeekEndDateStart) {
+      const formatDate = (d) => {
+        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+      };
+      return sendError(res, `Cannot close Week ${weekNumber}-${weekNumber + 1} yet. The 2-week period ends on ${formatDate(twoWeekEndDate)} and hasn't completed.`, 400);
+    }
+
+    // Calculate stats for this week
+    let weekStats = { totalActivities: 0, green: 0, amber: 0, red: 0, actionsTotal: 0, actionsCompleted: 0 };
 
     for (const activity of activities) {
       const actStart = parseDate(activity.startDate);
@@ -2766,6 +2820,27 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
         }
       }
     }
+
+    // Count actions created since the last week was closed
+    const Action = require("../models/Action");
+
+    // Find the most recently closed week's closure date
+    const previousClosedWeeks = closedWeeks.filter(w => w.weekNumber < weekNumber);
+    const lastClosureDate = previousClosedWeeks.length > 0
+      ? new Date(Math.max(...previousClosedWeeks.map(w => new Date(w.closedAt).getTime())))
+      : null;
+
+    // Find actions created AFTER the last closure (or all actions if this is the first week)
+    const actionQuery = { programme: req.params.id };
+    if (lastClosureDate) {
+      actionQuery.createdAt = { $gt: lastClosureDate };
+    }
+
+    const weekActions = await Action.find(actionQuery);
+    weekStats.actionsTotal = weekActions.length;
+    weekStats.actionsCompleted = weekActions.filter(a => a.status === "Completed").length;
+
+    console.log(`[close-week] Week ${weekNumber}: Found ${weekActions.length} actions (${weekStats.actionsCompleted} completed) since last closure`);
 
     // Calculate totalWeeks if not set
     let calculatedTotalWeeks = programme.totalWeeks;

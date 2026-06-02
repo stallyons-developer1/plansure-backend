@@ -2,10 +2,10 @@ const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
 
-// Generate test PDF similar to Alpha Construction Project format
+// Generate test PDF with May-June dates so Week 1-2 can be closed on June 2
 const generateTestPDF = () => {
   const doc = new PDFDocument({ size: 'A4', layout: 'landscape' });
-  const outputPath = path.join(__dirname, '..', 'uploads', 'programmes', 'test_programme_may_2026.pdf');
+  const outputPath = '/Users/apple/Desktop/Plansure PDF/test_programme_may_june_2026.pdf';
 
   // Ensure directory exists
   const dir = path.dirname(outputPath);
@@ -16,41 +16,52 @@ const generateTestPDF = () => {
   const writeStream = fs.createWriteStream(outputPath);
   doc.pipe(writeStream);
 
-  // Helper to format date as DD-Mon-YY
-  const formatDate = (date, addA = false) => {
+  // Helper to format date as DD-Mon-YY with status indicator
+  const formatDate = (date, status = null) => {
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const day = String(date.getDate()).padStart(2, '0');
     const month = months[date.getMonth()];
     const year = String(date.getFullYear()).slice(-2);
-    return `${day}-${month}-${year}${addA ? ' A' : ''}`;
+    let suffix = '';
+    if (status === 'completed') suffix = ' A';
+    else if (status === 'blocked') suffix = ' B';
+    return `${day}-${month}-${year}${suffix}`;
   };
 
-  // Define activities similar to the Alpha Construction Project
+  // Activities starting May 18, 2026
+  // Week 1-2: May 18 - May 31 (2-week end date = May 31, closable on June 2)
+  // Week 3-4: June 1 - June 14
   const activities = [
-    { id: 'TST-PROG', name: 'Test Construction Programme', duration: 20, start: new Date(2026, 4, 1), finish: new Date(2026, 4, 20), isHeader: true },
-    { id: 'TST-001', name: 'Site Preparation', duration: 3, start: new Date(2026, 4, 1), finish: new Date(2026, 4, 3), completed: true },
-    { id: 'TST-002', name: 'Foundation Layout', duration: 2, start: new Date(2026, 4, 2), finish: new Date(2026, 4, 3), completed: true },
-    { id: 'TST-003', name: 'Excavation Work', duration: 3, start: new Date(2026, 4, 4), finish: new Date(2026, 4, 6), completed: true },
-    { id: 'TST-004', name: 'Concrete Pouring Phase 1', duration: 2, start: new Date(2026, 4, 5), finish: new Date(2026, 4, 6), completed: true },
-    { id: 'TST-005', name: 'Steel Framework Installation', duration: 4, start: new Date(2026, 4, 7), finish: new Date(2026, 4, 10), completed: false },
-    { id: 'TST-006', name: 'Electrical Conduit Rough-In', duration: 3, start: new Date(2026, 4, 8), finish: new Date(2026, 4, 10), completed: false },
-    { id: 'TST-007', name: 'Plumbing First Fix', duration: 3, start: new Date(2026, 4, 9), finish: new Date(2026, 4, 11), completed: false },
-    { id: 'TST-008', name: 'Roof Structure Assembly', duration: 4, start: new Date(2026, 4, 11), finish: new Date(2026, 4, 14), completed: false },
-    { id: 'TST-009', name: 'Wall Framing', duration: 3, start: new Date(2026, 4, 12), finish: new Date(2026, 4, 14), completed: false },
-    { id: 'TST-010', name: 'Window Installation', duration: 2, start: new Date(2026, 4, 15), finish: new Date(2026, 4, 16), completed: false },
-    { id: 'TST-011', name: 'External Cladding', duration: 3, start: new Date(2026, 4, 16), finish: new Date(2026, 4, 18), completed: false },
-    { id: 'TST-012', name: 'Final Inspection Prep', duration: 2, start: new Date(2026, 4, 19), finish: new Date(2026, 4, 20), completed: false },
+    { id: 'MAY-PROG', name: 'May-June Construction Programme', duration: 45, start: new Date(2026, 4, 18), finish: new Date(2026, 5, 30), isHeader: true },
+    // Week 1-2 (May 18 - May 31)
+    { id: 'MAY-001', name: 'Site Survey & Planning', duration: 3, start: new Date(2026, 4, 18), finish: new Date(2026, 4, 20), status: 'completed' },
+    { id: 'MAY-002', name: 'Permit Acquisition', duration: 2, start: new Date(2026, 4, 19), finish: new Date(2026, 4, 20), status: 'completed' },
+    { id: 'MAY-003', name: 'Ground Preparation', duration: 4, start: new Date(2026, 4, 21), finish: new Date(2026, 4, 24), status: 'completed' },
+    { id: 'MAY-004', name: 'Foundation Marking', duration: 3, start: new Date(2026, 4, 25), finish: new Date(2026, 4, 27), status: 'completed' },
+    { id: 'MAY-005', name: 'Excavation Phase 1', duration: 4, start: new Date(2026, 4, 28), finish: new Date(2026, 4, 31), status: null },
+    // Week 3-4 (June 1 - June 14)
+    { id: 'MAY-006', name: 'Concrete Foundation', duration: 4, start: new Date(2026, 5, 1), finish: new Date(2026, 5, 4), status: null },
+    { id: 'MAY-007', name: 'Steel Framework', duration: 4, start: new Date(2026, 5, 5), finish: new Date(2026, 5, 8), status: null },
+    { id: 'MAY-008', name: 'Electrical Rough-In', duration: 3, start: new Date(2026, 5, 9), finish: new Date(2026, 5, 11), status: null },
+    { id: 'MAY-009', name: 'Plumbing Installation', duration: 3, start: new Date(2026, 5, 12), finish: new Date(2026, 5, 14), status: null },
+    // Week 5-6 (June 15 - June 28)
+    { id: 'MAY-010', name: 'Wall Framing', duration: 4, start: new Date(2026, 5, 15), finish: new Date(2026, 5, 18), status: null },
+    { id: 'MAY-011', name: 'Roofing Work', duration: 4, start: new Date(2026, 5, 19), finish: new Date(2026, 5, 22), status: null },
+    { id: 'MAY-012', name: 'Window Installation', duration: 3, start: new Date(2026, 5, 23), finish: new Date(2026, 5, 25), status: null },
+    { id: 'MAY-013', name: 'External Finishing', duration: 3, start: new Date(2026, 5, 26), finish: new Date(2026, 5, 28), status: null },
+    { id: 'MAY-014', name: 'Final Inspection', duration: 2, start: new Date(2026, 5, 29), finish: new Date(2026, 5, 30), status: null },
   ];
 
-  const projectStart = new Date(2026, 4, 1);
-  const projectEnd = new Date(2026, 4, 20);
+  const projectStart = new Date(2026, 4, 18);
+  const projectEnd = new Date(2026, 5, 30);
 
   console.log(`Generating PDF with ${activities.length} activities`);
   console.log(`Date range: ${formatDate(projectStart)} to ${formatDate(projectEnd)}`);
+  console.log(`Week 1-2: May 18 - May 31 (closable since 2-week end date has passed)`);
 
   // Title
-  doc.fontSize(14).font('Helvetica-Bold').text('Test Construction Project / May 2026', 50, 30);
-  doc.fontSize(10).font('Helvetica').text('21/05/2026', 700, 30);
+  doc.fontSize(14).font('Helvetica-Bold').text('May-June Construction Project / 2026', 50, 30);
+  doc.fontSize(10).font('Helvetica').text('02/06/2026', 700, 30);
 
   // Table setup
   const tableTop = 60;
@@ -80,51 +91,59 @@ const generateTestPDF = () => {
       doc.fillColor('#D35400').rect(50, y, 490, rowHeight).fill();
       doc.fillColor('#ffffff');
     } else {
-      doc.fillColor(index % 2 === 0 ? '#f9f9f9' : '#ffffff').rect(50, y, 490, rowHeight).fill();
+      doc.fillColor(index % 2 === 0 ? '#f5f5f5' : '#ffffff').rect(50, y, 490, rowHeight).fill();
       doc.fillColor('#333333');
     }
 
-    // Draw cell borders
-    doc.strokeColor('#dddddd').lineWidth(0.5);
-    doc.rect(50, y, 490, rowHeight).stroke();
-
-    // Row content
-    doc.font(isHeader ? 'Helvetica-Bold' : 'Helvetica').fontSize(9);
+    // Row text
+    doc.font(isHeader ? 'Helvetica-Bold' : 'Helvetica').fontSize(8);
     x = 50;
 
-    // Activity ID
-    doc.text(activity.id, x + 5, y + 6, { width: colWidths[0] - 10 });
-    x += colWidths[0];
+    const cells = [
+      activity.id,
+      activity.name,
+      `${activity.duration}d`,
+      formatDate(activity.start, activity.status),
+      formatDate(activity.finish, activity.status)
+    ];
 
-    // Activity Name
-    doc.text(activity.name, x + 5, y + 6, { width: colWidths[1] - 10 });
-    x += colWidths[1];
-
-    // Duration
-    doc.text(String(activity.duration), x + 5, y + 6, { width: colWidths[2] - 10, align: 'center' });
-    x += colWidths[2];
-
-    // Start
-    doc.text(formatDate(activity.start), x + 5, y + 6, { width: colWidths[3] - 10, align: 'center' });
-    x += colWidths[3];
-
-    // Finish (with 'A' suffix if completed)
-    doc.text(formatDate(activity.finish, activity.completed), x + 5, y + 6, { width: colWidths[4] - 10, align: 'center' });
+    cells.forEach((cell, i) => {
+      doc.text(cell, x + 5, y + 7, { width: colWidths[i] - 10 });
+      x += colWidths[i];
+    });
 
     y += rowHeight;
+
+    // New page if needed
+    if (y > 500) {
+      doc.addPage();
+      y = 50;
+    }
   });
 
-  // Footer
-  doc.fillColor('#666666').fontSize(8).font('Helvetica');
-  doc.text('Generated by PlanSure | Test Programme', 50, y + 20);
+  // Draw table borders
+  doc.strokeColor('#cccccc').lineWidth(0.5);
+  let tableBottom = tableTop + rowHeight * (activities.length + 1);
+  doc.rect(50, tableTop, 490, tableBottom - tableTop).stroke();
+
+  // Vertical lines
+  x = 50;
+  colWidths.forEach((width) => {
+    doc.moveTo(x, tableTop).lineTo(x, tableBottom).stroke();
+    x += width;
+  });
+  doc.moveTo(x, tableTop).lineTo(x, tableBottom).stroke();
+
+  // Horizontal lines
+  for (let i = 0; i <= activities.length; i++) {
+    const lineY = tableTop + (i + 1) * rowHeight;
+    doc.moveTo(50, lineY).lineTo(540, lineY).stroke();
+  }
 
   doc.end();
 
   writeStream.on('finish', () => {
-    console.log(`\nPDF created successfully!`);
-    console.log(`Location: ${outputPath}`);
-    console.log(`\nActivities with 'A' suffix (completed): ${activities.filter(a => a.completed).length}`);
-    console.log(`Activities without 'A' suffix (in progress): ${activities.filter(a => !a.completed && !a.isHeader).length}`);
+    console.log(`PDF generated successfully at: ${outputPath}`);
   });
 };
 

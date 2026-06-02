@@ -22,7 +22,7 @@ const checkProgrammeLocked = async (programmeId) => {
 // Helper to parse activity dates
 const parseActivityDate = (dateStr) => {
   if (!dateStr) return null;
-  const cleanDate = dateStr.replace(/\s*[A\*]$/, "").trim();
+  const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
   const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
   const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
   if (!match) return null;
