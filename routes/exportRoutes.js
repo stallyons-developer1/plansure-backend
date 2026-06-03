@@ -143,7 +143,9 @@ router.get("/history", protect, async (req, res) => {
   }
 });
 
-// POST /api/exports/weekly-plan - Generate Weekly Plan export (green activities only)
+// POST /api/exports/weekly-plan - Generate Weekly Plan export
+// Shows: Completed Actions + Overdue Actions (all weeks) + Blocked Activities (all weeks)
+// If nothing completed → file empty
 router.post("/weekly-plan", protect, async (req, res) => {
   try {
     // Get weekNumber from request body (sent from frontend)
@@ -164,6 +166,7 @@ router.post("/weekly-plan", protect, async (req, res) => {
     const activeProgramme = programmes[0];
     const activities = activeProgramme.extractedData?.activities || [];
     const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
     // Helper to parse date strings
     const parseActivityDate = (dateStr) => {
@@ -191,73 +194,74 @@ router.post("/weekly-plan", protect, async (req, res) => {
       }
     }
 
-    // Calculate current week number and 2-week date range
+    // Calculate current week number
     let currentWeekNumber = 1;
-    let weekStartDate = earliestDate;
-    let weekEndDate = earliestDate ? new Date(earliestDate) : null;
-
     if (earliestDate) {
       earliestDate.setHours(0, 0, 0, 0);
-      const todayStart = new Date(today);
-      todayStart.setHours(0, 0, 0, 0);
       const msPerDay = 1000 * 60 * 60 * 24;
-      const daysSinceStart = Math.floor((todayStart - earliestDate) / msPerDay);
+      const daysSinceStart = Math.floor((today - earliestDate) / msPerDay);
       currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
 
-      // Use requested week number if provided, otherwise use calculated current week
       if (requestedWeekNumber) {
         currentWeekNumber = requestedWeekNumber;
       }
-
-      // Calculate 2-week date range based on the week number
-      weekStartDate = new Date(earliestDate);
-      weekStartDate.setDate(earliestDate.getDate() + (currentWeekNumber - 1) * 7);
-      weekEndDate = new Date(weekStartDate);
-      weekEndDate.setDate(weekStartDate.getDate() + 13); // 2 weeks = 14 days
     }
 
-    // Helper to check if activity is in current 2-week period
-    const isActivityInWeek = (activity) => {
-      if (!weekStartDate || !weekEndDate) return true;
-      const actStart = parseActivityDate(activity.startDate);
-      const actFinish = parseActivityDate(activity.finishDate);
-      if (!actStart) return false;
-
-      // Activity is in week if it starts in this period OR spans this period
-      const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
-      const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
-      return startsThisWeek || spansThisWeek;
-    };
-
-    // Determine if this is a historical week (week end date is before today)
-    const isHistoricalWeek = weekEndDate && weekEndDate < today;
-
-    // Filter activities IN the current 2-week period
-    // For historical weeks: include all activities in that week (RAG doesn't apply to past)
-    // For current/future weeks: filter by Green RAG status
-    const greenActivities = activities.filter((activity) => {
-      if (!isActivityInWeek(activity)) return false;
-
-      // For historical weeks, include all activities in that week
-      if (isHistoricalWeek) return true;
-
-      // For current/future weeks, only include Green activities
-      const rag = calculateRAG(activity, today);
-      return rag === "Green";
-    });
-
-    // Get actions for this programme
-    const actions = await Action.find({
+    // Get ALL actions for this programme
+    const allActions = await Action.find({
       programme: activeProgramme._id,
-      status: { $nin: ["Completed", "Cancelled"] },
-    });
+    })
+      .populate("assignee", "name email")
+      .populate("createdBy", "name email");
 
-    // Filter activities that have no open actions
-    const activitiesWithNoOpenActions = greenActivities.filter((activity) => {
-      const hasOpenAction = actions.some(
-        (action) => action.linkedActivity?.activityId === activity.activityId
-      );
-      return !hasOpenAction;
+    // Categorize actions
+    const completedActions = allActions.filter(a => a.status === "Completed");
+    const overdueActions = allActions.filter(a =>
+      a.status !== "Completed" &&
+      a.status !== "Cancelled" &&
+      a.status !== "PM Override" &&
+      a.dueDate &&
+      new Date(a.dueDate) < today
+    );
+    const pmOverrideActions = allActions.filter(a => a.status === "PM Override");
+
+    // Get completed activities (status Completed or has " A" suffix indicating actual completion)
+    const completedActivities = activities.filter(a =>
+      a.status === "Completed" ||
+      (a.startDate && a.startDate.includes(" A")) ||
+      (a.finishDate && a.finishDate.includes(" A"))
+    );
+
+    // Get blocked activities
+    const blockedActivities = activities.filter(a => a.isBlocked === true);
+
+    // Get At Risk (Overdue) activities - finish date passed but not completed
+    const atRiskActivities = activities.filter(a => {
+      // Skip if completed
+      if (a.status === "Completed" ||
+          (a.startDate && a.startDate.includes(" A")) ||
+          (a.finishDate && a.finishDate.includes(" A"))) {
+        return false;
+      }
+      // Skip if blocked (already in blocked list)
+      if (a.isBlocked === true) {
+        return false;
+      }
+      // Check if finish date has passed
+      if (a.finishDate) {
+        const cleanDate = a.finishDate.replace(/\s*[AB\*]$/, "").trim();
+        const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+        const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
+        if (match) {
+          const day = parseInt(match[1]);
+          const month = months[match[2]];
+          let year = parseInt(match[3]);
+          year = year < 50 ? 2000 + year : 1900 + year;
+          const finishDate = new Date(year, month, day);
+          return finishDate < today;
+        }
+      }
+      return false;
     });
 
     // Use calculated week number for the 2-week period
@@ -268,37 +272,195 @@ router.post("/weekly-plan", protect, async (req, res) => {
     workbook.creator = "PlanSure";
     workbook.created = new Date();
 
-    const sheet = workbook.addWorksheet("Weekly Plan");
-    sheet.columns = [
+    // Completed Actions Sheet
+    const completedSheet = workbook.addWorksheet("Completed Actions");
+    completedSheet.columns = [
+      { header: "Action ID", key: "actionId", width: 15 },
+      { header: "Title", key: "title", width: 40 },
+      { header: "Linked Activity", key: "linkedActivity", width: 30 },
+      { header: "Assignee", key: "assignee", width: 20 },
+      { header: "Due Date", key: "dueDate", width: 15 },
+      { header: "Completed Date", key: "completedDate", width: 15 },
+      { header: "Priority", key: "priority", width: 12 },
+    ];
+    completedSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    completedSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF22C55E" } };
+
+    completedActions.forEach((action) => {
+      completedSheet.addRow({
+        actionId: `ACT-${String(action._id).slice(-4).toUpperCase()}`,
+        title: action.title || "-",
+        linkedActivity: action.linkedActivity?.activityName || "-",
+        assignee: action.assignee?.name || "-",
+        dueDate: action.dueDate ? new Date(action.dueDate).toLocaleDateString() : "-",
+        completedDate: action.updatedAt ? new Date(action.updatedAt).toLocaleDateString() : "-",
+        priority: action.priority || "-",
+      });
+    });
+
+    // Overdue Actions Sheet
+    const overdueSheet = workbook.addWorksheet("Overdue Actions");
+    overdueSheet.columns = [
+      { header: "Action ID", key: "actionId", width: 15 },
+      { header: "Title", key: "title", width: 40 },
+      { header: "Linked Activity", key: "linkedActivity", width: 30 },
+      { header: "Assignee", key: "assignee", width: 20 },
+      { header: "Due Date", key: "dueDate", width: 15 },
+      { header: "Days Overdue", key: "daysOverdue", width: 15 },
+      { header: "Priority", key: "priority", width: 12 },
+    ];
+    overdueSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    overdueSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEF4444" } };
+
+    overdueActions.forEach((action) => {
+      const daysOverdue = Math.ceil((today - new Date(action.dueDate)) / (24 * 60 * 60 * 1000));
+      overdueSheet.addRow({
+        actionId: `ACT-${String(action._id).slice(-4).toUpperCase()}`,
+        title: action.title || "-",
+        linkedActivity: action.linkedActivity?.activityName || "-",
+        assignee: action.assignee?.name || "-",
+        dueDate: action.dueDate ? new Date(action.dueDate).toLocaleDateString() : "-",
+        daysOverdue: daysOverdue,
+        priority: action.priority || "-",
+      });
+    });
+
+    // PM Override Actions Sheet
+    const pmOverrideSheet = workbook.addWorksheet("PM Override Actions");
+    pmOverrideSheet.columns = [
+      { header: "Action ID", key: "actionId", width: 15 },
+      { header: "Title", key: "title", width: 40 },
+      { header: "Linked Activity", key: "linkedActivity", width: 30 },
+      { header: "Assignee", key: "assignee", width: 20 },
+      { header: "Due Date", key: "dueDate", width: 15 },
+      { header: "Override Date", key: "overrideDate", width: 15 },
+      { header: "Priority", key: "priority", width: 12 },
+    ];
+    pmOverrideSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    pmOverrideSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF9333EA" } }; // Purple for PM Override
+
+    pmOverrideActions.forEach((action) => {
+      pmOverrideSheet.addRow({
+        actionId: `ACT-${String(action._id).slice(-4).toUpperCase()}`,
+        title: action.title || "-",
+        linkedActivity: action.linkedActivity?.activityName || "-",
+        assignee: action.assignee?.name || "-",
+        dueDate: action.dueDate ? new Date(action.dueDate).toLocaleDateString() : "-",
+        overrideDate: action.updatedAt ? new Date(action.updatedAt).toLocaleDateString() : "-",
+        priority: action.priority || "-",
+      });
+    });
+
+    // Completed Activities Sheet
+    const completedActivitiesSheet = workbook.addWorksheet("Completed Activities");
+    completedActivitiesSheet.columns = [
       { header: "Activity ID", key: "activityId", width: 15 },
       { header: "Activity Name", key: "activityName", width: 40 },
       { header: "Start Date", key: "startDate", width: 15 },
       { header: "Finish Date", key: "finishDate", width: 15 },
       { header: "Duration", key: "duration", width: 12 },
       { header: "Owner", key: "owner", width: 20 },
-      { header: "Status", key: "status", width: 12 },
     ];
+    completedActivitiesSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    completedActivitiesSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF22C55E" } };
 
-    // Style header row
-    sheet.getRow(1).font = { bold: true };
-    sheet.getRow(1).fill = {
-      type: "pattern",
-      pattern: "solid",
-      fgColor: { argb: "FF22C55E" },
-    };
-    sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-
-    activitiesWithNoOpenActions.forEach((activity) => {
-      sheet.addRow({
+    completedActivities.forEach((activity) => {
+      completedActivitiesSheet.addRow({
         activityId: activity.activityId || "-",
         activityName: activity.activityName || "-",
         startDate: activity.startDate || "-",
         finishDate: activity.finishDate || "-",
         duration: activity.duration || "-",
         owner: activity.ownerName || "-",
-        status: "Ready",
       });
     });
+
+    // Blocked Activities Sheet
+    const blockedActivitiesSheet = workbook.addWorksheet("Blocked Activities");
+    blockedActivitiesSheet.columns = [
+      { header: "Activity ID", key: "activityId", width: 15 },
+      { header: "Activity Name", key: "activityName", width: 40 },
+      { header: "Start Date", key: "startDate", width: 15 },
+      { header: "Finish Date", key: "finishDate", width: 15 },
+      { header: "Duration", key: "duration", width: 12 },
+      { header: "Owner", key: "owner", width: 20 },
+      { header: "Blocker", key: "blocker", width: 30 },
+    ];
+    blockedActivitiesSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    blockedActivitiesSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF59E0B" } };
+
+    blockedActivities.forEach((activity) => {
+      blockedActivitiesSheet.addRow({
+        activityId: activity.activityId || "-",
+        activityName: activity.activityName || "-",
+        startDate: activity.startDate || "-",
+        finishDate: activity.finishDate || "-",
+        duration: activity.duration || "-",
+        owner: activity.ownerName || "-",
+        blocker: activity.blocker || "-",
+      });
+    });
+
+    // At Risk (Overdue) Activities Sheet
+    const atRiskActivitiesSheet = workbook.addWorksheet("At Risk Activities");
+    atRiskActivitiesSheet.columns = [
+      { header: "Activity ID", key: "activityId", width: 15 },
+      { header: "Activity Name", key: "activityName", width: 40 },
+      { header: "Start Date", key: "startDate", width: 15 },
+      { header: "Finish Date", key: "finishDate", width: 15 },
+      { header: "Duration", key: "duration", width: 12 },
+      { header: "Owner", key: "owner", width: 20 },
+      { header: "Days Overdue", key: "daysOverdue", width: 15 },
+    ];
+    atRiskActivitiesSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    atRiskActivitiesSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEF4444" } }; // Red for overdue
+
+    atRiskActivities.forEach((activity) => {
+      let daysOverdue = 0;
+      if (activity.finishDate) {
+        const cleanDate = activity.finishDate.replace(/\s*[AB\*]$/, "").trim();
+        const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+        const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
+        if (match) {
+          const day = parseInt(match[1]);
+          const month = months[match[2]];
+          let year = parseInt(match[3]);
+          year = year < 50 ? 2000 + year : 1900 + year;
+          const finishDate = new Date(year, month, day);
+          daysOverdue = Math.ceil((today - finishDate) / (24 * 60 * 60 * 1000));
+        }
+      }
+      atRiskActivitiesSheet.addRow({
+        activityId: activity.activityId || "-",
+        activityName: activity.activityName || "-",
+        startDate: activity.startDate || "-",
+        finishDate: activity.finishDate || "-",
+        duration: activity.duration || "-",
+        owner: activity.ownerName || "-",
+        daysOverdue: daysOverdue,
+      });
+    });
+
+    // Summary sheet
+    const summarySheet = workbook.addWorksheet("Summary");
+    summarySheet.columns = [
+      { header: "Category", key: "category", width: 25 },
+      { header: "Count", key: "count", width: 15 },
+    ];
+    summarySheet.getRow(1).font = { bold: true };
+    summarySheet.addRow({ category: "--- ACTIONS ---", count: "" });
+    summarySheet.addRow({ category: "Completed Actions", count: completedActions.length });
+    summarySheet.addRow({ category: "Overdue Actions", count: overdueActions.length });
+    summarySheet.addRow({ category: "PM Override Actions", count: pmOverrideActions.length });
+    summarySheet.addRow({ category: "", count: "" });
+    summarySheet.addRow({ category: "--- ACTIVITIES ---", count: "" });
+    summarySheet.addRow({ category: "Completed Activities", count: completedActivities.length });
+    summarySheet.addRow({ category: "Blocked Activities", count: blockedActivities.length });
+    summarySheet.addRow({ category: "At Risk (Overdue) Activities", count: atRiskActivities.length });
+
+    const totalActions = completedActions.length + overdueActions.length + pmOverrideActions.length;
+    const totalActivities = completedActivities.length + blockedActivities.length + atRiskActivities.length;
+    const totalItems = totalActions + totalActivities;
 
     // Save file
     const fileName = `Weekly_Plan_${currentWeek}_${Date.now()}.xlsx`;
@@ -316,7 +478,13 @@ router.post("/weekly-plan", protect, async (req, res) => {
       filePath: filePath,
       fileName: fileName,
       exportData: {
-        activitiesCount: activitiesWithNoOpenActions.length,
+        completedActionsCount: completedActions.length,
+        overdueActionsCount: overdueActions.length,
+        pmOverrideActionsCount: pmOverrideActions.length,
+        completedActivitiesCount: completedActivities.length,
+        blockedActivitiesCount: blockedActivities.length,
+        atRiskActivitiesCount: atRiskActivities.length,
+        totalCount: totalItems,
       },
     });
 
@@ -326,7 +494,7 @@ router.post("/weekly-plan", protect, async (req, res) => {
       req.admin,
       activeProgramme.project,
       currentWeekNumber,
-      activitiesWithNoOpenActions.length
+      totalItems
     );
 
     // Send file
@@ -409,25 +577,79 @@ router.post("/planner-todo", protect, async (req, res) => {
       weekEndDate.setDate(weekStartDate.getDate() + 13); // 2 weeks = 14 days
     }
 
-    // Get all Open and In Progress actions (not filtered by week - shows all outstanding actions)
-    const actions = await Action.find({
+    // Get ALL actions for the current 2 weeks (Open, In Progress, Completed, PM Override)
+    let actions = await Action.find({
       programme: { $in: programmeIds },
-      status: { $in: ["Open", "In Progress"] },
     })
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
-    // Note: Planner To-Do shows ALL Open + Overdue actions from all weeks
-    // No week filtering - this is the planner's complete to-do list
-
     // Start of today (midnight) - actions are only overdue after due date has fully passed
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const overdueActions = actions.filter(
-      (a) => new Date(a.dueDate) < today
+
+    // Filter actions to CURRENT WEEK ONLY (by linked activity or due date)
+    if (weekStartDate && weekEndDate) {
+      actions = actions.filter((action) => {
+        // Check if action's due date falls within the week range
+        if (action.dueDate) {
+          const dueDate = new Date(action.dueDate);
+          if (dueDate >= weekStartDate && dueDate <= weekEndDate) {
+            return true;
+          }
+        }
+        // Also include if linked activity is in this week
+        if (action.linkedActivity?.activityId) {
+          const linkedActivity = activities.find(
+            (a) => a.activityId === action.linkedActivity.activityId
+          );
+          if (linkedActivity) {
+            const actStart = parseActivityDate(linkedActivity.startDate);
+            const actFinish = parseActivityDate(linkedActivity.finishDate);
+            if (actStart) {
+              const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+              const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+              if (startsThisWeek || spansThisWeek) {
+                return true;
+              }
+            }
+          }
+        }
+        return false;
+      });
+    }
+
+    // Categorize actions by status (from current week only)
+    // Completed actions
+    const completedActions = actions.filter((a) => a.status === "Completed");
+
+    // PM Override actions
+    const pmOverrideActions = actions.filter((a) => a.status === "PM Override");
+
+    // In Progress actions (not completed, not PM Override, not cancelled)
+    const inProgressActions = actions.filter(
+      (a) => a.status === "In Progress" && a.status !== "Completed" && a.status !== "PM Override" && a.status !== "Cancelled"
     );
-    const pendingActions = actions.filter(
-      (a) => new Date(a.dueDate) >= today
+
+    // Overdue actions - open/in progress actions past due date
+    const overdueActions = actions.filter(
+      (a) =>
+        a.status !== "Completed" &&
+        a.status !== "PM Override" &&
+        a.status !== "Cancelled" &&
+        a.dueDate &&
+        new Date(a.dueDate) < today
+    );
+
+    // Open actions - not completed, not PM Override, not in progress, not overdue
+    const openActions = actions.filter(
+      (a) =>
+        (a.status === "Open" || !a.status) &&
+        a.status !== "Completed" &&
+        a.status !== "PM Override" &&
+        a.status !== "Cancelled" &&
+        a.status !== "In Progress" &&
+        (!a.dueDate || new Date(a.dueDate) >= today)
     );
 
     // Calculate current week label
@@ -450,96 +672,100 @@ router.post("/planner-todo", protect, async (req, res) => {
     workbook.creator = "PlanSure";
     workbook.created = new Date();
 
-    // Overdue Actions Sheet
+    // Helper function to add action rows
+    const addActionRows = (sheet, actionList, includeOverdue = false) => {
+      actionList.forEach((action) => {
+        const row = {
+          actionId: `ACT-${String(action._id).slice(-4).toUpperCase()}`,
+          title: action.title || "-",
+          linkedActivity: action.linkedActivity?.activityName || "-",
+          assignee: action.assignee?.name || "-",
+          dueDate: action.dueDate
+            ? new Date(action.dueDate).toLocaleDateString()
+            : "-",
+          priority: action.priority || "-",
+        };
+        if (includeOverdue) {
+          row.daysOverdue = action.dueDate
+            ? Math.ceil((today - new Date(action.dueDate)) / (24 * 60 * 60 * 1000))
+            : 0;
+        }
+        sheet.addRow(row);
+      });
+    };
+
+    // Common columns for action sheets
+    const baseColumns = [
+      { header: "Action ID", key: "actionId", width: 15 },
+      { header: "Title", key: "title", width: 40 },
+      { header: "Linked Activity", key: "linkedActivity", width: 30 },
+      { header: "Assignee", key: "assignee", width: 20 },
+      { header: "Due Date", key: "dueDate", width: 15 },
+      { header: "Priority", key: "priority", width: 12 },
+    ];
+
+    // 1. Overdue Actions Sheet (Red)
     const overdueSheet = workbook.addWorksheet("Overdue Actions");
     overdueSheet.columns = [
-      { header: "Action ID", key: "actionId", width: 15 },
-      { header: "Title", key: "title", width: 40 },
-      { header: "Linked Activity", key: "linkedActivity", width: 30 },
-      { header: "Assignee", key: "assignee", width: 20 },
-      { header: "Due Date", key: "dueDate", width: 15 },
-      { header: "Priority", key: "priority", width: 12 },
+      ...baseColumns,
       { header: "Days Overdue", key: "daysOverdue", width: 15 },
     ];
-
-    overdueSheet.getRow(1).font = { bold: true };
-    overdueSheet.getRow(1).fill = {
-      type: "pattern",
-      pattern: "solid",
-      fgColor: { argb: "FFEF4444" },
-    };
     overdueSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    overdueSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEF4444" } };
+    addActionRows(overdueSheet, overdueActions, true);
 
-    overdueActions.forEach((action) => {
-      const daysOverdue = Math.ceil(
-        (today - new Date(action.dueDate)) / (24 * 60 * 60 * 1000)
-      );
-      overdueSheet.addRow({
-        actionId: `ACT-${String(action._id).slice(-4).toUpperCase()}`,
-        title: action.title || "-",
-        linkedActivity: action.linkedActivity?.activityName || "-",
-        assignee: action.assignee?.name || "-",
-        dueDate: action.dueDate
-          ? new Date(action.dueDate).toLocaleDateString()
-          : "-",
-        priority: action.priority || "-",
-        daysOverdue: daysOverdue,
-      });
-    });
+    // 2. Open Actions Sheet (Amber/Yellow)
+    const openSheet = workbook.addWorksheet("Open Actions");
+    openSheet.columns = [...baseColumns];
+    openSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    openSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF59E0B" } };
+    addActionRows(openSheet, openActions);
 
-    // Pending Actions Sheet
-    const pendingSheet = workbook.addWorksheet("Pending Actions");
-    pendingSheet.columns = [
-      { header: "Action ID", key: "actionId", width: 15 },
-      { header: "Title", key: "title", width: 40 },
-      { header: "Linked Activity", key: "linkedActivity", width: 30 },
-      { header: "Assignee", key: "assignee", width: 20 },
-      { header: "Due Date", key: "dueDate", width: 15 },
-      { header: "Priority", key: "priority", width: 12 },
-    ];
+    // 3. In Progress Actions Sheet (Blue)
+    const inProgressSheet = workbook.addWorksheet("In Progress Actions");
+    inProgressSheet.columns = [...baseColumns];
+    inProgressSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    inProgressSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3B82F6" } };
+    addActionRows(inProgressSheet, inProgressActions);
 
-    pendingSheet.getRow(1).font = { bold: true };
-    pendingSheet.getRow(1).fill = {
-      type: "pattern",
-      pattern: "solid",
-      fgColor: { argb: "FFF59E0B" },
-    };
-    pendingSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    // 4. Completed Actions Sheet (Green)
+    const completedSheet = workbook.addWorksheet("Completed Actions");
+    completedSheet.columns = [...baseColumns];
+    completedSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    completedSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF22C55E" } };
+    addActionRows(completedSheet, completedActions);
 
-    pendingActions.forEach((action) => {
-      pendingSheet.addRow({
-        actionId: `ACT-${String(action._id).slice(-4).toUpperCase()}`,
-        title: action.title || "-",
-        linkedActivity: action.linkedActivity?.activityName || "-",
-        assignee: action.assignee?.name || "-",
-        dueDate: action.dueDate
-          ? new Date(action.dueDate).toLocaleDateString()
-          : "-",
-        priority: action.priority || "-",
-      });
-    });
+    // 5. PM Override Actions Sheet (Purple)
+    const pmOverrideSheet = workbook.addWorksheet("PM Override Actions");
+    pmOverrideSheet.columns = [...baseColumns];
+    pmOverrideSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    pmOverrideSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF9333EA" } };
+    addActionRows(pmOverrideSheet, pmOverrideActions);
 
-    // Summary Sheet
+    // 6. Summary Sheet
     const summarySheet = workbook.addWorksheet("Summary");
     summarySheet.columns = [
       { header: "Metric", key: "metric", width: 30 },
       { header: "Value", key: "value", width: 20 },
     ];
-
-    summarySheet.getRow(1).font = { bold: true };
-    summarySheet.getRow(1).fill = {
-      type: "pattern",
-      pattern: "solid",
-      fgColor: { argb: "FF1E3A5F" },
-    };
     summarySheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    summarySheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1E3A5F" } };
 
     summarySheet.addRow({ metric: "Report Generated", value: new Date().toLocaleDateString() });
     summarySheet.addRow({ metric: "Week", value: currentWeek });
+    if (weekStartDate && weekEndDate) {
+      const formatDate = (d) => d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+      summarySheet.addRow({ metric: "Date Range", value: `${formatDate(weekStartDate)} - ${formatDate(weekEndDate)}` });
+    }
     summarySheet.addRow({ metric: "", value: "" });
-    summarySheet.addRow({ metric: "Total Open Actions", value: actions.length });
-    summarySheet.addRow({ metric: "Overdue Actions", value: overdueActions.length });
-    summarySheet.addRow({ metric: "Pending Actions", value: pendingActions.length });
+    summarySheet.addRow({ metric: "Total Actions (Current 2 Weeks)", value: actions.length });
+    summarySheet.addRow({ metric: "", value: "" });
+    summarySheet.addRow({ metric: "--- BY STATUS ---", value: "" });
+    summarySheet.addRow({ metric: "Overdue Actions (Red)", value: overdueActions.length });
+    summarySheet.addRow({ metric: "Open Actions (Amber)", value: openActions.length });
+    summarySheet.addRow({ metric: "In Progress Actions (Blue)", value: inProgressActions.length });
+    summarySheet.addRow({ metric: "Completed Actions (Green)", value: completedActions.length });
+    summarySheet.addRow({ metric: "PM Override Actions (Purple)", value: pmOverrideActions.length });
 
     // Save file
     const fileName = `Planner_ToDo_${currentWeek}_${Date.now()}.xlsx`;
@@ -557,7 +783,12 @@ router.post("/planner-todo", protect, async (req, res) => {
       filePath: filePath,
       fileName: fileName,
       exportData: {
-        actionsCount: actions.length,
+        totalActionsCount: actions.length,
+        overdueActionsCount: overdueActions.length,
+        openActionsCount: openActions.length,
+        inProgressActionsCount: inProgressActions.length,
+        completedActionsCount: completedActions.length,
+        pmOverrideActionsCount: pmOverrideActions.length,
       },
     });
 

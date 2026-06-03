@@ -2,10 +2,12 @@ const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
 
-// Generate test PDF with May-June dates so Week 1-2 can be closed on June 2
+// Generate test PDF with blocked activities that are currently in progress
+// Today is June 3, 2026
+// Blocked + In Progress = start date < today < finish date, with " B" suffix
 const generateTestPDF = () => {
   const doc = new PDFDocument({ size: 'A4', layout: 'landscape' });
-  const outputPath = '/Users/apple/Desktop/Plansure PDF/test_programme_may_june_2026.pdf';
+  const outputPath = '/Users/apple/Desktop/Plansure PDF/test_programme_june_2026.pdf';
 
   // Ensure directory exists
   const dir = path.dirname(outputPath);
@@ -25,31 +27,39 @@ const generateTestPDF = () => {
     let suffix = '';
     if (status === 'completed') suffix = ' A';
     else if (status === 'blocked') suffix = ' B';
+    // No suffix for overdue/at-risk - they just have past dates without " A"
     return `${day}-${month}-${year}${suffix}`;
   };
 
   // Activities starting May 18, 2026
-  // Week 1-2: May 18 - May 31 (2-week end date = May 31, closable on June 2)
-  // Week 3-4: June 1 - June 14
+  // Today is June 3, 2026
+  // BLOCKED + IN PROGRESS = start < June 3 < finish, with " B" suffix
   const activities = [
-    { id: 'MAY-PROG', name: 'May-June Construction Programme', duration: 45, start: new Date(2026, 4, 18), finish: new Date(2026, 5, 30), isHeader: true },
-    // Week 1-2 (May 18 - May 31)
-    { id: 'MAY-001', name: 'Site Survey & Planning', duration: 3, start: new Date(2026, 4, 18), finish: new Date(2026, 4, 20), status: 'completed' },
-    { id: 'MAY-002', name: 'Permit Acquisition', duration: 2, start: new Date(2026, 4, 19), finish: new Date(2026, 4, 20), status: 'completed' },
-    { id: 'MAY-003', name: 'Ground Preparation', duration: 4, start: new Date(2026, 4, 21), finish: new Date(2026, 4, 24), status: 'completed' },
-    { id: 'MAY-004', name: 'Foundation Marking', duration: 3, start: new Date(2026, 4, 25), finish: new Date(2026, 4, 27), status: 'completed' },
-    { id: 'MAY-005', name: 'Excavation Phase 1', duration: 4, start: new Date(2026, 4, 28), finish: new Date(2026, 4, 31), status: null },
-    // Week 3-4 (June 1 - June 14)
-    { id: 'MAY-006', name: 'Concrete Foundation', duration: 4, start: new Date(2026, 5, 1), finish: new Date(2026, 5, 4), status: null },
-    { id: 'MAY-007', name: 'Steel Framework', duration: 4, start: new Date(2026, 5, 5), finish: new Date(2026, 5, 8), status: null },
-    { id: 'MAY-008', name: 'Electrical Rough-In', duration: 3, start: new Date(2026, 5, 9), finish: new Date(2026, 5, 11), status: null },
-    { id: 'MAY-009', name: 'Plumbing Installation', duration: 3, start: new Date(2026, 5, 12), finish: new Date(2026, 5, 14), status: null },
-    // Week 5-6 (June 15 - June 28)
-    { id: 'MAY-010', name: 'Wall Framing', duration: 4, start: new Date(2026, 5, 15), finish: new Date(2026, 5, 18), status: null },
-    { id: 'MAY-011', name: 'Roofing Work', duration: 4, start: new Date(2026, 5, 19), finish: new Date(2026, 5, 22), status: null },
-    { id: 'MAY-012', name: 'Window Installation', duration: 3, start: new Date(2026, 5, 23), finish: new Date(2026, 5, 25), status: null },
-    { id: 'MAY-013', name: 'External Finishing', duration: 3, start: new Date(2026, 5, 26), finish: new Date(2026, 5, 28), status: null },
-    { id: 'MAY-014', name: 'Final Inspection', duration: 2, start: new Date(2026, 5, 29), finish: new Date(2026, 5, 30), status: null },
+    { id: 'JUN-PROG', name: 'May-June Construction Programme', duration: 45, start: new Date(2026, 4, 18), finish: new Date(2026, 5, 30), isHeader: true },
+
+    // Week 1-2 (May 18 - May 31) - COMPLETED activities
+    { id: 'JUN-001', name: 'Site Survey & Planning', duration: 3, start: new Date(2026, 4, 18), finish: new Date(2026, 4, 20), status: 'completed' },
+    { id: 'JUN-002', name: 'Permit Acquisition', duration: 2, start: new Date(2026, 4, 19), finish: new Date(2026, 4, 20), status: 'completed' },
+
+    // AT RISK (OVERDUE) activities - finish date passed but NOT completed (no " A")
+    { id: 'JUN-003', name: 'Ground Preparation', duration: 4, start: new Date(2026, 4, 21), finish: new Date(2026, 4, 24), status: null }, // Overdue
+    { id: 'JUN-004', name: 'Foundation Marking', duration: 3, start: new Date(2026, 4, 25), finish: new Date(2026, 4, 27), status: null }, // Overdue
+
+    // BLOCKED + IN PROGRESS activities (5 activities)
+    // These are blocked but currently in progress (start < June 3 < finish)
+    // When unblocked, they should become "Ready"
+    { id: 'JUN-005', name: 'Excavation Phase 1', duration: 10, start: new Date(2026, 4, 28), finish: new Date(2026, 5, 7), status: 'blocked' },      // Started May 28, ends June 7
+    { id: 'JUN-006', name: 'Concrete Foundation', duration: 8, start: new Date(2026, 4, 30), finish: new Date(2026, 5, 8), status: 'blocked' },      // Started May 30, ends June 8
+    { id: 'JUN-007', name: 'Steel Framework', duration: 7, start: new Date(2026, 5, 1), finish: new Date(2026, 5, 8), status: 'blocked' },           // Started June 1, ends June 8
+    { id: 'JUN-008', name: 'Electrical Rough-In', duration: 6, start: new Date(2026, 5, 2), finish: new Date(2026, 5, 9), status: 'blocked' },       // Started June 2, ends June 9
+    { id: 'JUN-009', name: 'Plumbing Installation', duration: 5, start: new Date(2026, 5, 2), finish: new Date(2026, 5, 7), status: 'blocked' },     // Started June 2, ends June 7
+
+    // Future activities (not started yet)
+    { id: 'JUN-010', name: 'Wall Framing', duration: 4, start: new Date(2026, 5, 10), finish: new Date(2026, 5, 13), status: null },
+    { id: 'JUN-011', name: 'Roofing Work', duration: 4, start: new Date(2026, 5, 14), finish: new Date(2026, 5, 17), status: null },
+    { id: 'JUN-012', name: 'Window Installation', duration: 3, start: new Date(2026, 5, 18), finish: new Date(2026, 5, 20), status: null },
+    { id: 'JUN-013', name: 'External Finishing', duration: 4, start: new Date(2026, 5, 21), finish: new Date(2026, 5, 24), status: null },
+    { id: 'JUN-014', name: 'Final Inspection', duration: 3, start: new Date(2026, 5, 25), finish: new Date(2026, 5, 27), status: null },
   ];
 
   const projectStart = new Date(2026, 4, 18);
@@ -57,11 +67,17 @@ const generateTestPDF = () => {
 
   console.log(`Generating PDF with ${activities.length} activities`);
   console.log(`Date range: ${formatDate(projectStart)} to ${formatDate(projectEnd)}`);
-  console.log(`Week 1-2: May 18 - May 31 (closable since 2-week end date has passed)`);
+  console.log(`\nToday: June 3, 2026`);
+  console.log(`\nActivity breakdown:`);
+  console.log(`- Completed (with " A"): JUN-001, JUN-002`);
+  console.log(`- At Risk/Overdue (past finish date, no " A"): JUN-003, JUN-004`);
+  console.log(`- BLOCKED + IN PROGRESS (with " B", start < today < finish): JUN-005, JUN-006, JUN-007, JUN-008, JUN-009`);
+  console.log(`  These should become "Ready" when unblocked`);
+  console.log(`- Future (not started): JUN-010 to JUN-014`);
 
   // Title
-  doc.fontSize(14).font('Helvetica-Bold').text('May-June Construction Project / 2026', 50, 30);
-  doc.fontSize(10).font('Helvetica').text('02/06/2026', 700, 30);
+  doc.fontSize(14).font('Helvetica-Bold').text('June Construction Project / 2026', 50, 30);
+  doc.fontSize(10).font('Helvetica').text('03/06/2026', 700, 30);
 
   // Table setup
   const tableTop = 60;
@@ -143,7 +159,7 @@ const generateTestPDF = () => {
   doc.end();
 
   writeStream.on('finish', () => {
-    console.log(`PDF generated successfully at: ${outputPath}`);
+    console.log(`\nPDF generated successfully at: ${outputPath}`);
   });
 };
 

@@ -64,13 +64,45 @@ const updateLinkedActivityStatus = async (programmeId, activityId, isCompleted) 
 
     if (activityIndex === -1) return;
 
-    if (isCompleted) {
-      // Mark activity as Complete and remove blocked/at-risk status
+    // Check if ALL linked actions for this activity are completed
+    const allLinkedActions = await Action.find({
+      programme: programmeId,
+      "linkedActivity.activityId": activityId,
+    });
+
+    const allActionsCompleted = allLinkedActions.length > 0 && allLinkedActions.every(
+      action => action.status === "Completed" || action.status === "Complete" || action.status === "Cancelled"
+    );
+
+    if (allActionsCompleted) {
+      // Mark activity as Complete only when ALL linked actions are completed
       programme.extractedData.activities[activityIndex].activityStatus = "Complete";
-      programme.extractedData.activities[activityIndex].status = "Completed";
-      programme.extractedData.activities[activityIndex].ragStatus = "Green";
       programme.extractedData.activities[activityIndex].isBlocked = false;
       programme.extractedData.activities[activityIndex].blocker = "";
+    } else if (!isCompleted && programme.extractedData.activities[activityIndex].activityStatus === "Complete") {
+      // Revert activity status if it was Complete but now an action is uncompleted
+      // Check if activity has overdue finish date
+      const activity = programme.extractedData.activities[activityIndex];
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      let newStatus = "Ready";
+      if (activity.finishDate) {
+        const cleanDate = activity.finishDate.replace(/\s*[AB\*]$/, "").trim();
+        const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+        const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
+        if (match) {
+          const day = parseInt(match[1]);
+          const month = months[match[2]];
+          let year = parseInt(match[3]);
+          year = year < 50 ? 2000 + year : 1900 + year;
+          const finishDate = new Date(year, month, day);
+          if (finishDate < today) {
+            newStatus = "At Risk";
+          }
+        }
+      }
+      programme.extractedData.activities[activityIndex].activityStatus = newStatus;
     }
 
     await programme.save();
@@ -609,10 +641,18 @@ router.patch("/:id/complete", protect, async (req, res) => {
     if (action.status === "Completed") {
       action.status = "Open";
       action.completedAt = null;
+      // Revert linked activity status since action is no longer complete
+      if (action.linkedActivity?.activityId) {
+        await updateLinkedActivityStatus(
+          action.programme,
+          action.linkedActivity.activityId,
+          false
+        );
+      }
     } else {
       action.status = "Completed";
       action.completedAt = new Date();
-      // Update linked activity status to Complete
+      // Update linked activity status to Complete if all actions are done
       if (action.linkedActivity?.activityId) {
         await updateLinkedActivityStatus(
           action.programme,
