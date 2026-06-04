@@ -4007,7 +4007,7 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
     console.log(`[Governance Proof] Saved to database with ID: ${savedProof._id}`);
 
     // =========================================================================
-    // RETURN RESPONSE
+    // RETURN RESPONSE - PROOF 2 & PROOF 3 ONLY
     // =========================================================================
     return sendSuccess(res, {
       _id: savedProof._id,
@@ -4017,28 +4017,143 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       programmeId: req.params.programmeId,
       programmeName: programme.name,
 
-      proof1_StateMachine: stateMachineProof,
-      proof2_RAGClassification: ragProof,
-      proof3_GovernanceRules: governanceProof,
+      // =====================================================================
+      // PROOF 2: RAG Classification (Dynamic Calculation)
+      // =====================================================================
+      // CLIENT ASKED: Change activity date manually → Show RAG zone recalculates automatically
+      // CLIENT ASKED: Prove it is dynamic calculation, not hardcoded values
+      // =====================================================================
+      proof2_RAGClassification: {
+        title: "RAG Classification - Dynamic Calculation",
 
-      summary: {
-        stateMachineEnforced: "✅ YES - Invalid transitions blocked",
-        ragIsDynamic: "✅ YES - Calculated at runtime, not stored",
-        governanceActive: "✅ YES - Required actions block close-out",
-        currentCloseOutStatus: readyToClose ? "✅ READY" : "❌ BLOCKED",
-        blockingReasons: [
-          ...(openRequiredActions.length > 0 ? [`${openRequiredActions.length} Required actions pending`] : []),
-          ...(overdueActions.length > 0 ? [`${overdueActions.length} Overdue actions`] : []),
-          ...(blockedActivities.length > 0 ? [`${blockedActivities.length} Blocked activities`] : [])
-        ]
+        clientQuestion: "Is RAG dynamically calculated or hardcoded?",
+        answer: "DYNAMIC - RAG is calculated at runtime based on activity dates",
+
+        calculationLogic: {
+          green: "Activity starts within 0-14 days (Weeks 1-2)",
+          amber: "Activity starts within 15-28 days (Weeks 3-4)",
+          red: "Activity overdue OR starts in >28 days (Strategic)",
+          blue: "Activity completed (has 'A' suffix on finish date)"
+        },
+
+        currentDate: today.toISOString().split('T')[0],
+
+        // Show real activities with their calculated RAG
+        activitiesWithRAG: sampleActivities.map(a => ({
+          activityId: a.activityId,
+          activityName: a.activityName,
+          startDate: a.originalStartDate,
+          currentRAG: a.currentRAG.zone,
+          ragReason: a.currentRAG.reason,
+          // Simulation: What if date changed?
+          ifDateChangedTo6WeeksAway: {
+            newRAG: a.simulatedChange.newRAG.zone,
+            change: a.simulatedChange.ragChange
+          }
+        })),
+
+        proofItsDynamic: {
+          fact: "RAG is NOT stored in database",
+          storedFields: ["startDate", "finishDate"],
+          calculatedOnRequest: ["ragStatus", "weekZone"],
+          codeLocation: "calculateRAG() function in programmeUploadRoutes.js"
+        }
       },
 
-      viewInMongoDB: {
-        collection: "governanceproofs",
-        documentId: savedProof._id,
-        query: `db.governanceproofs.findOne({ _id: ObjectId("${savedProof._id}") })`
+      // =====================================================================
+      // PROOF 3: Backend Governance Rules
+      // =====================================================================
+      // CLIENT ASKED: What governance checks are running in backend?
+      // CLIENT ASKED: How those checks affect state transitions?
+      // CLIENT ASKED: How Closure Readiness is determined?
+      // CLIENT ASKED: Show when Required action open → blocks Close-Out
+      // CLIENT ASKED: Show when all conditions met → allows Close-Out
+      // =====================================================================
+      proof3_GovernanceRules: {
+        title: "Backend Governance Rules - Close-Out Eligibility",
+
+        clientQuestion1: "What governance checks are running?",
+        governanceChecks: [
+          {
+            check: "Required Actions",
+            description: "Are any REQUIRED actions Open or In Progress?",
+            count: openRequiredActions.length,
+            blocksCloseOut: openRequiredActions.length > 0,
+            result: openRequiredActions.length > 0 ? "❌ BLOCKS" : "✅ ALLOWS"
+          },
+          {
+            check: "Optional Actions",
+            description: "Optional actions do NOT block Close-Out",
+            count: optionalActions.filter(a => a.status !== "Completed").length,
+            blocksCloseOut: false,
+            result: "✅ IGNORED (never blocks)"
+          },
+          {
+            check: "Overdue Actions",
+            description: "Are any actions past due date?",
+            count: overdueActions.length,
+            blocksCloseOut: overdueActions.length > 0,
+            result: overdueActions.length > 0 ? "❌ BLOCKS" : "✅ ALLOWS"
+          },
+          {
+            check: "Blocked Activities",
+            description: "Are any activities marked as Blocked?",
+            count: blockedActivities.length,
+            blocksCloseOut: blockedActivities.length > 0,
+            result: blockedActivities.length > 0 ? "❌ BLOCKS" : "✅ ALLOWS"
+          }
+        ],
+
+        clientQuestion2: "What happens when Required action is open?",
+        whenRequiredActionOpen: openRequiredActions.length > 0 ? {
+          scenario: "CURRENT STATE - Required action(s) are Open",
+          systemBehavior: "❌ System BLOCKS Close-Out",
+          blockingActions: openRequiredActions.map(a => ({
+            actionId: a._id,
+            title: a.title,
+            type: a.type,
+            status: a.status,
+            linkedActivity: a.linkedActivity?.activityId || "None"
+          })),
+          uiEffect: "Ready to Close shows 'No' in RED"
+        } : {
+          scenario: "No Required actions are Open",
+          systemBehavior: "✅ This check PASSES"
+        },
+
+        clientQuestion3: "What happens when all conditions met?",
+        whenAllConditionsMet: readyToClose ? {
+          scenario: "CURRENT STATE - All conditions are met",
+          systemBehavior: "✅ System ALLOWS Close-Out",
+          uiEffect: "Ready to Close shows 'Yes' in GREEN"
+        } : {
+          scenario: "Conditions NOT met",
+          blockingReasons: [
+            ...(openRequiredActions.length > 0 ? [`${openRequiredActions.length} Required actions pending`] : []),
+            ...(overdueActions.length > 0 ? [`${overdueActions.length} Overdue actions`] : []),
+            ...(blockedActivities.length > 0 ? [`${blockedActivities.length} Blocked activities`] : [])
+          ]
+        },
+
+        clientQuestion4: "How is Closure Readiness determined?",
+        closureReadiness: {
+          formula: "readyToClose = (openRequiredActions === 0)",
+          calculation: `readyToClose = (${openRequiredActions.length} === 0) = ${readyToClose}`,
+          result: readyToClose ? "YES - Ready to Close" : "NO - Not Ready",
+          uiDisplay: {
+            value: readyToClose ? "Yes" : "No",
+            color: readyToClose ? "GREEN" : "RED"
+          }
+        }
+      },
+
+      // Database queries for verification
+      databaseQueries: {
+        findBlockingActions: `db.actions.find({ programme: ObjectId("${req.params.programmeId}"), type: "Required", status: { $in: ["Open", "In Progress"] } })`,
+        checkProgrammeStatus: `db.programmes.findOne({ _id: ObjectId("${req.params.programmeId}") }, { cycleStatus: 1 })`
       }
-    }, "Governance Proof Report Generated & Saved to Database");
+
+    }, "Governance Proof (Proof 2 & 3) Generated & Saved to Database");
 
   } catch (error) {
     console.error("Governance proof error:", error);
