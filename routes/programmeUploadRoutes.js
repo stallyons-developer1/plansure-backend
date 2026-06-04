@@ -3945,7 +3945,7 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         }))
       },
 
-      proof2_RAGClassification: {
+      RAGClassification: {
         calculationLogic: {
           green: "Activity starts within 2 weeks (0-14 days)",
           amber: "Activity starts in 2-4 weeks (15-28 days)",
@@ -3955,7 +3955,7 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         activitiesAnalyzed: sampleActivities
       },
 
-      proof3_GovernanceRules: {
+      GovernanceRules: {
         stats: {
           totalActions: actions.length,
           requiredActions: requiredActions.length,
@@ -4023,7 +4023,7 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       // CLIENT ASKED: Change activity date manually → Show RAG zone recalculates automatically
       // CLIENT ASKED: Prove it is dynamic calculation, not hardcoded values
       // =====================================================================
-      proof2_RAGClassification: {
+      RAGClassification: {
         title: "RAG Classification - Dynamic Calculation",
 
         clientQuestion: "Is RAG dynamically calculated or hardcoded?",
@@ -4069,7 +4069,7 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       // CLIENT ASKED: Show when Required action open → blocks Close-Out
       // CLIENT ASKED: Show when all conditions met → allows Close-Out
       // =====================================================================
-      proof3_GovernanceRules: {
+      GovernanceRules: {
         title: "Backend Governance Rules - Close-Out Eligibility",
 
         clientQuestion1: "What governance checks are running?",
