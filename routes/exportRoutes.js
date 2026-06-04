@@ -143,6 +143,20 @@ router.get("/history", protect, async (req, res) => {
   }
 });
 
+// DELETE /api/exports/delete-all - Delete all exports
+router.delete("/delete-all", protect, async (req, res) => {
+  try {
+    const result = await Export.deleteMany({});
+    return sendSuccess(res, {
+      message: "All exports deleted",
+      deletedCount: result.deletedCount
+    });
+  } catch (error) {
+    console.error("Delete all exports error:", error);
+    return sendError(res, "Server error");
+  }
+});
+
 // POST /api/exports/weekly-plan - Generate Weekly Plan export
 // Shows: Completed Actions + Overdue Actions (all weeks) + Blocked Activities (all weeks)
 // If nothing completed → file empty
