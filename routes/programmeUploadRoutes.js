@@ -1138,11 +1138,17 @@ router.get("/:id/lookahead", protect, async (req, res) => {
         .length,
     };
 
-    const readyToClose =
-      summary.inLookahead > 0 &&
-      summary.blocked === 0 &&
-      summary.red === 0 &&
-      actionStats.overdue === 0;
+    // readyToClose logic based on cycle status:
+    // - Draft / Uploaded / Meeting Open: Always No (not ready to close)
+    // - Execution / Close-Out Eligible: Yes if all actions complete, No if any pending
+    let readyToClose = false;
+    const openActions = actionStats.open + actionStats.inProgress;
+
+    if (programme.cycleStatus === "Draft" || programme.cycleStatus === "Uploaded" || programme.cycleStatus === "Meeting Open") {
+      readyToClose = false;
+    } else if (programme.cycleStatus === "Execution" || programme.cycleStatus === "Close-Out Eligible") {
+      readyToClose = openActions === 0;
+    }
 
     res.json({
       programme: {
@@ -1855,10 +1861,27 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return false;
     });
 
-    // Calculate weekly action stats (for Planner To-Do count - matching export logic)
-    // Only Open and In Progress actions are shown in Planner To-Do export
-    // IMPORTANT: Only count REQUIRED actions for close-out blocking (exclude Optional actions)
+    // Calculate weekly action stats for DISPLAY (includes both Required and Optional)
     const weeklyActionsByStatus = {
+      open: actionsInCurrentWeek.filter(
+        (a) =>
+          (a.status === "Open" || !a.status) &&
+          a.status !== "Completed" &&
+          a.status !== "PM Override" &&
+          a.status !== "Cancelled" &&
+          a.status !== "In Progress",
+      ).length,
+      inProgress: actionsInCurrentWeek.filter(
+        (a) => a.status === "In Progress",
+      ).length,
+      closed: actionsInCurrentWeek.filter((a) => a.status === "Completed")
+        .length,
+      overdue: 0,
+    };
+
+    // Calculate REQUIRED-only action stats for Ready to Close logic
+    // Optional actions don't block closing
+    const requiredActionsByStatus = {
       open: actionsInCurrentWeek.filter(
         (a) =>
           (a.status === "Open" || !a.status) &&
@@ -1871,9 +1894,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       inProgress: actionsInCurrentWeek.filter(
         (a) => a.status === "In Progress" && a.type !== "Optional",
       ).length,
-      closed: actionsInCurrentWeek.filter((a) => a.status === "Completed")
-        .length,
-      overdue: 0,
     };
 
     console.log(
@@ -1898,6 +1918,14 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       amber: allActivities.filter((a) => a.ragStatus === "Amber").length,
       red: allActivities.filter((a) => a.ragStatus === "Red").length,
     };
+
+    // Separate counts for Ready and Complete activities
+    const readyCount = allActivities.filter(
+      (a) => a.activityStatus === "Ready" && !a.isBlocked
+    ).length;
+    const completeCount = allActivities.filter(
+      (a) => a.activityStatus === "Complete"
+    ).length;
 
     // Blocked/Risk Activities - show At Risk or Blocked activities for these 2 weeks
     // Exclude actions from closed weeks
@@ -2032,9 +2060,13 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     );
     console.log(`[weekly-control] Total activities: ${activities.length}`);
 
-    // Use weekly action stats for PM Override logic (only current week's open actions matter)
+    // Open actions for DISPLAY (includes both Required and Optional)
     const openActions =
       weeklyActionsByStatus.open + weeklyActionsByStatus.inProgress;
+
+    // Open REQUIRED actions for Ready to Close logic (Optional actions don't block closing)
+    const openRequiredActions =
+      requiredActionsByStatus.open + requiredActionsByStatus.inProgress;
 
     // Check if this is the last week (for Close-Out Eligible status)
     const totalWeeks = programme.totalWeeks || 0;
@@ -2042,13 +2074,20 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     const remainingWeeks = totalWeeks - closedWeeksCount;
     const isLastWeek = remainingWeeks <= 2; // Since we close 2 weeks at a time
 
-    // readyToClose is true when there are no pending required actions
-    // Optional actions don't block close-out (already excluded from weeklyActionsByStatus)
-    const readyToClose = openActions === 0;
+    // readyToClose logic based on cycle status:
+    // - Draft / Uploaded / Meeting Open: Always No (not ready to close)
+    // - Execution / Close-Out Eligible: Yes if all REQUIRED actions complete (Optional don't block)
+    let readyToClose = false;
+    const cycleStatus = programme.cycleStatus;
 
-    console.log(
-      `[weekly-control] openActions: ${openActions}, readyToClose: ${readyToClose}`,
-    );
+    if (cycleStatus === "Draft" || cycleStatus === "Uploaded" || cycleStatus === "Meeting Open") {
+      // At Draft, Uploaded or Meeting Open state, never ready to close
+      readyToClose = false;
+    } else if (cycleStatus === "Execution" || cycleStatus === "Close-Out Eligible") {
+      // At Execution or Close-Out Eligible state, check if all REQUIRED actions are complete
+      readyToClose = openRequiredActions === 0;
+    }
+
 
     // Weekly Plan Preview - show activities with actions for these 2 weeks
     // Exclude actions from closed weeks
@@ -2161,7 +2200,8 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       stats: {
         cycleStatus: programme.cycleStatus,
         inLookahead: allActivities.length,
-        green: ragDistribution.green,
+        ready: readyCount,
+        complete: completeCount,
         blocked: blocked,
         openActions: openActions,
         overdue: actionsByStatus.overdue,
@@ -2186,6 +2226,11 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         inProgress: weeklyActionsByStatus.inProgress,
         closed: weeklyActionsByStatus.closed,
         overdue: weeklyActionsByStatus.overdue,
+      },
+      // Required-only action stats (excludes Optional) - for "before closing" warning
+      requiredActionsByStatus: {
+        open: requiredActionsByStatus.open,
+        inProgress: requiredActionsByStatus.inProgress,
       },
       blockedRiskActivities: blockedRiskActivities,
       activityCounts: {
@@ -3845,7 +3890,16 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
     const totalWeeks = programme.totalWeeks || 0;
     const closedWeeksCount = (programme.closedWeeks || []).length;
     const remainingWeeks = totalWeeks - closedWeeksCount;
-    const readyToClose = openRequiredActions.length === 0;
+
+    // readyToClose logic based on cycle status:
+    // - Draft / Uploaded / Meeting Open: Always No
+    // - Execution / Close-Out Eligible: Yes if all required actions complete
+    let readyToClose = false;
+    if (programme.cycleStatus === "Draft" || programme.cycleStatus === "Uploaded" || programme.cycleStatus === "Meeting Open") {
+      readyToClose = false;
+    } else if (programme.cycleStatus === "Execution" || programme.cycleStatus === "Close-Out Eligible") {
+      readyToClose = openRequiredActions.length === 0;
+    }
 
     // =========================================================================
     // GOVERNANCE DASHBOARD DATA - Score, Metrics, Stats, Charts

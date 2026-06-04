@@ -1354,7 +1354,15 @@ router.get("/weekly", protect, async (req, res) => {
         new Date(a.dueDate) < startOfToday,
     );
 
-    const readyForClose = overdueActions.length === 0 && blockedCount === 0;
+    // readyForClose logic based on cycle status:
+    // - Draft / Uploaded / Meeting Open: Always false (not ready to close)
+    // - Execution / Close-Out Eligible: true if all actions complete (openActions === 0)
+    let readyForClose = false;
+    if (cycleStatus === "Draft" || cycleStatus === "Uploaded" || cycleStatus === "Meeting Open") {
+      readyForClose = false;
+    } else if (cycleStatus === "Execution" || cycleStatus === "Close-Out Eligible") {
+      readyForClose = openActions.length === 0;
+    }
 
     const blockedActivities = activities
       .filter(
