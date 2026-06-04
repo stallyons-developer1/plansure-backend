@@ -225,11 +225,37 @@ router.post("/weekly-plan", protect, async (req, res) => {
     );
     const pmOverrideActions = allActions.filter(a => a.status === "PM Override");
 
-    // Get completed activities (status Completed or has " A" suffix indicating actual completion)
+    // Build map of actions by activity ID for checking completion status
+    const actionsByActivity = {};
+    allActions.forEach((action) => {
+      const actId = action.linkedActivity?.activityId;
+      if (actId) {
+        if (!actionsByActivity[actId]) {
+          actionsByActivity[actId] = [];
+        }
+        actionsByActivity[actId].push(action);
+      }
+    });
+
+    // Helper to check if activity is completed via linked actions
+    const isActivityCompletedViaActions = (activity) => {
+      const linkedActions = actionsByActivity[activity.activityId] || [];
+      if (linkedActions.length > 0) {
+        return linkedActions.every(
+          action => action.status === "Completed" || action.status === "Complete" || action.status === "Cancelled"
+        );
+      }
+      return false;
+    };
+
+    // Get completed activities (status Completed, has " A" suffix, activityStatus is Complete, OR all linked actions completed)
     const completedActivities = activities.filter(a =>
       a.status === "Completed" ||
+      a.activityStatus === "Complete" ||
+      a.activityStatus === "Completed" ||
       (a.startDate && a.startDate.includes(" A")) ||
-      (a.finishDate && a.finishDate.includes(" A"))
+      (a.finishDate && a.finishDate.includes(" A")) ||
+      isActivityCompletedViaActions(a)
     );
 
     // Get blocked activities
@@ -237,10 +263,13 @@ router.post("/weekly-plan", protect, async (req, res) => {
 
     // Get At Risk (Overdue) activities - finish date passed but not completed
     const atRiskActivities = activities.filter(a => {
-      // Skip if completed
+      // Skip if completed (including via linked actions)
       if (a.status === "Completed" ||
+          a.activityStatus === "Complete" ||
+          a.activityStatus === "Completed" ||
           (a.startDate && a.startDate.includes(" A")) ||
-          (a.finishDate && a.finishDate.includes(" A"))) {
+          (a.finishDate && a.finishDate.includes(" A")) ||
+          isActivityCompletedViaActions(a)) {
         return false;
       }
       // Skip if blocked (already in blocked list)
@@ -620,37 +649,20 @@ router.post("/planner-todo", protect, async (req, res) => {
     }
 
     // Categorize actions by status (from current week only)
-    // Completed actions
-    const completedActions = actions.filter((a) => a.status === "Completed");
+    // Only Open and In Progress actions for Planner To-Do
 
-    // PM Override actions
-    const pmOverrideActions = actions.filter((a) => a.status === "PM Override");
-
-    // In Progress actions (not completed, not PM Override, not cancelled)
-    const inProgressActions = actions.filter(
-      (a) => a.status === "In Progress" && a.status !== "Completed" && a.status !== "PM Override" && a.status !== "Cancelled"
-    );
-
-    // Overdue actions - open/in progress actions past due date
-    const overdueActions = actions.filter(
-      (a) =>
-        a.status !== "Completed" &&
-        a.status !== "PM Override" &&
-        a.status !== "Cancelled" &&
-        a.dueDate &&
-        new Date(a.dueDate) < today
-    );
-
-    // Open actions - not completed, not PM Override, not in progress, not overdue
+    // Open actions - status is Open or no status, not completed/PM Override/cancelled/in progress
     const openActions = actions.filter(
       (a) =>
         (a.status === "Open" || !a.status) &&
         a.status !== "Completed" &&
         a.status !== "PM Override" &&
         a.status !== "Cancelled" &&
-        a.status !== "In Progress" &&
-        (!a.dueDate || new Date(a.dueDate) >= today)
+        a.status !== "In Progress"
     );
+
+    // In Progress actions
+    const inProgressActions = actions.filter((a) => a.status === "In Progress");
 
     // Calculate current week label
     let currentWeek = requestedWeekNumber ? `W${requestedWeekNumber}` : "N/A";
@@ -704,45 +716,21 @@ router.post("/planner-todo", protect, async (req, res) => {
       { header: "Priority", key: "priority", width: 12 },
     ];
 
-    // 1. Overdue Actions Sheet (Red)
-    const overdueSheet = workbook.addWorksheet("Overdue Actions");
-    overdueSheet.columns = [
-      ...baseColumns,
-      { header: "Days Overdue", key: "daysOverdue", width: 15 },
-    ];
-    overdueSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    overdueSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEF4444" } };
-    addActionRows(overdueSheet, overdueActions, true);
-
-    // 2. Open Actions Sheet (Amber/Yellow)
+    // 1. Open Actions Sheet (Amber/Yellow)
     const openSheet = workbook.addWorksheet("Open Actions");
     openSheet.columns = [...baseColumns];
     openSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
     openSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF59E0B" } };
     addActionRows(openSheet, openActions);
 
-    // 3. In Progress Actions Sheet (Blue)
+    // 2. In Progress Actions Sheet (Blue)
     const inProgressSheet = workbook.addWorksheet("In Progress Actions");
     inProgressSheet.columns = [...baseColumns];
     inProgressSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
     inProgressSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3B82F6" } };
     addActionRows(inProgressSheet, inProgressActions);
 
-    // 4. Completed Actions Sheet (Green)
-    const completedSheet = workbook.addWorksheet("Completed Actions");
-    completedSheet.columns = [...baseColumns];
-    completedSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    completedSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF22C55E" } };
-    addActionRows(completedSheet, completedActions);
-
-    // 5. PM Override Actions Sheet (Purple)
-    const pmOverrideSheet = workbook.addWorksheet("PM Override Actions");
-    pmOverrideSheet.columns = [...baseColumns];
-    pmOverrideSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    pmOverrideSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF9333EA" } };
-    addActionRows(pmOverrideSheet, pmOverrideActions);
-
-    // 6. Summary Sheet
+    // 3. Summary Sheet
     const summarySheet = workbook.addWorksheet("Summary");
     summarySheet.columns = [
       { header: "Metric", key: "metric", width: 30 },
@@ -758,14 +746,10 @@ router.post("/planner-todo", protect, async (req, res) => {
       summarySheet.addRow({ metric: "Date Range", value: `${formatDate(weekStartDate)} - ${formatDate(weekEndDate)}` });
     }
     summarySheet.addRow({ metric: "", value: "" });
-    summarySheet.addRow({ metric: "Total Actions (Current 2 Weeks)", value: actions.length });
+    summarySheet.addRow({ metric: "Total Actions (Current 2 Weeks)", value: openActions.length + inProgressActions.length });
     summarySheet.addRow({ metric: "", value: "" });
-    summarySheet.addRow({ metric: "--- BY STATUS ---", value: "" });
-    summarySheet.addRow({ metric: "Overdue Actions (Red)", value: overdueActions.length });
-    summarySheet.addRow({ metric: "Open Actions (Amber)", value: openActions.length });
-    summarySheet.addRow({ metric: "In Progress Actions (Blue)", value: inProgressActions.length });
-    summarySheet.addRow({ metric: "Completed Actions (Green)", value: completedActions.length });
-    summarySheet.addRow({ metric: "PM Override Actions (Purple)", value: pmOverrideActions.length });
+    summarySheet.addRow({ metric: "Open Actions", value: openActions.length });
+    summarySheet.addRow({ metric: "In Progress Actions", value: inProgressActions.length });
 
     // Save file
     const fileName = `Planner_ToDo_${currentWeek}_${Date.now()}.xlsx`;
@@ -773,6 +757,7 @@ router.post("/planner-todo", protect, async (req, res) => {
     await workbook.xlsx.writeFile(filePath);
 
     // Save export record
+    const totalActions = openActions.length + inProgressActions.length;
     const exportRecord = await Export.create({
       type: "Planner To-Do",
       week: currentWeek,
@@ -783,12 +768,9 @@ router.post("/planner-todo", protect, async (req, res) => {
       filePath: filePath,
       fileName: fileName,
       exportData: {
-        totalActionsCount: actions.length,
-        overdueActionsCount: overdueActions.length,
+        totalActionsCount: totalActions,
         openActionsCount: openActions.length,
         inProgressActionsCount: inProgressActions.length,
-        completedActionsCount: completedActions.length,
-        pmOverrideActionsCount: pmOverrideActions.length,
       },
     });
 
@@ -798,7 +780,7 @@ router.post("/planner-todo", protect, async (req, res) => {
       req.admin,
       activeProgramme.project,
       currentWeekNumber,
-      actions.length
+      totalActions
     );
 
     // Send file
