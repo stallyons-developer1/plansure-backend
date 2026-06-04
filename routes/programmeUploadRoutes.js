@@ -1636,20 +1636,8 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
     }
 
-    // Use requested week, or if no weeks closed yet show Week 1, otherwise current week
-    // When programme is first uploaded, always start with Week 1-2
-    const closedWeeksCheck = programme.closedWeeks || [];
-    let targetWeekNumber;
-    if (requestedWeekNumber) {
-      targetWeekNumber = requestedWeekNumber;
-    } else if (closedWeeksCheck.length === 0) {
-      // No weeks closed yet - start with Week 1
-      targetWeekNumber = 1;
-    } else {
-      // Find the highest closed week number and show the next one
-      const highestClosedWeek = Math.max(...closedWeeksCheck.map(w => w.weekNumber || 0));
-      targetWeekNumber = highestClosedWeek + 1;
-    }
+    // Use requested week or current week
+    const targetWeekNumber = requestedWeekNumber || currentWeekNumber;
 
     // Calculate 2-week date range (Weeks X and X+1)
     if (earliestDate) {
