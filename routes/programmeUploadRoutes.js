@@ -4289,50 +4289,7 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       programmeName: programme.name,
 
       // =====================================================================
-      // PROOF 2: RAG Classification (Dynamic Calculation)
-      // =====================================================================
-      // CLIENT ASKED: Change activity date manually → Show RAG zone recalculates automatically
-      // CLIENT ASKED: Prove it is dynamic calculation, not hardcoded values
-      // =====================================================================
-      RAGClassification: {
-        title: "RAG Classification - Dynamic Calculation",
-
-        clientQuestion: "Is RAG dynamically calculated or hardcoded?",
-        answer: "DYNAMIC - RAG is calculated at runtime based on activity dates",
-
-        calculationLogic: {
-          green: "Activity starts within 0-14 days (Weeks 1-2)",
-          amber: "Activity starts within 15-28 days (Weeks 3-4)",
-          red: "Activity overdue OR starts in >28 days (Strategic)",
-          blue: "Activity completed (has 'A' suffix on finish date)"
-        },
-
-        currentDate: today.toISOString().split('T')[0],
-
-        // Show real activities with their calculated RAG
-        activitiesWithRAG: sampleActivities.map(a => ({
-          activityId: a.activityId,
-          activityName: a.activityName,
-          startDate: a.originalStartDate,
-          currentRAG: a.currentRAG.zone,
-          ragReason: a.currentRAG.reason,
-          // Simulation: What if date changed?
-          ifDateChangedTo6WeeksAway: {
-            newRAG: a.simulatedChange.newRAG.zone,
-            change: a.simulatedChange.ragChange
-          }
-        })),
-
-        proofItsDynamic: {
-          fact: "RAG is NOT stored in database",
-          storedFields: ["startDate", "finishDate"],
-          calculatedOnRequest: ["ragStatus", "weekZone"],
-          codeLocation: "calculateRAG() function in programmeUploadRoutes.js"
-        }
-      },
-
-      // =====================================================================
-      // PROOF 3: Backend Governance Rules
+      // Governance Rules
       // =====================================================================
       // CLIENT ASKED: What governance checks are running in backend?
       // CLIENT ASKED: How those checks affect state transitions?
@@ -4418,22 +4375,12 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         }
       },
 
-      // Database queries for verification
-      databaseQueries: {
-        findBlockingActions: `db.actions.find({ programme: ObjectId("${req.params.programmeId}"), type: "Required", status: { $in: ["Open", "In Progress"] } })`,
-        checkProgrammeStatus: `db.programmes.findOne({ _id: ObjectId("${req.params.programmeId}") }, { cycleStatus: 1 })`
-      },
-
       // =====================================================================
-      // GOVERNANCE DASHBOARD - Score, Metrics, Stats, Charts
-      // =====================================================================
-      // CLIENT ASKED: Show governance score and metrics from dashboard
-      // CLIENT ASKED: Show weighted metrics that determine governance health
-      // CLIENT ASKED: Show chart data for trends visualization
+      // Governance Dashboard - Score, Metrics, Stats, Charts
       // =====================================================================
       GovernanceDashboard: governanceDashboard
 
-    }, "Governance Proof (Proof 2 & 3 + Dashboard) Generated & Saved to Database");
+    }, "Governance Proof");
 
   } catch (error) {
     console.error("Governance proof error:", error);
