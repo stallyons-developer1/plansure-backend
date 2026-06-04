@@ -3847,6 +3847,270 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
     const remainingWeeks = totalWeeks - closedWeeksCount;
     const readyToClose = openRequiredActions.length === 0;
 
+    // =========================================================================
+    // GOVERNANCE DASHBOARD DATA - Score, Metrics, Stats, Charts
+    // =========================================================================
+
+    // Get cycle history for this programme
+    const cycleHistory = await CycleHistory.find({ programme: req.params.programmeId })
+      .populate("closedBy", "name")
+      .sort({ createdAt: -1 });
+
+    // Parse date helper for dashboard calculations
+    const parseDateDashboard = (dateStr) => {
+      if (!dateStr) return null;
+      const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
+      const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+      const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
+      if (!match) return null;
+      const day = parseInt(match[1]);
+      const month = months[match[2]];
+      let year = parseInt(match[3]);
+      year = year < 50 ? 2000 + year : 1900 + year;
+      return new Date(year, month, day);
+    };
+
+    // Calculate programme span
+    let earliestStartDate = null;
+    let latestEndDate = null;
+    for (const activity of activities) {
+      const startDate = parseDateDashboard(activity.startDate);
+      const finishDate = parseDateDashboard(activity.finishDate);
+      if (startDate && (!earliestStartDate || startDate < earliestStartDate)) {
+        earliestStartDate = startDate;
+      }
+      if (finishDate && (!latestEndDate || finishDate > latestEndDate)) {
+        latestEndDate = finishDate;
+      }
+    }
+
+    const msPerDay = 1000 * 60 * 60 * 24;
+    let totalWeeksFromProgramme = 0;
+    let currentWeekNumber = 1;
+    if (earliestStartDate && latestEndDate) {
+      const totalDays = Math.ceil((latestEndDate - earliestStartDate) / msPerDay);
+      totalWeeksFromProgramme = Math.ceil(totalDays / 7);
+      const daysSinceStart = Math.floor((today - earliestStartDate) / msPerDay);
+      currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
+    }
+
+    // Calculate weeks closed on time (Normal Close vs PM Override)
+    const weeksClosedOnTime = cycleHistory.filter(c => c.closeType === "Normal Close").length;
+    const pmOverrides = cycleHistory.filter(c => c.closeType === "PM Override").length;
+
+    // Calculate Weeks Closed On Time Score
+    let weeksClosedOnTimeScore = 0;
+    if (totalWeeksFromProgramme > 0) {
+      weeksClosedOnTimeScore = Math.round((weeksClosedOnTime / totalWeeksFromProgramme) * 100);
+    }
+
+    // Calculate metrics from closed weeks
+    let totalActionsFromClosedWeeks = 0;
+    let closedActionsFromClosedWeeks = 0;
+    for (const cycle of cycleHistory) {
+      totalActionsFromClosedWeeks += cycle.stats?.actionsTotal || 0;
+      closedActionsFromClosedWeeks += cycle.stats?.actionsCompleted || 0;
+    }
+
+    // Overdue Action Rate Score
+    const overdueFromClosedWeeks = Math.max(0, totalActionsFromClosedWeeks - closedActionsFromClosedWeeks);
+    const overdueRate = totalActionsFromClosedWeeks > 0
+      ? Math.round((overdueFromClosedWeeks / totalActionsFromClosedWeeks) * 100)
+      : 0;
+    const overdueActionRateScore = totalActionsFromClosedWeeks > 0 ? Math.max(0, 100 - overdueRate * 2) : 100;
+
+    // Action Closure Speed Score
+    const closureRate = totalActionsFromClosedWeeks > 0
+      ? Math.round((closedActionsFromClosedWeeks / totalActionsFromClosedWeeks) * 100)
+      : 0;
+    const actionClosureSpeedScore = closureRate;
+
+    // Build weekly data
+    const weeklyReadinessData = [];
+    const actionsData = [];
+    const ragTrendData = [];
+
+    // Helper to calculate RAG for activities in a specific week
+    const calculateWeekRAG = (weekStartDate, weekEndDate) => {
+      let green = 0, amber = 0, red = 0;
+      for (const activity of activities) {
+        const actStart = parseDateDashboard(activity.startDate);
+        const actFinish = parseDateDashboard(activity.finishDate);
+        if (!actStart) continue;
+        const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+        const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+        if (!startsThisWeek && !spansThisWeek) continue;
+        const ragStatus = activity.ragStatus || "Grey";
+        if (ragStatus === "Green") green++;
+        else if (ragStatus === "Amber") amber++;
+        else if (ragStatus === "Red") red++;
+      }
+      return { green, amber, red, total: green + amber + red };
+    };
+
+    // Generate weekly data
+    if (earliestStartDate) {
+      const weeksToGenerate = totalWeeksFromProgramme;
+      for (let weekNum = 1; weekNum <= weeksToGenerate; weekNum++) {
+        const weekStartDate = new Date(earliestStartDate);
+        weekStartDate.setDate(weekStartDate.getDate() + (weekNum - 1) * 7);
+        const weekEndDate = new Date(weekStartDate);
+        weekEndDate.setDate(weekStartDate.getDate() + 6);
+
+        const rag = calculateWeekRAG(weekStartDate, weekEndDate);
+        const matchingCycle = cycleHistory.find(c => c.weekNumber === weekNum);
+
+        weeklyReadinessData.push({
+          week: `W${weekNum}`,
+          value: matchingCycle
+            ? Math.round(((matchingCycle.stats?.green || 0) / (matchingCycle.stats?.totalActivities || 1)) * 100)
+            : 0
+        });
+
+        actionsData.push({
+          week: `W${weekNum}`,
+          raised: matchingCycle ? matchingCycle.stats?.actionsTotal || 0 : 0,
+          closed: matchingCycle ? matchingCycle.stats?.actionsCompleted || 0 : 0
+        });
+
+        ragTrendData.push({
+          week: `W${weekNum}`,
+          green: matchingCycle ? matchingCycle.stats?.green || 0 : 0,
+          amber: matchingCycle ? matchingCycle.stats?.amber || 0 : 0,
+          red: matchingCycle ? matchingCycle.stats?.red || 0 : 0
+        });
+      }
+    }
+
+    // Calculate average readiness
+    const currentWeekIndex = Math.min(currentWeekNumber, weeklyReadinessData.length);
+    const pastAndCurrentWeeks = weeklyReadinessData.slice(0, currentWeekIndex);
+    const avgReadiness = pastAndCurrentWeeks.length > 0
+      ? Math.round(pastAndCurrentWeeks.reduce((sum, w) => sum + w.value, 0) / pastAndCurrentWeeks.length)
+      : 0;
+
+    // Calculate Readiness Trend Stability Score
+    let readinessTrendScore = 65;
+    if (pastAndCurrentWeeks.length >= 2) {
+      const readinessValues = pastAndCurrentWeeks.map(w => w.value);
+      const mean = readinessValues.reduce((a, b) => a + b, 0) / readinessValues.length;
+      const variance = readinessValues.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / readinessValues.length;
+      readinessTrendScore = Math.max(0, Math.min(100, 100 - Math.sqrt(variance)));
+    } else if (pastAndCurrentWeeks.length === 1) {
+      readinessTrendScore = 100;
+    }
+
+    // PM Override Frequency Score
+    const totalCyclesForProgramme = cycleHistory.length;
+    const pmOverridesForProgramme = cycleHistory.filter(c => c.closeType === "PM Override").length;
+    const normalWeeks = totalCyclesForProgramme - pmOverridesForProgramme;
+    const pmOverrideFrequencyScore = totalCyclesForProgramme > 0
+      ? Math.round((normalWeeks / totalCyclesForProgramme) * 100)
+      : 100;
+
+    // Calculate dynamic weights
+    const allScores = {
+      weeksClosedOnTime: weeksClosedOnTimeScore,
+      overdueActionRate: overdueActionRateScore,
+      actionClosureSpeed: actionClosureSpeedScore,
+      readinessTrendStability: Math.round(readinessTrendScore),
+      pmOverrideFrequency: pmOverrideFrequencyScore
+    };
+
+    const totalScoreSum = Object.values(allScores).reduce((sum, score) => sum + score, 0);
+    const dynamicWeights = {};
+    if (totalScoreSum > 0) {
+      for (const [key, score] of Object.entries(allScores)) {
+        dynamicWeights[key] = Math.round((score / totalScoreSum) * 100);
+      }
+    } else {
+      for (const key of Object.keys(allScores)) {
+        dynamicWeights[key] = 20;
+      }
+    }
+
+    // Calculate overall governance score
+    const governanceScore = Math.round(
+      (allScores.weeksClosedOnTime * dynamicWeights.weeksClosedOnTime +
+       allScores.overdueActionRate * dynamicWeights.overdueActionRate +
+       allScores.actionClosureSpeed * dynamicWeights.actionClosureSpeed +
+       allScores.readinessTrendStability * dynamicWeights.readinessTrendStability +
+       allScores.pmOverrideFrequency * dynamicWeights.pmOverrideFrequency) / 100
+    );
+
+    // Determine governance status
+    let governanceStatus = "GREEN";
+    if (governanceScore < 50) governanceStatus = "RED";
+    else if (governanceScore < 70) governanceStatus = "AMBER";
+
+    // Get recurring blockers count
+    let blockerTypes = new Set();
+    activities.forEach(a => {
+      if (a.isBlocked && a.blocker) {
+        blockerTypes.add(a.blocker.split(" ")[0]);
+      }
+    });
+
+    // Governance Dashboard Data Object
+    const governanceDashboard = {
+      title: "Governance Dashboard - Score & Metrics",
+      description: "Overall programme governance health calculated from weighted metrics",
+
+      score: governanceScore,
+      status: governanceStatus,
+
+      metrics: {
+        weeksClosedOnTime: {
+          label: "Weeks Closed On Time",
+          score: allScores.weeksClosedOnTime,
+          weight: dynamicWeights.weeksClosedOnTime,
+          color: allScores.weeksClosedOnTime >= 70 ? "green" : allScores.weeksClosedOnTime >= 50 ? "amber" : "red"
+        },
+        overdueActionRate: {
+          label: "Overdue Action Rate",
+          score: allScores.overdueActionRate,
+          weight: dynamicWeights.overdueActionRate,
+          color: allScores.overdueActionRate >= 70 ? "green" : allScores.overdueActionRate >= 50 ? "amber" : "red"
+        },
+        actionClosureSpeed: {
+          label: "Action Closure Speed",
+          score: allScores.actionClosureSpeed,
+          weight: dynamicWeights.actionClosureSpeed,
+          color: allScores.actionClosureSpeed >= 70 ? "green" : allScores.actionClosureSpeed >= 50 ? "amber" : "red"
+        },
+        readinessTrendStability: {
+          label: "Readiness Trend Stability",
+          score: allScores.readinessTrendStability,
+          weight: dynamicWeights.readinessTrendStability,
+          color: allScores.readinessTrendStability >= 70 ? "green" : allScores.readinessTrendStability >= 50 ? "amber" : "red"
+        },
+        pmOverrideFrequency: {
+          label: "PM Override Frequency",
+          score: allScores.pmOverrideFrequency,
+          weight: dynamicWeights.pmOverrideFrequency,
+          color: allScores.pmOverrideFrequency >= 70 ? "green" : allScores.pmOverrideFrequency >= 50 ? "amber" : "red"
+        }
+      },
+
+      stats: {
+        totalWeeks: totalWeeksFromProgramme || totalWeeks,
+        closedWeeks: cycleHistory.length,
+        avgReadiness: `${avgReadiness}%`,
+        totalActionsRaised: totalActionsFromClosedWeeks,
+        totalClosed: closedActionsFromClosedWeeks,
+        overdueTrend: "Stable",
+        recurringBlockers: blockerTypes.size,
+        pmOverrides: pmOverrides,
+        normalCloses: weeksClosedOnTime
+      },
+
+      chartData: {
+        weeklyReadinessTrend: weeklyReadinessData,
+        actionsRaisedVsClosed: actionsData,
+        weeklyRAGTrend: ragTrendData
+      }
+    };
+
     const governanceProof = {
       title: "PROOF 3: Backend Governance Rules",
       description: "System enforces governance rules that control Close-Out eligibility",
@@ -3999,6 +4263,13 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
           ...(overdueActions.length > 0 ? [`${overdueActions.length} Overdue actions`] : []),
           ...(blockedActivities.length > 0 ? [`${blockedActivities.length} Blocked activities`] : [])
         ]
+      },
+
+      GovernanceDashboard: {
+        score: governanceScore,
+        status: governanceStatus,
+        metrics: governanceDashboard.metrics,
+        stats: governanceDashboard.stats
       }
     };
 
@@ -4151,9 +4422,18 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       databaseQueries: {
         findBlockingActions: `db.actions.find({ programme: ObjectId("${req.params.programmeId}"), type: "Required", status: { $in: ["Open", "In Progress"] } })`,
         checkProgrammeStatus: `db.programmes.findOne({ _id: ObjectId("${req.params.programmeId}") }, { cycleStatus: 1 })`
-      }
+      },
 
-    }, "Governance Proof (Proof 2 & 3) Generated & Saved to Database");
+      // =====================================================================
+      // GOVERNANCE DASHBOARD - Score, Metrics, Stats, Charts
+      // =====================================================================
+      // CLIENT ASKED: Show governance score and metrics from dashboard
+      // CLIENT ASKED: Show weighted metrics that determine governance health
+      // CLIENT ASKED: Show chart data for trends visualization
+      // =====================================================================
+      GovernanceDashboard: governanceDashboard
+
+    }, "Governance Proof (Proof 2 & 3 + Dashboard) Generated & Saved to Database");
 
   } catch (error) {
     console.error("Governance proof error:", error);

@@ -74,6 +74,14 @@ const governanceProofSchema = new mongoose.Schema({
     governanceActive: String,
     currentCloseOutStatus: String,
     blockingReasons: [String]
+  },
+
+  // Governance Dashboard Data
+  GovernanceDashboard: {
+    score: Number,
+    status: String,
+    metrics: mongoose.Schema.Types.Mixed,
+    stats: mongoose.Schema.Types.Mixed
   }
 }, {
   timestamps: true
