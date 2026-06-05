@@ -559,23 +559,20 @@ router.post("/weekly-plan", protect, async (req, res) => {
 // POST /api/exports/planner-todo - Generate Planner To-Do export (outstanding actions)
 router.post("/planner-todo", protect, async (req, res) => {
   try {
-    // Get weekNumber from request body (sent from frontend)
-    const requestedWeekNumber = req.body.weekNumber ? parseInt(req.body.weekNumber) : null;
+    // Get programmeId and weekNumber from request body (sent from frontend)
+    const { programmeId, weekNumber: reqWeekNumber } = req.body;
+    const requestedWeekNumber = reqWeekNumber ? parseInt(reqWeekNumber) : null;
 
-    const projects = await Project.find({ status: { $ne: "Cancelled" } });
-    const projectIds = projects.map((p) => p._id);
-
-    const programmes = await Programme.find({
-      status: { $in: ["processed", "pending"] },
-      project: { $in: projectIds },
-    }).sort({ createdAt: -1 });
-
-    if (programmes.length === 0) {
-      return sendError(res, "No active programmes found", 404);
+    if (!programmeId) {
+      return sendError(res, "Programme ID is required", 400);
     }
 
-    const activeProgramme = programmes[0];
-    const programmeIds = programmes.map((p) => p._id);
+    // Find the specific programme
+    const activeProgramme = await Programme.findById(programmeId);
+
+    if (!activeProgramme) {
+      return sendError(res, "Programme not found", 404);
+    }
     const activities = activeProgramme.extractedData?.activities || [];
 
     // Helper to parse date strings
@@ -622,7 +619,7 @@ router.post("/planner-todo", protect, async (req, res) => {
 
     // Get ALL actions for the current 2 weeks (Open, In Progress, Completed, PM Override)
     let actions = await Action.find({
-      programme: { $in: programmeIds },
+      programme: programmeId,
     })
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
