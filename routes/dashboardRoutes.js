@@ -1190,7 +1190,7 @@ router.get("/governance", protect, async (req, res) => {
 
 router.get("/weekly", protect, async (req, res) => {
   try {
-    const { projectId } = req.query;
+    const { projectId, weekNumber: requestedWeekNumber } = req.query;
 
     let projects;
     let projectIds;
@@ -1254,6 +1254,8 @@ router.get("/weekly", protect, async (req, res) => {
     let weekOpened = "";
     let closeDeadline = "";
     let cycleStatus = "Draft";
+    let currentWeekStart = null;
+    let currentWeekEnd = null;
 
     // Find the earliest activity start date from the programme
     const programmeActivities = activeProgramme?.extractedData?.activities || [];
@@ -1274,15 +1276,18 @@ router.get("/weekly", protect, async (req, res) => {
 
       const msPerDay = 1000 * 60 * 60 * 24;
       const daysSinceStart = Math.floor((today - earliestStartDate) / msPerDay);
-      const weekNum = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
+      // Use requested week number if provided, otherwise calculate from today
+      const weekNum = requestedWeekNumber
+        ? parseInt(requestedWeekNumber)
+        : Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
 
       weekNumber = `Week ${weekNum}`;
 
       // Calculate current week's start and end dates
-      const currentWeekStart = new Date(earliestStartDate);
+      currentWeekStart = new Date(earliestStartDate);
       currentWeekStart.setDate(currentWeekStart.getDate() + (weekNum - 1) * 7);
 
-      const currentWeekEnd = new Date(currentWeekStart);
+      currentWeekEnd = new Date(currentWeekStart);
       currentWeekEnd.setDate(currentWeekStart.getDate() + 6);
 
       const formatDate = (d) => {
@@ -1316,6 +1321,16 @@ router.get("/weekly", protect, async (req, res) => {
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
 
+    // Helper function to check if activity overlaps with the current week
+    const activityOverlapsWeek = (activity) => {
+      if (!currentWeekStart || !currentWeekEnd) return true; // No week filter, include all
+      const actStart = parseDate(activity.startDate);
+      const actEnd = parseDate(activity.finishDate);
+      if (!actStart || !actEnd) return false;
+      // Activity overlaps if it starts before/on week end AND ends on/after week start
+      return actStart <= currentWeekEnd && actEnd >= currentWeekStart;
+    };
+
     let greenCount = 0;
     let amberCount = 0;
     let redCount = 0;
@@ -1323,14 +1338,20 @@ router.get("/weekly", protect, async (req, res) => {
 
     const activities = [];
     for (const activity of rawActivities) {
-      const rag = calculateRAG(activity, today);
+      // Convert Mongoose document to plain object if needed
+      const activityObj = activity.toObject ? activity.toObject() : activity;
+
+      // Filter activities by week dates
+      if (!activityOverlapsWeek(activityObj)) continue;
+
+      const rag = calculateRAG(activityObj, today);
       if (rag !== "Grey") {
-        activities.push({ ...activity, ragStatus: rag });
+        activities.push({ ...activityObj, ragStatus: rag });
         if (rag === "Green") greenCount++;
         else if (rag === "Amber") amberCount++;
         else if (rag === "Red") redCount++;
 
-        if (activity.isBlocked) blockedCount++;
+        if (activityObj.isBlocked) blockedCount++;
       }
     }
 
@@ -1339,9 +1360,16 @@ router.get("/weekly", protect, async (req, res) => {
     const greenPercentage =
       ragTotal > 0 ? Math.round((greenCount / ragTotal) * 100) : 0;
 
-    const actions = await Action.find({ programme: { $in: programmeIds } })
+    const allActions = await Action.find({ programme: { $in: programmeIds } })
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
+
+    // Filter actions by week dates (based on due date)
+    const actions = allActions.filter((a) => {
+      if (!currentWeekStart || !currentWeekEnd) return true; // No week filter, include all
+      const dueDate = new Date(a.dueDate);
+      return dueDate >= currentWeekStart && dueDate <= currentWeekEnd;
+    });
 
     const openActions = actions.filter(
       (a) => a.status !== "Completed" && a.status !== "Cancelled",
@@ -1354,14 +1382,22 @@ router.get("/weekly", protect, async (req, res) => {
         new Date(a.dueDate) < startOfToday,
     );
 
+    // Open REQUIRED actions for Ready to Close logic (Optional actions don't block closing)
+    // Use allActions (not week-filtered) because required actions block closing regardless of due date
+    const openRequiredActions = allActions.filter(
+      (a) =>
+        a.type === "Required" &&
+        (a.status === "Open" || a.status === "In Progress"),
+    );
+
     // readyForClose logic based on cycle status:
     // - Draft / Uploaded / Meeting Open: Always false (not ready to close)
-    // - Execution / Close-Out Eligible: true if all actions complete (openActions === 0)
+    // - Execution / Close-Out Eligible: true if all REQUIRED actions complete
     let readyForClose = false;
     if (cycleStatus === "Draft" || cycleStatus === "Uploaded" || cycleStatus === "Meeting Open") {
       readyForClose = false;
     } else if (cycleStatus === "Execution" || cycleStatus === "Close-Out Eligible") {
-      readyForClose = openActions.length === 0;
+      readyForClose = openRequiredActions.length === 0;
     }
 
     const blockedActivities = activities
@@ -1370,9 +1406,11 @@ router.get("/weekly", protect, async (req, res) => {
       )
       .slice(0, 10)
       .map((a) => {
-        const linkedAction = actions.find(
+        // Use allActions (not week-filtered) to find linked actions regardless of due date
+        const linkedAction = allActions.find(
           (act) => act.linkedActivity?.activityId === a.activityId,
         );
+        const isOverdue = linkedAction && new Date(linkedAction.dueDate) < startOfToday;
         return {
           id: a.activityId,
           name: a.activityName,
@@ -1380,12 +1418,14 @@ router.get("/weekly", protect, async (req, res) => {
           owner: a.ownerName || "-",
           blocker: a.blocker || (a.isBlocked ? "Blocked" : "Needs attention"),
           linkedAction: linkedAction
-            ? `ACT-${String(linkedAction._id).slice(-4).toUpperCase()}`
-            : "-",
-          status:
-            linkedAction && new Date(linkedAction.dueDate) < startOfToday
-              ? "Overdue"
-              : "Open",
+            ? {
+                actionId: `ACN-${String(linkedAction._id).slice(-4).toUpperCase()}`,
+                title: linkedAction.title || "-",
+                status: isOverdue ? "Overdue" : (linkedAction.status || "Open"),
+                assigneeName: linkedAction.assignee?.name || "-",
+              }
+            : null,
+          status: isOverdue ? "Overdue" : "Open",
         };
       });
 
@@ -1421,6 +1461,56 @@ router.get("/weekly", protect, async (req, res) => {
       dueDate: action.dueDate,
     }));
 
+    // Calculate activities by week for the chart (shows ALL weeks, not filtered)
+    const activitiesByWeek = [];
+    if (earliestStartDate) {
+      // Find the latest finish date to determine total weeks
+      let latestFinishDate = earliestStartDate;
+      for (const activity of rawActivities) {
+        const actEnd = parseDate(activity.finishDate);
+        if (actEnd && actEnd > latestFinishDate) {
+          latestFinishDate = actEnd;
+        }
+      }
+
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const totalDays = Math.floor((latestFinishDate - earliestStartDate) / msPerDay);
+      const totalWeeks = Math.max(1, Math.ceil((totalDays + 1) / 7));
+
+      // Calculate RAG counts for each week
+      for (let w = 1; w <= Math.min(totalWeeks, 8); w++) {
+        const weekStart = new Date(earliestStartDate);
+        weekStart.setDate(weekStart.getDate() + (w - 1) * 7);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekStart.getDate() + 6);
+
+        let weekGreen = 0;
+        let weekAmber = 0;
+        let weekRed = 0;
+
+        for (const activity of rawActivities) {
+          const actStart = parseDate(activity.startDate);
+          const actEnd = parseDate(activity.finishDate);
+          if (!actStart || !actEnd) continue;
+
+          // Check if activity overlaps with this week
+          if (actStart <= weekEnd && actEnd >= weekStart) {
+            const rag = calculateRAG(activity, today);
+            if (rag === "Green") weekGreen++;
+            else if (rag === "Amber") weekAmber++;
+            else if (rag === "Red") weekRed++;
+          }
+        }
+
+        activitiesByWeek.push({
+          week: `Week ${w}`,
+          green: weekGreen,
+          amber: weekAmber,
+          red: weekRed,
+        });
+      }
+    }
+
     return sendSuccess(res, {
       weekly: {
         project: {
@@ -1446,6 +1536,7 @@ router.get("/weekly", protect, async (req, res) => {
           blockedByActions: blockedCount,
           openActions: openActions.length,
           overdueActions: overdueActions.length,
+          openRequiredActions: openRequiredActions.length,
           readyForClose,
         },
         ragDistribution: {
@@ -1461,6 +1552,8 @@ router.get("/weekly", protect, async (req, res) => {
         blockedActivities,
         weeklyPlanPreview,
         plannerToDo,
+        activitiesByWeek,
+        isProjectEnded: false, // Temporary override - same as Weekly Control
       },
     });
   } catch (error) {
