@@ -57,6 +57,17 @@ const checkProgrammeAccess = async (user, programmeId, projectId = null) => {
 const parseDate = (dateStr) => {
   if (!dateStr) return null;
   const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
+
+  // Try YYYY-MM-DD format first (e.g., 2026-06-08)
+  const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1]);
+    const month = parseInt(isoMatch[2]) - 1; // Month is 0-indexed
+    const day = parseInt(isoMatch[3]);
+    return new Date(year, month, day);
+  }
+
+  // Try DD-MMM-YY format (e.g., 08-Jun-26)
   const months = {
     Jan: 0,
     Feb: 1,
@@ -1625,10 +1636,21 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
 
-    // Parse date helper
+    // Parse date helper - supports both DD-MMM-YY and YYYY-MM-DD formats
     const parseActivityDate = (dateStr) => {
       if (!dateStr) return null;
       const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
+
+      // Try YYYY-MM-DD format first (e.g., 2026-06-08)
+      const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (isoMatch) {
+        const year = parseInt(isoMatch[1]);
+        const month = parseInt(isoMatch[2]) - 1; // Month is 0-indexed
+        const day = parseInt(isoMatch[3]);
+        return new Date(year, month, day);
+      }
+
+      // Try DD-MMM-YY format (e.g., 08-Jun-26)
       const months = {
         Jan: 0,
         Feb: 1,
@@ -2067,27 +2089,29 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       // Check if finish date has passed
       if (a.finishDate) {
         const cleanDate = a.finishDate.replace(/\s*[AB\*]$/, "").trim();
-        const months = {
-          Jan: 0,
-          Feb: 1,
-          Mar: 2,
-          Apr: 3,
-          May: 4,
-          Jun: 5,
-          Jul: 6,
-          Aug: 7,
-          Sep: 8,
-          Oct: 9,
-          Nov: 10,
-          Dec: 11,
-        };
-        const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
-        if (match) {
-          const day = parseInt(match[1]);
-          const month = months[match[2]];
-          let year = parseInt(match[3]);
-          year = year < 50 ? 2000 + year : 1900 + year;
-          const finishDate = new Date(year, month, day);
+        let finishDate = null;
+
+        // Try YYYY-MM-DD format first
+        const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (isoMatch) {
+          finishDate = new Date(parseInt(isoMatch[1]), parseInt(isoMatch[2]) - 1, parseInt(isoMatch[3]));
+        } else {
+          // Try DD-MMM-YY format
+          const months = {
+            Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+            Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+          };
+          const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
+          if (match) {
+            const day = parseInt(match[1]);
+            const month = months[match[2]];
+            let year = parseInt(match[3]);
+            year = year < 50 ? 2000 + year : 1900 + year;
+            finishDate = new Date(year, month, day);
+          }
+        }
+
+        if (finishDate) {
           return finishDate < todayForAtRisk;
         }
       }
@@ -3112,23 +3136,21 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       return sendError(res, "Access denied", 403);
     }
 
-    // Parse dates helper
-    const parseDate = (dateStr) => {
+    // Parse dates helper - supports both DD-MMM-YY and YYYY-MM-DD formats
+    const parseDateLocal = (dateStr) => {
       if (!dateStr) return null;
       const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
+
+      // Try YYYY-MM-DD format first
+      const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (isoMatch) {
+        return new Date(parseInt(isoMatch[1]), parseInt(isoMatch[2]) - 1, parseInt(isoMatch[3]));
+      }
+
+      // Try DD-MMM-YY format
       const months = {
-        Jan: 0,
-        Feb: 1,
-        Mar: 2,
-        Apr: 3,
-        May: 4,
-        Jun: 5,
-        Jul: 6,
-        Aug: 7,
-        Sep: 8,
-        Oct: 9,
-        Nov: 10,
-        Dec: 11,
+        Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+        Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
       };
       const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
       if (!match) return null;
@@ -3382,23 +3404,21 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       }
     }
 
-    // Parse dates helper
+    // Parse dates helper - supports both DD-MMM-YY and YYYY-MM-DD formats
     const parseDate = (dateStr) => {
       if (!dateStr) return null;
       const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
+
+      // Try YYYY-MM-DD format first
+      const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (isoMatch) {
+        return new Date(parseInt(isoMatch[1]), parseInt(isoMatch[2]) - 1, parseInt(isoMatch[3]));
+      }
+
+      // Try DD-MMM-YY format
       const months = {
-        Jan: 0,
-        Feb: 1,
-        Mar: 2,
-        Apr: 3,
-        May: 4,
-        Jun: 5,
-        Jul: 6,
-        Aug: 7,
-        Sep: 8,
-        Oct: 9,
-        Nov: 10,
-        Dec: 11,
+        Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+        Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
       };
       const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
       if (!match) return null;
@@ -3813,9 +3833,15 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
 
     // Helper function to calculate RAG
     const calculateRAGDemo = (activity, referenceDate) => {
-      const parseDate = (dateStr) => {
+      const parseDateLocal = (dateStr) => {
         if (!dateStr) return null;
         const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
+        // Try YYYY-MM-DD format first
+        const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (isoMatch) {
+          return new Date(parseInt(isoMatch[1]), parseInt(isoMatch[2]) - 1, parseInt(isoMatch[3]));
+        }
+        // Try DD-MMM-YY format
         const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
         const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
         if (!match) return null;
@@ -3826,8 +3852,8 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         return new Date(year, month, day);
       };
 
-      const startDate = parseDate(activity.startDate);
-      const finishDate = parseDate(activity.finishDate);
+      const startDate = parseDateLocal(activity.startDate);
+      const finishDate = parseDateLocal(activity.finishDate);
 
       if (!startDate) return { zone: "Unknown", color: "gray", reason: "No start date" };
 
@@ -3985,10 +4011,16 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       .populate("closedBy", "name")
       .sort({ createdAt: -1 });
 
-    // Parse date helper for dashboard calculations
+    // Parse date helper for dashboard calculations - supports both formats
     const parseDateDashboard = (dateStr) => {
       if (!dateStr) return null;
       const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
+      // Try YYYY-MM-DD format first
+      const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (isoMatch) {
+        return new Date(parseInt(isoMatch[1]), parseInt(isoMatch[2]) - 1, parseInt(isoMatch[3]));
+      }
+      // Try DD-MMM-YY format
       const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
       const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
       if (!match) return null;
