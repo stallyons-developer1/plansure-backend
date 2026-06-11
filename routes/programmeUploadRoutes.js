@@ -252,6 +252,37 @@ const calculateActivityStatus = (
   return "Ready";
 };
 
+// Serve PDF from MongoDB (persistent storage)
+router.get("/:id/pdf", async (req, res) => {
+  try {
+    const programme = await Programme.findById(req.params.id).select(
+      "fileData fileMimeType originalFileName"
+    );
+
+    if (!programme) {
+      return res.status(404).json({ message: "Programme not found" });
+    }
+
+    if (!programme.fileData) {
+      return res.status(404).json({ message: "PDF file not found in database" });
+    }
+
+    // Set headers for PDF display
+    res.setHeader("Content-Type", programme.fileMimeType || "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${programme.originalFileName}"`
+    );
+    res.setHeader("Content-Length", programme.fileData.length);
+
+    // Send the PDF buffer
+    res.send(programme.fileData);
+  } catch (error) {
+    console.error("Error serving PDF:", error);
+    res.status(500).json({ message: "Error serving PDF file" });
+  }
+});
+
 router.post(
   "/upload",
   protect,
@@ -581,11 +612,16 @@ router.post(
       const days = Math.floor((today - startOfYear) / (24 * 60 * 60 * 1000));
       const weekNumber = Math.ceil((days + 1) / 7);
 
+      // Read PDF file content to store in MongoDB
+      const fileData = fs.readFileSync(req.file.path);
+
       const programme = await Programme.create({
         name,
         project: project || null,
         originalFileName: req.file.originalname,
         filePath: req.file.path,
+        fileData: fileData,  // Store PDF binary in MongoDB
+        fileMimeType: req.file.mimetype || "application/pdf",
         cycleStatus: "Uploaded",
         weekNumber,
         lookaheadWeeks: 6,
@@ -713,16 +749,8 @@ router.get("/", protect, async (req, res) => {
 
     const baseUrl = process.env.BACKEND_URL || "http://localhost:5000";
     const programmesWithUrl = programmes.map((prog) => {
-      let fileUrl = null;
-      if (prog.filePath) {
-        // Extract relative path from absolute path (uploads/programmes/...)
-        const uploadsIndex = prog.filePath.indexOf("uploads/");
-        const relativePath =
-          uploadsIndex !== -1
-            ? prog.filePath.substring(uploadsIndex)
-            : prog.filePath;
-        fileUrl = `${baseUrl}/${relativePath}`;
-      }
+      // Use API endpoint to serve PDF from MongoDB (persistent storage)
+      const fileUrl = `${baseUrl}/api/programmes/${prog._id}/pdf`;
       return {
         ...prog.toObject(),
         fileUrl,
@@ -811,15 +839,8 @@ router.get("/by-project/:projectId", protect, async (req, res) => {
     }
 
     const baseUrl = process.env.BACKEND_URL || "http://localhost:5000";
-    let fileUrl = null;
-    if (programme.filePath) {
-      const uploadsIndex = programme.filePath.indexOf("uploads/");
-      const relativePath =
-        uploadsIndex !== -1
-          ? programme.filePath.substring(uploadsIndex)
-          : programme.filePath;
-      fileUrl = `${baseUrl}/${relativePath}`;
-    }
+    // Use API endpoint to serve PDF from MongoDB (persistent storage)
+    const fileUrl = `${baseUrl}/api/programmes/${programme._id}/pdf`;
     const programmeWithUrl = {
       ...programmeObj,
       fileUrl,
@@ -849,15 +870,8 @@ router.get("/project/:projectId/history", protect, async (req, res) => {
 
     const baseUrl = process.env.BACKEND_URL || "http://localhost:5000";
     const addFileUrl = (prog) => {
-      let fileUrl = null;
-      if (prog.filePath) {
-        const uploadsIndex = prog.filePath.indexOf("uploads/");
-        const relativePath =
-          uploadsIndex !== -1
-            ? prog.filePath.substring(uploadsIndex)
-            : prog.filePath;
-        fileUrl = `${baseUrl}/${relativePath}`;
-      }
+      // Use API endpoint to serve PDF from MongoDB (persistent storage)
+      const fileUrl = `${baseUrl}/api/programmes/${prog._id}/pdf`;
       return {
         ...prog.toObject(),
         fileUrl,
@@ -984,15 +998,8 @@ router.get("/:id", protect, async (req, res) => {
     }
 
     const baseUrl = process.env.BACKEND_URL || "http://localhost:5000";
-    let fileUrl = null;
-    if (programme.filePath) {
-      const uploadsIndex = programme.filePath.indexOf("uploads/");
-      const relativePath =
-        uploadsIndex !== -1
-          ? programme.filePath.substring(uploadsIndex)
-          : programme.filePath;
-      fileUrl = `${baseUrl}/${relativePath}`;
-    }
+    // Use API endpoint to serve PDF from MongoDB (persistent storage)
+    const fileUrl = `${baseUrl}/api/programmes/${programme._id}/pdf`;
     const programmeWithUrl = {
       ...programme.toObject(),
       fileUrl,
@@ -1602,6 +1609,7 @@ router.get("/:id/cycle-history", protect, async (req, res) => {
 });
 
 router.get("/:id/weekly-control", protect, async (req, res) => {
+  console.log("\n\n=== WEEKLY CONTROL ENDPOINT CALLED (UPDATED CODE) ===\n\n");
   try {
     const programme = await Programme.findById(req.params.id).populate(
       "uploadedBy",
@@ -1712,10 +1720,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
 
     // Get closed weeks from programme
     const closedWeeks = programme.closedWeeks || [];
-    console.log(
-      `[weekly-control] closedWeeks count: ${closedWeeks.length}, weekNumbers: ${closedWeeks.map((w) => w.weekNumber).join(", ")}`,
-    );
-    console.log(`[weekly-control] targetWeekNumber: ${targetWeekNumber}`);
 
     // Find the most recently closed week (by closedAt timestamp)
     const mostRecentClosure =
@@ -1831,21 +1835,20 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     const isActivityInWeek = (activity) => {
       if (!weekStartDate || !weekEndDate) return true; // Show all if no date range
       const actStart = parseActivityDate(activity.startDate);
-      const actFinish = parseActivityDate(activity.finishDate);
-      if (!actStart) return false;
 
-      // Activity is in week if it starts in this week OR spans this week
-      const startsThisWeek =
-        actStart >= weekStartDate && actStart <= weekEndDate;
-      const spansThisWeek =
-        actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
-      return startsThisWeek || spansThisWeek;
+      if (!actStart) {
+        return false;
+      }
+
+      // Only include activities that START within the 2-week window
+      const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+      return startsThisWeek;
     };
 
     const activitiesInWeek = activities.filter((a) => isActivityInWeek(a));
-    const allActivities = activitiesInWeek.filter(
-      (a) => a.ragStatus !== "Grey",
-    );
+
+    // Don't filter out Grey activities - show ALL activities in the 2-week window
+    const allActivities = activitiesInWeek;
 
     // Calculate action stats from ALL actions in database (for Actions by Status chart)
     // This shows ALL actions for the programme, regardless of week
@@ -1863,11 +1866,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
           new Date(a.dueDate) < startOfToday,
       ).length,
     };
-
-    console.log(
-      `[weekly-control] Total actions in database: ${actions.length}`,
-    );
-    console.log(`[weekly-control] actionsByStatus:`, actionsByStatus);
 
     // Get actions for activities in the current week only (for PM Override logic)
     const actionsInWeek = [];
@@ -2039,18 +2037,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     );
     const blocked = blockedActivitiesList.length;
 
-    // Debug log for blocked activities
-    if (blockedActivitiesList.length > 0) {
-      console.log(`[weekly-control] Blocked activities found:`);
-      blockedActivitiesList.forEach((a) => {
-        console.log(
-          `  - ${a.activityId}: isBlocked=${a.isBlocked}, activityStatus=${a.activityStatus}`,
-        );
-      });
-    } else {
-      console.log(`[weekly-control] No blocked activities found`);
-    }
-
     // Count completed activities (has " A" suffix or status === "Complete/Completed") - from ALL activities
     const completedActivitiesCount = activities.filter(
       (a) =>
@@ -2117,11 +2103,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       }
       return false;
     }).length;
-
-    console.log(
-      `[weekly-control] Activity counts - completed: ${completedActivitiesCount}, blocked: ${blockedActivitiesCount}, atRisk: ${atRiskActivitiesCount}`,
-    );
-    console.log(`[weekly-control] Total activities: ${activities.length}`);
 
     // Open actions for DISPLAY (includes both Required and Optional)
     const openActions =

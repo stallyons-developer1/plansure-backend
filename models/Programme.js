@@ -18,6 +18,13 @@ const programmeSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    fileData: {
+      type: Buffer,  // Store PDF binary data directly in MongoDB
+    },
+    fileMimeType: {
+      type: String,
+      default: "application/pdf",
+    },
     cycleStatus: {
       type: String,
       enum: [
