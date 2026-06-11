@@ -1343,16 +1343,18 @@ router.get("/:id/overview", protect, async (req, res) => {
         a.status !== "Cancelled",
     ).length;
 
+    // RAG Distribution based on activity status (not RAG status)
+    // Green = Ready activities, Amber = At Risk activities, Red = Blocked activities
     const ragDistribution = {
-      // Exclude blocked activities from green count
       green: lookaheadActivities.filter(
-        (a) =>
-          a.ragStatus === "Green" &&
-          !a.isBlocked &&
-          a.activityStatus !== "Blocked",
+        (a) => a.activityStatus === "Ready" && !a.isBlocked
       ).length,
-      amber: lookaheadActivities.filter((a) => a.ragStatus === "Amber").length,
-      red: lookaheadActivities.filter((a) => a.ragStatus === "Red").length,
+      amber: lookaheadActivities.filter(
+        (a) => a.activityStatus === "At Risk"
+      ).length,
+      red: lookaheadActivities.filter(
+        (a) => a.activityStatus === "Blocked" || a.isBlocked
+      ).length,
     };
 
     const cycleHistory = await CycleHistory.find({ programme: req.params.id })
@@ -1702,10 +1704,16 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     const weekStart = new Date(todayStart);
     weekStart.setDate(todayStart.getDate() - daysFromMonday); // Go back to Monday
 
-    if (earliestDate) {
-      earliestDate.setHours(0, 0, 0, 0);
+    // Use lookaheadStartDate (upload date) for week calculation, not earliest activity date
+    // This ensures weeks start from when the programme was uploaded
+    const referenceDate = programme.lookaheadStartDate
+      ? new Date(programme.lookaheadStartDate)
+      : earliestDate;
+
+    if (referenceDate) {
+      referenceDate.setHours(0, 0, 0, 0);
       const msPerDay = 1000 * 60 * 60 * 24;
-      const daysSinceStart = Math.floor((todayStart - earliestDate) / msPerDay);
+      const daysSinceStart = Math.floor((todayStart - referenceDate) / msPerDay);
       currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
     }
 
@@ -1960,16 +1968,18 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       weeklyActionsByStatus,
     );
 
+    // RAG Distribution based on activity status (not RAG status)
+    // Green = Ready activities, Amber = At Risk activities, Red = Blocked activities
     const ragDistribution = {
-      // Exclude blocked activities from green count - only count green when NOT blocked
       green: allActivities.filter(
-        (a) =>
-          a.ragStatus === "Green" &&
-          !a.isBlocked &&
-          a.activityStatus !== "Blocked",
+        (a) => a.activityStatus === "Ready" && !a.isBlocked
       ).length,
-      amber: allActivities.filter((a) => a.ragStatus === "Amber").length,
-      red: allActivities.filter((a) => a.ragStatus === "Red").length,
+      amber: allActivities.filter(
+        (a) => a.activityStatus === "At Risk"
+      ).length,
+      red: allActivities.filter(
+        (a) => a.activityStatus === "Blocked" || a.isBlocked
+      ).length,
     };
 
     // Separate counts for Ready and Complete activities
@@ -3168,14 +3178,20 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       await programme.save();
     }
 
-    // Determine current week
+    // Determine current week using lookaheadStartDate (upload date)
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     let currentWeekNumber = 1;
-    if (earliestDate) {
-      earliestDate.setHours(0, 0, 0, 0);
+
+    // Use lookaheadStartDate (upload date) for week calculation
+    const referenceDate = programme.lookaheadStartDate
+      ? new Date(programme.lookaheadStartDate)
+      : earliestDate;
+
+    if (referenceDate) {
+      referenceDate.setHours(0, 0, 0, 0);
       const msPerDay = 1000 * 60 * 60 * 24;
-      const daysSinceStart = Math.floor((today - earliestDate) / msPerDay);
+      const daysSinceStart = Math.floor((today - referenceDate) / msPerDay);
       currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
     }
 
@@ -4032,7 +4048,13 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
     if (earliestStartDate && latestEndDate) {
       const totalDays = Math.ceil((latestEndDate - earliestStartDate) / msPerDay);
       totalWeeksFromProgramme = Math.ceil(totalDays / 7);
-      const daysSinceStart = Math.floor((today - earliestStartDate) / msPerDay);
+
+      // Use lookaheadStartDate (upload date) for week calculation
+      const referenceDate = programme.lookaheadStartDate
+        ? new Date(programme.lookaheadStartDate)
+        : earliestStartDate;
+      referenceDate.setHours(0, 0, 0, 0);
+      const daysSinceStart = Math.floor((today - referenceDate) / msPerDay);
       currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
     }
 
