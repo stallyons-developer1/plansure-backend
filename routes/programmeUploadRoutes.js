@@ -1422,6 +1422,35 @@ router.post("/:id/close-cycle", protect, async (req, res) => {
     }).sort({ weekNumber: -1 });
     const newWeekNumber = lastCycle ? lastCycle.weekNumber + 1 : 1;
 
+    // Determine the start date for the current 2-week cycle
+    let cycleStartDate;
+    if (lastCycle) {
+      // Next cycle starts the day after the last cycle ended
+      cycleStartDate = new Date(lastCycle.dateRange.endDate);
+      cycleStartDate.setDate(cycleStartDate.getDate() + 1);
+    } else {
+      // First cycle - use programme creation date
+      cycleStartDate = new Date(programme.createdAt || today);
+    }
+    cycleStartDate.setHours(0, 0, 0, 0);
+
+    // Calculate the end of the 2-week period (14 days from cycle start)
+    const twoWeekEndDate = new Date(cycleStartDate);
+    twoWeekEndDate.setDate(cycleStartDate.getDate() + 13); // Days 0-13 = 14 days
+    twoWeekEndDate.setHours(23, 59, 59, 999);
+
+    // Check if today is still within the 2-week period
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    if (todayStart <= twoWeekEndDate) {
+      return sendError(
+        res,
+        `Cannot close cycle yet. The current 2-week cycle runs from ${formatDateShort(cycleStartDate)} to ${formatDateShort(twoWeekEndDate)}. Today (${formatDateShort(todayStart)}) is still within this period.`,
+        400
+      );
+    }
+
     const activities = programme.extractedData.activities.map((activity) => {
       const activityObj = activity.toObject ? activity.toObject() : activity;
       const ragStatus = calculateRAG(activityObj, today);
