@@ -1720,11 +1720,11 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     // Use requested week or current week
     const targetWeekNumber = requestedWeekNumber || currentWeekNumber;
 
-    // Calculate 2-week date range starting from Monday of current week
-    // This ensures stats show activities for the current 2-week lookahead window
-    const weekStartDate = new Date(weekStart);
-    const weekEndDate = new Date(weekStart);
-    weekEndDate.setDate(weekStart.getDate() + 13); // 2 weeks = 14 days (Monday + 13 days = Sunday of week 2)
+    // Calculate 2-week date range starting from today (not Monday)
+    // This ensures stats show activities from current date onwards
+    const weekStartDate = new Date(todayStart);
+    const weekEndDate = new Date(todayStart);
+    weekEndDate.setDate(todayStart.getDate() + 13); // 2 weeks = 14 days from today
 
     // Get closed weeks from programme
     const closedWeeks = programme.closedWeeks || [];
