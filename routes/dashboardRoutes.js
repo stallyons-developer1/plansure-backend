@@ -1320,14 +1320,13 @@ router.get("/weekly", protect, async (req, res) => {
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
 
-    // Helper function to check if activity overlaps with the current week
-    const activityOverlapsWeek = (activity) => {
+    // Helper function to check if activity STARTS within the date range
+    const activityStartsInWeek = (activity) => {
       if (!currentWeekStart || !currentWeekEnd) return true; // No week filter, include all
       const actStart = parseDate(activity.startDate);
-      const actEnd = parseDate(activity.finishDate);
-      if (!actStart || !actEnd) return false;
-      // Activity overlaps if it starts before/on week end AND ends on/after week start
-      return actStart <= currentWeekEnd && actEnd >= currentWeekStart;
+      if (!actStart) return false;
+      // Only include activities that START within the date range
+      return actStart >= currentWeekStart && actStart <= currentWeekEnd;
     };
 
     let greenCount = 0;
@@ -1340,8 +1339,8 @@ router.get("/weekly", protect, async (req, res) => {
       // Convert Mongoose document to plain object if needed
       const activityObj = activity.toObject ? activity.toObject() : activity;
 
-      // Filter activities by week dates
-      if (!activityOverlapsWeek(activityObj)) continue;
+      // Filter activities by week dates (only those that START within range)
+      if (!activityStartsInWeek(activityObj)) continue;
 
       const rag = calculateRAG(activityObj, today);
       if (rag !== "Grey") {
