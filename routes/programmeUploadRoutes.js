@@ -3173,6 +3173,32 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
     const closedWeeks = programme.closedWeeks || [];
     const closedWeekNumbers = closedWeeks.map((w) => w.weekNumber);
 
+    // Get the last closed cycle to calculate current cycle's start date
+    const CycleHistory = require("../models/CycleHistory");
+    const lastCycle = await CycleHistory.findOne({
+      programme: req.params.id,
+    }).sort({ weekNumber: -1 });
+
+    // Calculate the current 2-week cycle's end date
+    let currentCycleStartDate;
+    if (lastCycle && lastCycle.dateRange?.endDate) {
+      // Next cycle starts the day after the last cycle ended
+      currentCycleStartDate = new Date(lastCycle.dateRange.endDate);
+      currentCycleStartDate.setDate(currentCycleStartDate.getDate() + 1);
+    } else {
+      // First cycle - use programme creation date or today
+      currentCycleStartDate = new Date(programme.createdAt || today);
+    }
+    currentCycleStartDate.setHours(0, 0, 0, 0);
+
+    // Calculate the end of the current 2-week period (14 days from cycle start)
+    const currentTwoWeekEndDate = new Date(currentCycleStartDate);
+    currentTwoWeekEndDate.setDate(currentCycleStartDate.getDate() + 13); // Days 0-13 = 14 days
+    currentTwoWeekEndDate.setHours(23, 59, 59, 999);
+
+    // Check if today is still within the current 2-week period
+    const canCloseCurrentCycle = today > currentTwoWeekEndDate;
+
     // Build weeks array
     const weeks = [];
     for (let i = 1; i <= totalWeeks; i++) {
@@ -3230,11 +3256,11 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       // Can close if:
       // 1. Not already closed
       // 2. Previous weeks are closed
-      // 3. Today >= 2-week end date (the 2-week period must have completed)
+      // 3. Today > current 2-week cycle end date (the 2-week period must have completed)
       const previousWeeksClosed =
         closedWeekNumbers.filter((n) => n < i).length === i - 1;
-      const twoWeekPeriodEnded = today >= twoWeekEndDate;
-      const canClose = !isClosed && previousWeeksClosed && twoWeekPeriodEnded;
+      // Use the current cycle's 2-week end date (calculated from today or last cycle end)
+      const canClose = !isClosed && previousWeeksClosed && canCloseCurrentCycle;
 
       // Provide reason if cannot close
       let canCloseReason = null;
@@ -3243,7 +3269,7 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
           canCloseReason = "Already closed";
         } else if (!previousWeeksClosed) {
           canCloseReason = "Previous weeks must be closed first";
-        } else if (!twoWeekPeriodEnded) {
+        } else if (!canCloseCurrentCycle) {
           const formatDate = (d) => {
             const months = [
               "Jan",
@@ -3261,7 +3287,7 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
             ];
             return `${d.getDate()} ${months[d.getMonth()]}`;
           };
-          canCloseReason = `Week closes after ${formatDate(twoWeekEndDate)}`;
+          canCloseReason = `Week closes after ${formatDate(currentTwoWeekEndDate)}`;
         }
       }
 
@@ -3290,6 +3316,9 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
           : 0,
       isFullyClosed: closedWeeks.length >= totalWeeks,
       weeks,
+      currentCycleStartDate,
+      currentCycleEndDate: currentTwoWeekEndDate,
+      canCloseCurrentCycle,
     });
   } catch (error) {
     console.error(error);
