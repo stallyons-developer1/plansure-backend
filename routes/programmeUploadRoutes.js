@@ -1422,6 +1422,13 @@ router.post("/:id/close-cycle", protect, async (req, res) => {
     }).sort({ weekNumber: -1 });
     const newWeekNumber = lastCycle ? lastCycle.weekNumber + 1 : 1;
 
+    // Calculate Monday of current week (week starts on Monday)
+    const dayOfWeek = today.getDay(); // 0 = Sunday, 1 = Monday, etc.
+    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // Sunday = 6 days from Monday
+    const mondayOfCurrentWeek = new Date(today);
+    mondayOfCurrentWeek.setDate(today.getDate() - daysFromMonday);
+    mondayOfCurrentWeek.setHours(0, 0, 0, 0);
+
     // Determine the start date for the current 2-week cycle
     let cycleStartDate;
     if (lastCycle) {
@@ -1429,8 +1436,8 @@ router.post("/:id/close-cycle", protect, async (req, res) => {
       cycleStartDate = new Date(lastCycle.dateRange.endDate);
       cycleStartDate.setDate(cycleStartDate.getDate() + 1);
     } else {
-      // First cycle - use programme creation date
-      cycleStartDate = new Date(programme.createdAt || today);
+      // First cycle - use Monday of current week
+      cycleStartDate = new Date(mondayOfCurrentWeek);
     }
     cycleStartDate.setHours(0, 0, 0, 0);
 
@@ -1657,9 +1664,13 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     // Calculate current week number and week date range
     let currentWeekNumber = 1;
 
-    // Use TODAY as the start for 2-week window (consistent with Activities & Lookahead)
+    // Calculate Monday of current week (week starts on Monday)
     const todayStart = new Date(today);
     todayStart.setHours(0, 0, 0, 0);
+    const dayOfWeek = todayStart.getDay(); // 0 = Sunday, 1 = Monday, etc.
+    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // Sunday = 6 days from Monday
+    const weekStart = new Date(todayStart);
+    weekStart.setDate(todayStart.getDate() - daysFromMonday); // Go back to Monday
 
     if (earliestDate) {
       earliestDate.setHours(0, 0, 0, 0);
@@ -1671,11 +1682,11 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     // Use requested week or current week
     const targetWeekNumber = requestedWeekNumber || currentWeekNumber;
 
-    // Calculate 2-week date range starting from TODAY (not from programme start)
+    // Calculate 2-week date range starting from Monday of current week
     // This ensures stats show activities for the current 2-week lookahead window
-    const weekStartDate = new Date(todayStart);
-    const weekEndDate = new Date(todayStart);
-    weekEndDate.setDate(todayStart.getDate() + 13); // 2 weeks = 14 days (today + 13 days)
+    const weekStartDate = new Date(weekStart);
+    const weekEndDate = new Date(weekStart);
+    weekEndDate.setDate(weekStart.getDate() + 13); // 2 weeks = 14 days (Monday + 13 days = Sunday of week 2)
 
     // Get closed weeks from programme
     const closedWeeks = programme.closedWeeks || [];
@@ -3175,6 +3186,13 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       programme: req.params.id,
     }).sort({ weekNumber: -1 });
 
+    // Calculate Monday of current week (week starts on Monday)
+    const dayOfWeek = today.getDay(); // 0 = Sunday, 1 = Monday, etc.
+    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // Sunday = 6 days from Monday
+    const mondayOfCurrentWeek = new Date(today);
+    mondayOfCurrentWeek.setDate(today.getDate() - daysFromMonday);
+    mondayOfCurrentWeek.setHours(0, 0, 0, 0);
+
     // Calculate the current 2-week cycle's end date
     let currentCycleStartDate;
     if (lastCycle && lastCycle.dateRange?.endDate) {
@@ -3182,8 +3200,8 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       currentCycleStartDate = new Date(lastCycle.dateRange.endDate);
       currentCycleStartDate.setDate(currentCycleStartDate.getDate() + 1);
     } else {
-      // First cycle - use programme creation date or today
-      currentCycleStartDate = new Date(programme.createdAt || today);
+      // First cycle - use Monday of current week
+      currentCycleStartDate = new Date(mondayOfCurrentWeek);
     }
     currentCycleStartDate.setHours(0, 0, 0, 0);
 
