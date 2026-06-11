@@ -1283,12 +1283,11 @@ router.get("/weekly", protect, async (req, res) => {
 
       weekNumber = `Week ${weekNum}`;
 
-      // Calculate current week's start and end dates
-      currentWeekStart = new Date(earliestStartDate);
-      currentWeekStart.setDate(currentWeekStart.getDate() + (weekNum - 1) * 7);
-
-      currentWeekEnd = new Date(currentWeekStart);
-      currentWeekEnd.setDate(currentWeekStart.getDate() + 6);
+      // Calculate date range starting from TODAY (not Monday)
+      // Show 2-week window from current date onwards
+      currentWeekStart = new Date(today);
+      currentWeekEnd = new Date(today);
+      currentWeekEnd.setDate(today.getDate() + 13); // 2 weeks = 14 days from today
 
       const formatDate = (d) => {
         const day = d.getDate();
