@@ -139,11 +139,8 @@ const calculateRAG = (activity, today) => {
 
 const generateWeekZones = (startDate, numWeeks = 6) => {
   const zones = [];
+  // Start from today (not Monday of current week)
   const start = new Date(startDate);
-
-  const dayOfWeek = start.getDay();
-  const diff = start.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
-  start.setDate(diff);
   start.setHours(0, 0, 0, 0);
 
   for (let i = 0; i < numWeeks; i++) {
@@ -1927,16 +1924,22 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       (a) => a.activityStatus === "Complete"
     ).length;
 
-    // Blocked/Risk Activities - show At Risk or Blocked activities for these 2 weeks
-    // Exclude actions from closed weeks
+    // Blocked/Risk Activities - show At Risk or Blocked activities from today onwards
+    // Exclude activities with start dates before today and actions from closed weeks
     const blockedRiskActivities = allActivities
-      .filter(
-        (a) =>
+      .filter((a) => {
+        // Only include activities with start date >= today
+        const activityStartDate = parseActivityDate(a.startDate);
+        if (!activityStartDate || activityStartDate < startOfToday) {
+          return false;
+        }
+        return (
           a.activityStatus !== "Complete" &&
           (a.activityStatus === "At Risk" ||
             a.activityStatus === "Blocked" ||
-            a.isBlocked),
-      )
+            a.isBlocked)
+        );
+      })
       .slice(0, 20)
       .map((a) => {
         // Filter out actions from closed weeks first
