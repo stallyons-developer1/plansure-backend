@@ -1656,13 +1656,13 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
 
     // Calculate current week number and week date range
     let currentWeekNumber = 1;
-    let weekStartDate = earliestDate;
-    let weekEndDate = earliestDate ? new Date(earliestDate) : null;
+
+    // Use TODAY as the start for 2-week window (consistent with Activities & Lookahead)
+    const todayStart = new Date(today);
+    todayStart.setHours(0, 0, 0, 0);
 
     if (earliestDate) {
       earliestDate.setHours(0, 0, 0, 0);
-      const todayStart = new Date(today);
-      todayStart.setHours(0, 0, 0, 0);
       const msPerDay = 1000 * 60 * 60 * 24;
       const daysSinceStart = Math.floor((todayStart - earliestDate) / msPerDay);
       currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
@@ -1671,15 +1671,11 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     // Use requested week or current week
     const targetWeekNumber = requestedWeekNumber || currentWeekNumber;
 
-    // Calculate 2-week date range (Weeks X and X+1)
-    if (earliestDate) {
-      weekStartDate = new Date(earliestDate);
-      weekStartDate.setDate(
-        earliestDate.getDate() + (targetWeekNumber - 1) * 7,
-      );
-      weekEndDate = new Date(weekStartDate);
-      weekEndDate.setDate(weekStartDate.getDate() + 13); // 2 weeks = 14 days
-    }
+    // Calculate 2-week date range starting from TODAY (not from programme start)
+    // This ensures stats show activities for the current 2-week lookahead window
+    const weekStartDate = new Date(todayStart);
+    const weekEndDate = new Date(todayStart);
+    weekEndDate.setDate(todayStart.getDate() + 13); // 2 weeks = 14 days (today + 13 days)
 
     // Get closed weeks from programme
     const closedWeeks = programme.closedWeeks || [];
