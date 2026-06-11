@@ -1459,28 +1459,17 @@ router.get("/weekly", protect, async (req, res) => {
       dueDate: action.dueDate,
     }));
 
-    // Calculate activities by week for the chart (shows ALL weeks, not filtered)
+    // Calculate activities by week for the chart (6 weeks from TODAY)
     const activitiesByWeek = [];
-    if (earliestStartDate) {
-      // Find the latest finish date to determine total weeks
-      let latestFinishDate = earliestStartDate;
-      for (const activity of rawActivities) {
-        const actEnd = parseDate(activity.finishDate);
-        if (actEnd && actEnd > latestFinishDate) {
-          latestFinishDate = actEnd;
-        }
-      }
+    const todayForChart = new Date();
+    todayForChart.setHours(0, 0, 0, 0);
 
-      const msPerDay = 1000 * 60 * 60 * 24;
-      const totalDays = Math.floor((latestFinishDate - earliestStartDate) / msPerDay);
-      const totalWeeks = Math.max(1, Math.ceil((totalDays + 1) / 7));
-
-      // Calculate RAG counts for each week
-      for (let w = 1; w <= Math.min(totalWeeks, 8); w++) {
-        const weekStart = new Date(earliestStartDate);
-        weekStart.setDate(weekStart.getDate() + (w - 1) * 7);
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekStart.getDate() + 6);
+    // Show 6 weeks from today
+    for (let w = 1; w <= 6; w++) {
+      const weekStart = new Date(todayForChart);
+      weekStart.setDate(todayForChart.getDate() + (w - 1) * 7);
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekStart.getDate() + 6);
 
         let weekGreen = 0;
         let weekAmber = 0;
@@ -1488,25 +1477,30 @@ router.get("/weekly", protect, async (req, res) => {
 
         for (const activity of rawActivities) {
           const actStart = parseDate(activity.startDate);
-          const actEnd = parseDate(activity.finishDate);
-          if (!actStart || !actEnd) continue;
+          if (!actStart) continue;
 
-          // Check if activity overlaps with this week
-          if (actStart <= weekEnd && actEnd >= weekStart) {
-            const rag = calculateRAG(activity, today);
-            if (rag === "Green") weekGreen++;
-            else if (rag === "Amber") weekAmber++;
-            else if (rag === "Red") weekRed++;
+          // Check if activity STARTS within this week
+          if (actStart >= weekStart && actStart <= weekEnd) {
+            // Use activity status for RAG colors:
+            // Green = Ready, Amber = At Risk, Red = Blocked
+            const status = activity.activityStatus || "Ready";
+            if (status === "Blocked" || activity.isBlocked) {
+              weekRed++;
+            } else if (status === "At Risk") {
+              weekAmber++;
+            } else {
+              // Ready, Complete, or any other status = Green
+              weekGreen++;
+            }
           }
         }
 
-        activitiesByWeek.push({
-          week: `Week ${w}`,
-          green: weekGreen,
-          amber: weekAmber,
-          red: weekRed,
-        });
-      }
+      activitiesByWeek.push({
+        week: `Week ${w}`,
+        green: weekGreen,
+        amber: weekAmber,
+        red: weekRed,
+      });
     }
 
     return sendSuccess(res, {
