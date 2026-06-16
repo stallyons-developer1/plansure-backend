@@ -1398,32 +1398,59 @@ router.get("/weekly", protect, async (req, res) => {
       readyForClose = openRequiredActions.length === 0;
     }
 
+    // Build action map for quick lookup (activity ID -> actions)
+    const actionMap = {};
+    allActions.forEach((action) => {
+      const actId = action.linkedActivity?.activityId;
+      if (actId) {
+        if (!actionMap[actId]) {
+          actionMap[actId] = [];
+        }
+        const isOverdue = action.dueDate && new Date(action.dueDate) < startOfToday;
+        actionMap[actId].push({
+          _id: action._id,
+          actionId: `ACN-${String(action._id).slice(-4).toUpperCase()}`,
+          title: action.title,
+          status: action.status,
+          priority: action.priority || "Medium",
+          assignee: action.assignee?.name || "-",
+          assigneeId: action.assignee?._id?.toString() || null,
+          dueDate: action.dueDate,
+          isOverdue: isOverdue && action.status !== "Completed" && action.status !== "Cancelled",
+        });
+      }
+    });
+
+    // Blocked/Risk Activities - same structure as Weekly Control
     const blockedActivities = activities
       .filter(
-        (a) => a.isBlocked || a.ragStatus === "Red" || a.ragStatus === "Amber",
+        (a) => a.isBlocked || a.activityStatus === "Blocked" || a.activityStatus === "At Risk" || a.ragStatus === "Red" || a.ragStatus === "Amber",
       )
-      .slice(0, 10)
+      .slice(0, 20)
       .map((a) => {
-        // Use allActions (not week-filtered) to find linked actions regardless of due date
-        const linkedAction = allActions.find(
-          (act) => act.linkedActivity?.activityId === a.activityId,
+        const linkedActions = actionMap[a.activityId] || [];
+        // Get the first open/overdue action for this activity
+        const openAction = linkedActions.find(
+          (act) => act.status !== "Completed" && act.status !== "Cancelled",
         );
-        const isOverdue = linkedAction && new Date(linkedAction.dueDate) < startOfToday;
+        const overdueAction = linkedActions.find((act) => act.isOverdue);
+        const linkedAction = overdueAction || openAction || linkedActions[0];
+
         return {
-          id: a.activityId,
-          name: a.activityName,
-          rag: a.ragStatus,
-          owner: a.ownerName || "-",
-          blocker: a.blocker || (a.isBlocked ? "Blocked" : "Needs attention"),
+          activityId: a.activityId,
+          activityName: a.activityName,
+          ragStatus: a.ragStatus,
+          activityStatus: a.isBlocked ? "Blocked" : (a.activityStatus || "At Risk"),
+          isBlocked: a.isBlocked || a.activityStatus === "Blocked",
+          owner: linkedAction?.assignee || a.ownerName || "-",
+          blocker: a.isBlocked ? (a.blocker || "Activity blocked") : (linkedAction?.title || "Requires attention"),
           linkedAction: linkedAction
             ? {
-                actionId: `ACN-${String(linkedAction._id).slice(-4).toUpperCase()}`,
-                title: linkedAction.title || "-",
-                status: isOverdue ? "Overdue" : (linkedAction.status || "Open"),
-                assigneeName: linkedAction.assignee?.name || "-",
+                actionId: linkedAction.actionId,
+                title: linkedAction.title,
+                status: linkedAction.isOverdue ? "Overdue" : linkedAction.status,
               }
             : null,
-          status: isOverdue ? "Overdue" : "Open",
         };
       });
 
@@ -1432,32 +1459,89 @@ router.get("/weekly", protect, async (req, res) => {
       return (ragOrder[a.ragStatus] || 4) - (ragOrder[b.ragStatus] || 4);
     });
 
-    const weeklyPlanPreview = sortedActivities.slice(0, 10).map((a) => ({
-      activityId: a.activityId,
-      activityName: a.activityName,
-      weekZone:
-        a.ragStatus === "Green"
-          ? "Weeks 1-2"
-          : a.ragStatus === "Amber"
-            ? "Weeks 3-4"
-            : "Weeks 5-6",
-      startDate: a.startDate,
-      finishDate: a.finishDate,
-      duration: a.duration,
-      ragStatus: a.ragStatus,
-      owner: a.ownerName || "-",
-      activityStatus: a.activityStatus || "Ready",
-    }));
+    // Weekly Plan Preview - only show activities WITH actions (same as Weekly Control)
+    const weeklyPlanPreview = sortedActivities
+      .filter((a) => {
+        const linkedActions = actionMap[a.activityId] || [];
+        return linkedActions.length > 0;
+      })
+      .slice(0, 20)
+      .map((a) => {
+        const linkedActions = actionMap[a.activityId] || [];
+        // For Weekly Plan Preview, use activity status to determine RAG:
+        // - Blocked = Red, At Risk = Amber, Ready/other = Green
+        let displayRag = a.ragStatus;
+        if (displayRag === "Grey") {
+          if (a.activityStatus === "Blocked" || a.isBlocked) {
+            displayRag = "Red";
+          } else if (a.activityStatus === "At Risk") {
+            displayRag = "Amber";
+          } else {
+            displayRag = "Green";
+          }
+        }
+        return {
+          activityId: a.activityId,
+          activityName: a.activityName,
+          weekZone:
+            displayRag === "Green"
+              ? "Weeks 1-2"
+              : displayRag === "Amber"
+                ? "Weeks 3-4"
+                : "Weeks 5-6",
+          startDate: a.startDate,
+          finishDate: a.finishDate,
+          duration: a.duration,
+          ragStatus: displayRag,
+          owner: a.ownerName || "-",
+          activityStatus: a.activityStatus || "Ready",
+          actionsCount: linkedActions.length,
+          openActionsCount: linkedActions.filter(
+            (act) => act.status !== "Completed" && act.status !== "Cancelled",
+          ).length,
+          linkedActions: linkedActions.map((act) => ({
+            _id: act._id?.toString(),
+            actionId: act.actionId,
+            title: act.title,
+            status: act.isOverdue ? "Overdue" : act.status,
+            priority: act.priority,
+            assignee: act.assignee,
+            assigneeId: act.assigneeId,
+            dueDate: act.dueDate,
+            isOverdue: act.isOverdue,
+          })),
+        };
+      });
 
-    const plannerToDo = openActions.slice(0, 10).map((action) => ({
-      activityId: action.linkedActivity?.activityId || "-",
-      activityName: action.linkedActivity?.activityName || action.title,
-      ragStatus: "Amber",
-      owner: action.assignee?.name || "-",
-      todoItem: action.title,
-      priority: action.priority || "Medium",
-      dueDate: action.dueDate,
-    }));
+    // Planner To-Do - open actions with proper status (same structure as Weekly Control)
+    const formatActionDate = (d) => {
+      if (!d) return "-";
+      const date = new Date(d);
+      const months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+      ];
+      return `${date.getDate()} ${months[date.getMonth()]}`;
+    };
+
+    const plannerToDo = openActions.slice(0, 20).map((action) => {
+      const isOverdue = action.dueDate && new Date(action.dueDate) < startOfToday;
+      // Find RAG status from activity
+      const linkedActivity = activities.find(
+        (a) => a.activityId === action.linkedActivity?.activityId,
+      );
+      return {
+        activityId: action.linkedActivity?.activityId || "-",
+        activityName: action.linkedActivity?.activityName || action.title,
+        ragStatus: linkedActivity?.ragStatus || "Amber",
+        owner: action.assignee?.name || "-",
+        todoItem: action.title,
+        actionId: `ACN-${String(action._id).slice(-4).toUpperCase()}`,
+        actionStatus: isOverdue ? "Overdue" : action.status,
+        priority: action.priority || "Medium",
+        dueDate: formatActionDate(action.dueDate),
+      };
+    });
 
     // Calculate activities by week for the chart (6 weeks from TODAY)
     const activitiesByWeek = [];

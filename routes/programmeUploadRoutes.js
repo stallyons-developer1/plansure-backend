@@ -1790,6 +1790,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         status: action.status,
         priority: action.priority || "Medium",
         assignee: action.assignee?.name || "-",
+        assigneeId: action.assignee?._id?.toString() || null,
         dueDate: action.dueDate,
         createdAt: action.createdAt, // Include createdAt for closed week filtering
         isOverdue:
@@ -2157,6 +2158,21 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         const activeActions = a.linkedActions.filter(
           (act) => !act.isFromClosedWeek,
         );
+        // For Weekly Plan Preview, use activity status to determine RAG:
+        // - Blocked = Red
+        // - At Risk = Amber
+        // - Ready/Complete/Not Started = Green (scheduled activities are "ready")
+        let displayRag = a.ragStatus;
+        if (displayRag === "Grey") {
+          // Activities that haven't started yet but are scheduled should show as Green (ready)
+          if (a.activityStatus === "Blocked" || a.isBlocked) {
+            displayRag = "Red";
+          } else if (a.activityStatus === "At Risk") {
+            displayRag = "Amber";
+          } else {
+            displayRag = "Green"; // Ready, Complete, or scheduled to start
+          }
+        }
         return {
           activityId: a.activityId,
           activityName: a.activityName,
@@ -2164,13 +2180,24 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
           startDate: a.startDate,
           finishDate: a.finishDate,
           duration: a.duration,
-          ragStatus: a.ragStatus,
+          ragStatus: displayRag,
           owner: a.ownerName || "",
           activityStatus: a.activityStatus || "Ready",
           actionsCount: activeActions.length,
           openActionsCount: activeActions.filter(
             (act) => act.status !== "Completed" && act.status !== "Cancelled",
           ).length,
+          linkedActions: activeActions.map((act) => ({
+            _id: act._id?.toString(),
+            actionId: act.actionId,
+            title: act.title,
+            status: act.isOverdue ? "Overdue" : act.status,
+            priority: act.priority,
+            assignee: act.assignee,
+            assigneeId: act.assigneeId,
+            dueDate: act.dueDate,
+            isOverdue: act.isOverdue,
+          })),
         };
       });
 
