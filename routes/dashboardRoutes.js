@@ -239,7 +239,7 @@ router.get("/stats", protect, async (req, res) => {
       const dayOfWeek = today.getDay();
       const currentDay = dayOfWeek === 0 ? 7 : dayOfWeek; // Sunday becomes 7
 
-      const cycleDuration = 7;
+      const cycleDuration = 14; // 2 weeks
       const daysRemaining = cycleDuration - currentDay;
 
       cycleDayInfo = {
@@ -1281,7 +1281,7 @@ router.get("/weekly", protect, async (req, res) => {
         ? parseInt(requestedWeekNumber)
         : Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
 
-      weekNumber = `Week ${weekNum}`;
+      weekNumber = `Week ${weekNum}-${weekNum + 1}`;
 
       // Calculate date range starting from TODAY (not Monday)
       // Show 2-week window from current date onwards

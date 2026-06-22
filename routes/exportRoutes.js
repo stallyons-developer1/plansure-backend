@@ -85,8 +85,8 @@ router.get("/gating-status", protect, async (req, res) => {
     const activeProgramme = programmes[0];
     const cycleStatus = activeProgramme.cycleStatus || "Draft";
 
-    // Exports are ungated if cycle is in Close-Out Eligible, Approved, or Closed
-    const ungatedStatuses = ["Close-Out Eligible", "Approved", "Closed"];
+    // Exports are ungated if cycle is in Execution, Close-Out Eligible, Approved, or Closed
+    const ungatedStatuses = ["Execution", "Close-Out Eligible", "Approved", "Closed"];
     const isGated = !ungatedStatuses.includes(cycleStatus);
 
     // Calculate current week
