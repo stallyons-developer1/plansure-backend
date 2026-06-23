@@ -2040,6 +2040,8 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
                   : linkedAction.status,
               }
             : null,
+          startDate: a.startDate,
+          finishDate: a.finishDate,
         };
       });
 
