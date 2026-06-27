@@ -249,6 +249,26 @@ const calculateActivityStatus = (
     }
   }
 
+  // Action-driven statuses (additive): only applies to activities that would
+  // otherwise be "Ready" and have open (non-completed) linked actions. This does
+  // NOT override the Complete / Blocked / At Risk conditions checked above.
+  if (linkedActions.length > 0) {
+    const openActions = linkedActions.filter(
+      (action) =>
+        action.status !== "Completed" &&
+        action.status !== "Complete" &&
+        action.status !== "Cancelled",
+    );
+    if (openActions.length > 0) {
+      const startOfToday = today ? new Date(today) : new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      const anyOverdue = openActions.some(
+        (action) => action.dueDate && new Date(action.dueDate) < startOfToday,
+      );
+      return anyOverdue ? "Action Overdue" : "Action Open";
+    }
+  }
+
   return "Ready";
 };
 

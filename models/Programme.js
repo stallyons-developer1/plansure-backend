@@ -124,7 +124,15 @@ const programmeSchema = new mongoose.Schema(
           },
           activityStatus: {
             type: String,
-            enum: ["Ready", "Blocked", "At Risk", "Complete", "Not Ready"],
+            enum: [
+              "Ready",
+              "Blocked",
+              "At Risk",
+              "Complete",
+              "Not Ready",
+              "Action Open",
+              "Action Overdue",
+            ],
             default: "Ready",
           },
           ragStatus: {
