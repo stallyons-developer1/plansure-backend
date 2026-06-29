@@ -482,8 +482,13 @@ router.get("/governance", protect, async (req, res) => {
       const project = await Project.findById(projectId);
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
-    } else if (req.admin.role === "planner") {
-      // Planners see projects they have access to (assigned, team member, or via actions)
+    } else if (req.admin.role === "admin") {
+      // Admins see all projects
+      projects = await Project.find({ status: { $ne: "Cancelled" } });
+      projectIds = projects.map((p) => p._id);
+    } else {
+      // Planners & Users see only projects they have access to
+      // (assigned, team member, or via actions)
       const accessibleProjectIds = await getPlannerAccessibleProjects(req.admin);
       if (accessibleProjectIds.length === 0) {
         return sendSuccess(res, {
@@ -497,10 +502,6 @@ router.get("/governance", protect, async (req, res) => {
         _id: { $in: accessibleProjectIds },
         status: { $ne: "Cancelled" },
       });
-      projectIds = projects.map((p) => p._id);
-    } else {
-      // Admins see all projects
-      projects = await Project.find({ status: { $ne: "Cancelled" } });
       projectIds = projects.map((p) => p._id);
     }
 
