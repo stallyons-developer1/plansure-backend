@@ -53,7 +53,21 @@ const checkProjectEnded = (activities) => {
 };
 
 // Helper function to update linked activity status when action is completed
-const updateLinkedActivityStatus = async (programmeId, activityId, isCompleted) => {
+// Cycle end = lookahead start (fallback: programme creation) + 6 weeks.
+const getCycleEndDate = (programme) => {
+  if (!programme) return null;
+  const base = programme.lookaheadStartDate || programme.createdAt;
+  if (!base) return null;
+  const end = new Date(base);
+  end.setDate(end.getDate() + 42); // 6 weeks
+  end.setHours(23, 59, 59, 999);
+  return end;
+};
+
+// Re-derive an activity's assignment/action-driven status after an action
+// changes. All actions complete -> Blue/Completed; otherwise back to
+// At Risk (Amber), or Blocked (Red) if past the 6-week cycle end.
+const updateLinkedActivityStatus = async (programmeId, activityId) => {
   try {
     const programme = await Programme.findById(programmeId);
     if (!programme || !programme.extractedData?.activities) return;
@@ -64,47 +78,46 @@ const updateLinkedActivityStatus = async (programmeId, activityId, isCompleted) 
 
     if (activityIndex === -1) return;
 
-    // Check if ALL linked actions for this activity are completed
+    const activity = programme.extractedData.activities[activityIndex];
+
+    // An activity with linked actions is, by definition, ActionAssigned.
+    if (activity.assignmentState !== "ActionAssigned") {
+      activity.assignmentState = "ActionAssigned";
+    }
+
     const allLinkedActions = await Action.find({
       programme: programmeId,
       "linkedActivity.activityId": activityId,
     });
 
-    const allActionsCompleted = allLinkedActions.length > 0 && allLinkedActions.every(
-      action => action.status === "Completed" || action.status === "Complete" || action.status === "Cancelled"
+    const openActions = allLinkedActions.filter(
+      (action) =>
+        action.status !== "Completed" &&
+        action.status !== "Complete" &&
+        action.status !== "Cancelled"
     );
 
-    if (allActionsCompleted) {
-      // Mark activity as Complete only when ALL linked actions are completed
-      programme.extractedData.activities[activityIndex].activityStatus = "Complete";
-      programme.extractedData.activities[activityIndex].isBlocked = false;
-      programme.extractedData.activities[activityIndex].blocker = "";
-    } else if (!isCompleted && programme.extractedData.activities[activityIndex].activityStatus === "Complete") {
-      // Revert activity status if it was Complete but now an action is uncompleted
-      // Check if activity has overdue finish date
-      const activity = programme.extractedData.activities[activityIndex];
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      let newStatus = "Ready";
-      if (activity.finishDate) {
-        const cleanDate = activity.finishDate.replace(/\s*[AB\*]$/, "").trim();
-        const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
-        const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
-        if (match) {
-          const day = parseInt(match[1]);
-          const month = months[match[2]];
-          let year = parseInt(match[3]);
-          year = year < 50 ? 2000 + year : 1900 + year;
-          const finishDate = new Date(year, month, day);
-          if (finishDate < today) {
-            newStatus = "At Risk";
-          }
-        }
+    if (allLinkedActions.length > 0 && openActions.length === 0) {
+      // All actions complete -> Blue / Completed
+      activity.ragStatus = "Blue";
+      activity.activityStatus = "Completed";
+      activity.isBlocked = false;
+      activity.blocker = "";
+    } else {
+      const cycleEnd = getCycleEndDate(programme);
+      const now = new Date();
+      if (cycleEnd && now > cycleEnd) {
+        activity.ragStatus = "Red";
+        activity.activityStatus = "Blocked";
+        activity.isBlocked = true;
+      } else {
+        activity.ragStatus = "Amber";
+        activity.activityStatus = "At Risk";
+        activity.isBlocked = false;
       }
-      programme.extractedData.activities[activityIndex].activityStatus = newStatus;
     }
 
+    programme.markModified("extractedData.activities");
     await programme.save();
   } catch (error) {
     console.error("Error updating linked activity status:", error);
@@ -192,6 +205,20 @@ router.post("/", protect, async (req, res) => {
       dueDate,
       createdBy: req.admin._id,
     });
+
+    // Assignment-driven governance transition: assigning an action moves the
+    // linked activity to ActionAssigned -> At Risk (Amber).
+    const linkedIdx = programme.extractedData?.activities?.findIndex(
+      (a) => a.activityId === linkedActivity.activityId,
+    );
+    if (linkedIdx !== undefined && linkedIdx !== -1) {
+      const linkedActivityDoc = programme.extractedData.activities[linkedIdx];
+      linkedActivityDoc.assignmentState = "ActionAssigned";
+      linkedActivityDoc.ragStatus = "Amber";
+      linkedActivityDoc.activityStatus = "At Risk";
+      programme.markModified("extractedData.activities");
+      await programme.save();
+    }
 
     const populatedAction = await Action.findById(action._id)
       .populate("assignee", "name email")

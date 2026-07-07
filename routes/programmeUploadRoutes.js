@@ -113,39 +113,81 @@ const checkProjectEnded = (activities) => {
   };
 };
 
-const calculateRAG = (activity, today) => {
-  const startDate = parseDate(activity.startDate);
-  const finishDate = parseDate(activity.finishDate);
+// ---------------------------------------------------------------------------
+// Assignment / action-driven governance status engine (NOT date-driven).
+//
+//   Unassigned      -> Grey  (activity untouched after upload)
+//   NoAction        -> Green ("No Action" chosen; Ready)
+//   ActionAssigned  -> Amber (At Risk) while any linked action is open
+//                    -> Blue  (Completed) once all linked actions are done
+//                    -> Red   (Blocked) if an action is still open past the
+//                             6-week cycle end date
+// ---------------------------------------------------------------------------
 
-  // Check if activity is completed (status field OR "A" suffix in dates)
-  const isCompleted =
-    activity.status === "Completed" ||
-    (activity.startDate && activity.startDate.includes(" A")) ||
-    (activity.finishDate && activity.finishDate.includes(" A"));
+const CYCLE_LENGTH_DAYS = 42; // 6 weeks
 
-  if (isCompleted) {
-    return "Green";
+// Cycle end = lookahead start (fallback: programme creation) + 6 weeks.
+const getCycleEndDate = (programme) => {
+  if (!programme) return null;
+  const base = programme.lookaheadStartDate || programme.createdAt;
+  if (!base) return null;
+  const end = new Date(base);
+  end.setDate(end.getDate() + CYCLE_LENGTH_DAYS);
+  end.setHours(23, 59, 59, 999);
+  return end;
+};
+
+const isActionOpen = (action) =>
+  action &&
+  action.status !== "Completed" &&
+  action.status !== "Complete" &&
+  action.status !== "Cancelled";
+
+// Single source of truth for an activity's governance status.
+// linkedActions may be undefined when a caller has no action data — in that
+// case we trust the persisted ragStatus for already-resolved states.
+const computeGovernanceStatus = (
+  activity,
+  linkedActions,
+  cycleEndDate,
+  now,
+) => {
+  const state = activity.assignmentState || "Unassigned";
+
+  if (state === "Unassigned") {
+    return { ragStatus: "Grey", activityStatus: "Unassigned" };
+  }
+  if (state === "NoAction") {
+    return { ragStatus: "Green", activityStatus: "Ready" };
   }
 
-  if (!startDate) {
-    return "Grey";
+  // state === "ActionAssigned"
+  const hasActionData = Array.isArray(linkedActions);
+  if (hasActionData) {
+    const openActions = linkedActions.filter(isActionOpen);
+    if (linkedActions.length > 0 && openActions.length === 0) {
+      return { ragStatus: "Blue", activityStatus: "Completed" };
+    }
+  } else {
+    // No action data supplied: respect a persisted resolved status.
+    if (activity.ragStatus === "Blue") {
+      return { ragStatus: "Blue", activityStatus: "Completed" };
+    }
   }
 
-  const msPerDay = 1000 * 60 * 60 * 24;
-  const daysUntilStart = Math.ceil((startDate - today) / msPerDay);
-
-  // Only show activities that have started (startDate <= today)
-  // Activities that haven't started yet are excluded (Grey)
-  if (daysUntilStart > 0) {
-    return "Grey"; // Not started yet - exclude from RAG distribution
+  const reference = now ? new Date(now) : new Date();
+  if (cycleEndDate && reference > new Date(cycleEndDate)) {
+    return { ragStatus: "Red", activityStatus: "Blocked" };
   }
 
-  // Activity has started - check if it's overdue or in progress
-  if (finishDate && finishDate < today) {
-    return "Red"; // Overdue - should have finished by now
-  }
+  return { ragStatus: "Amber", activityStatus: "At Risk" };
+};
 
-  return "Green"; // In progress - started but not yet due
+// Backwards-compatible wrappers so existing call sites keep working.
+// Optional trailing args (linkedActions, cycleEndDate) enable the full engine.
+const calculateRAG = (activity, today, linkedActions, cycleEndDate) => {
+  return computeGovernanceStatus(activity, linkedActions, cycleEndDate, today)
+    .ragStatus;
 };
 
 const generateWeekZones = (startDate, numWeeks = 6) => {
@@ -207,76 +249,52 @@ const calculateActivityStatus = (
   activity,
   ragStatus,
   today,
-  linkedActions = [],
+  linkedActions,
+  cycleEndDate,
 ) => {
-  // Check if activity is completed (has " A" suffix or status is Completed)
-  if (
-    activity.status === "Completed" ||
-    activity.status === "Complete" ||
-    (activity.startDate && activity.startDate.includes(" A")) ||
-    (activity.finishDate && activity.finishDate.includes(" A"))
-  ) {
-    return "Complete";
-  }
+  return computeGovernanceStatus(activity, linkedActions, cycleEndDate, today)
+    .activityStatus;
+};
 
-  // Check if all linked actions are completed - if so, mark activity as Complete
-  if (linkedActions.length > 0) {
-    const allActionsCompleted = linkedActions.every(
-      (action) =>
-        action.status === "Completed" ||
-        action.status === "Complete" ||
-        action.status === "Cancelled",
-    );
-    if (allActionsCompleted) {
-      return "Complete";
-    }
-  }
+// Build the Program Upload Summary counts from the assignment/action-driven
+// statuses already resolved onto each activity.
+const buildActivitySummary = (activities, lookaheadActivities = null) => {
+  const inLookahead = Array.isArray(lookaheadActivities)
+    ? lookaheadActivities
+    : activities;
+  const countRag = (rag) =>
+    activities.filter((a) => a.ragStatus === rag).length;
+  const isCompleted = (a) =>
+    a.activityStatus === "Completed" ||
+    a.activityStatus === "Complete" ||
+    a.ragStatus === "Blue";
 
-  if (activity.isBlocked) {
-    return "Blocked";
-  }
-
-  const finishDate = parseDate(activity.finishDate);
-  const startDate = parseDate(activity.startDate);
-
-  if (startDate && finishDate && today) {
-    if (
-      startDate < today &&
-      finishDate < today &&
-      activity.status !== "Completed"
-    ) {
-      return "At Risk";
-    }
-  }
-
-  // Action-driven statuses (additive): only applies to activities that would
-  // otherwise be "Ready" and have open (non-completed) linked actions. This does
-  // NOT override the Complete / Blocked / At Risk conditions checked above.
-  if (linkedActions.length > 0) {
-    const openActions = linkedActions.filter(
-      (action) =>
-        action.status !== "Completed" &&
-        action.status !== "Complete" &&
-        action.status !== "Cancelled",
-    );
-    if (openActions.length > 0) {
-      const startOfToday = today ? new Date(today) : new Date();
-      startOfToday.setHours(0, 0, 0, 0);
-      const anyOverdue = openActions.some(
-        (action) => action.dueDate && new Date(action.dueDate) < startOfToday,
-      );
-      return anyOverdue ? "Action Overdue" : "Action Open";
-    }
-  }
-
-  return "Ready";
+  return {
+    total: activities.length,
+    inLookahead: inLookahead.length,
+    // RAG buckets (Grey = unassigned, Green = ready, Amber = at risk,
+    // Blue = completed, Red = blocked)
+    grey: countRag("Grey"),
+    green: countRag("Green"),
+    amber: countRag("Amber"),
+    blue: countRag("Blue"),
+    red: countRag("Red"),
+    // Status buckets used by the Program Upload Summary
+    unassigned: activities.filter(
+      (a) => (a.assignmentState || "Unassigned") === "Unassigned",
+    ).length,
+    ready: activities.filter((a) => a.activityStatus === "Ready").length,
+    atRisk: activities.filter((a) => a.activityStatus === "At Risk").length,
+    completed: activities.filter(isCompleted).length,
+    blocked: activities.filter((a) => a.activityStatus === "Blocked").length,
+  };
 };
 
 // Serve PDF from MongoDB (persistent storage)
 router.get("/:id/pdf", async (req, res) => {
   try {
     const programme = await Programme.findById(req.params.id).select(
-      "fileData fileMimeType originalFileName"
+      "fileData fileMimeType originalFileName",
     );
 
     if (!programme) {
@@ -284,14 +302,16 @@ router.get("/:id/pdf", async (req, res) => {
     }
 
     if (!programme.fileData) {
-      return res.status(404).json({ message: "PDF file not found in database" });
+      return res
+        .status(404)
+        .json({ message: "PDF file not found in database" });
     }
 
     // Set headers for PDF display
     res.setHeader("Content-Type", programme.fileMimeType || "application/pdf");
     res.setHeader(
       "Content-Disposition",
-      `inline; filename="${programme.originalFileName}"`
+      `inline; filename="${programme.originalFileName}"`,
     );
     res.setHeader("Content-Length", programme.fileData.length);
 
@@ -540,14 +560,12 @@ router.post(
               activity.status = "Planned";
             }
 
-            const today = new Date();
-            activity.ragStatus = calculateRAG(activity, today);
-
-            activity.activityStatus = calculateActivityStatus(
-              activity,
-              activity.ragStatus,
-              today,
-            );
+            // All activities start unassigned (Grey). Status is driven by
+            // assignment/action state from here on, never by dates.
+            activity.assignmentState = "Unassigned";
+            activity.ragStatus = "Grey";
+            activity.activityStatus = "Unassigned";
+            activity.isBlocked = false;
 
             if (activity.activityName) {
               activities.push(activity);
@@ -569,28 +587,7 @@ router.post(
           !["Beyond Lookahead", "Before Lookahead"].includes(a.weekZone),
       );
 
-      const summary = {
-        total: activities.length,
-        inLookahead: lookaheadActivities.length,
-        completed: activities.filter((a) => a.status === "Completed").length,
-        inProgress: activities.filter((a) => a.status === "In Progress").length,
-        planned: activities.filter(
-          (a) => a.status === "Planned" || a.status === "Forecast",
-        ).length,
-        red: activities.filter((a) => a.ragStatus === "Red").length,
-        amber: activities.filter((a) => a.ragStatus === "Amber").length,
-        // Exclude blocked activities from green count
-        green: activities.filter(
-          (a) =>
-            a.ragStatus === "Green" &&
-            !a.isBlocked &&
-            a.activityStatus !== "Blocked",
-        ).length,
-        blocked: activities.filter((a) => a.activityStatus === "Blocked")
-          .length,
-        atRisk: activities.filter((a) => a.activityStatus === "At Risk").length,
-        ready: activities.filter((a) => a.activityStatus === "Ready").length,
-      };
+      const summary = buildActivitySummary(activities, lookaheadActivities);
 
       // TODO: Uncomment when ready to use date validation
       // Validate activity dates against project dates
@@ -640,7 +637,7 @@ router.post(
         project: project || null,
         originalFileName: req.file.originalname,
         filePath: req.file.path,
-        fileData: fileData,  // Store PDF binary in MongoDB
+        fileData: fileData, // Store PDF binary in MongoDB
         fileMimeType: req.file.mimetype || "application/pdf",
         cycleStatus: "Uploaded",
         weekNumber,
@@ -1085,17 +1082,24 @@ router.get("/:id/lookahead", protect, async (req, res) => {
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
     const weekZones = generateWeekZones(today, programme.lookaheadWeeks || 6);
+    const cycleEndDate = getCycleEndDate(programme);
 
     const activities = programme.extractedData.activities.map((activity) => {
       const activityObj = activity.toObject ? activity.toObject() : activity;
-      const ragStatus = calculateRAG(activityObj, today);
       // Pass linked actions to calculate if all actions are completed
       const linkedActions = actionsByActivity[activityObj.activityId] || [];
+      const ragStatus = calculateRAG(
+        activityObj,
+        today,
+        linkedActions,
+        cycleEndDate,
+      );
       const activityStatus = calculateActivityStatus(
         activityObj,
         ragStatus,
         today,
         linkedActions,
+        cycleEndDate,
       );
       // Debug log for activities with linked actions
       if (linkedActions.length > 0) {
@@ -1148,30 +1152,7 @@ router.get("/:id/lookahead", protect, async (req, res) => {
       ).length,
     };
 
-    const summary = {
-      total: activities.length,
-      inLookahead: lookaheadActivities.length,
-      completed: activities.filter((a) => a.status === "Completed").length,
-      inProgress: activities.filter((a) => a.status === "In Progress").length,
-      planned: activities.filter(
-        (a) => a.status === "Planned" || a.status === "Forecast",
-      ).length,
-      red: lookaheadActivities.filter((a) => a.ragStatus === "Red").length,
-      amber: lookaheadActivities.filter((a) => a.ragStatus === "Amber").length,
-      // Exclude blocked activities from green count
-      green: lookaheadActivities.filter(
-        (a) =>
-          a.ragStatus === "Green" &&
-          !a.isBlocked &&
-          a.activityStatus !== "Blocked",
-      ).length,
-      blocked: lookaheadActivities.filter((a) => a.activityStatus === "Blocked")
-        .length,
-      atRisk: lookaheadActivities.filter((a) => a.activityStatus === "At Risk")
-        .length,
-      ready: lookaheadActivities.filter((a) => a.activityStatus === "Ready")
-        .length,
-    };
+    const summary = buildActivitySummary(activities, lookaheadActivities);
 
     // readyToClose logic based on cycle status:
     // - Draft / Uploaded / Meeting Open: Always No (not ready to close)
@@ -1179,9 +1160,16 @@ router.get("/:id/lookahead", protect, async (req, res) => {
     let readyToClose = false;
     const openActions = actionStats.open + actionStats.inProgress;
 
-    if (programme.cycleStatus === "Draft" || programme.cycleStatus === "Uploaded" || programme.cycleStatus === "Meeting Open") {
+    if (
+      programme.cycleStatus === "Draft" ||
+      programme.cycleStatus === "Uploaded" ||
+      programme.cycleStatus === "Meeting Open"
+    ) {
       readyToClose = false;
-    } else if (programme.cycleStatus === "Execution" || programme.cycleStatus === "Close-Out Eligible") {
+    } else if (
+      programme.cycleStatus === "Execution" ||
+      programme.cycleStatus === "Close-Out Eligible"
+    ) {
       readyToClose = openActions === 0;
     }
 
@@ -1232,8 +1220,15 @@ router.get("/:id/lookahead", protect, async (req, res) => {
 
 router.patch("/:id/activity/:activityId", protect, async (req, res) => {
   try {
-    const { owner, ownerName, activityStatus, notes, isBlocked, blocker } =
-      req.body;
+    const {
+      owner,
+      ownerName,
+      activityStatus,
+      notes,
+      isBlocked,
+      blocker,
+      assignmentState,
+    } = req.body;
 
     const programme = await Programme.findById(req.params.id);
     if (!programme) {
@@ -1264,8 +1259,30 @@ router.patch("/:id/activity/:activityId", protect, async (req, res) => {
     if (isBlocked !== undefined) activity.isBlocked = isBlocked;
     if (blocker !== undefined) activity.blocker = blocker;
 
-    // Set activityStatus - if explicitly provided, use that; otherwise recalculate
-    if (activityStatus !== undefined) {
+    // Assignment-driven governance transition.
+    // "No Action" -> Green/Ready; "Action Required" is handled when the action
+    // is created (see actionRoutes). Re-derive RAG from the new state.
+    if (assignmentState !== undefined) {
+      const validStates = ["Unassigned", "NoAction", "ActionAssigned"];
+      if (!validStates.includes(assignmentState)) {
+        return sendError(res, "Invalid assignmentState", 400);
+      }
+      activity.assignmentState = assignmentState;
+      const Action = require("../models/Action");
+      const linkedActions = await Action.find({
+        programme: req.params.id,
+        "linkedActivity.activityId": req.params.activityId,
+      });
+      const derived = computeGovernanceStatus(
+        activity,
+        linkedActions,
+        getCycleEndDate(programme),
+        new Date(),
+      );
+      activity.ragStatus = derived.ragStatus;
+      activity.activityStatus = derived.activityStatus;
+    } else if (activityStatus !== undefined) {
+      // Explicit status override still supported.
       activity.activityStatus = activityStatus;
     } else if (isBlocked !== undefined) {
       const today = new Date();
@@ -1367,13 +1384,12 @@ router.get("/:id/overview", protect, async (req, res) => {
     // Green = Ready activities, Amber = At Risk activities, Red = Blocked activities
     const ragDistribution = {
       green: lookaheadActivities.filter(
-        (a) => a.activityStatus === "Ready" && !a.isBlocked
+        (a) => a.activityStatus === "Ready" && !a.isBlocked,
       ).length,
-      amber: lookaheadActivities.filter(
-        (a) => a.activityStatus === "At Risk"
-      ).length,
+      amber: lookaheadActivities.filter((a) => a.activityStatus === "At Risk")
+        .length,
       red: lookaheadActivities.filter(
-        (a) => a.activityStatus === "Blocked" || a.isBlocked
+        (a) => a.activityStatus === "Blocked" || a.isBlocked,
       ).length,
     };
 
@@ -1494,7 +1510,7 @@ router.post("/:id/close-cycle", protect, async (req, res) => {
       return sendError(
         res,
         `Cannot close cycle yet. The current 2-week cycle runs from ${formatDateShort(cycleStartDate)} to ${formatDateShort(twoWeekEndDate)}. Today (${formatDateShort(todayStart)}) is still within this period.`,
-        400
+        400,
       );
     }
 
@@ -1733,18 +1749,29 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     if (referenceDate) {
       referenceDate.setHours(0, 0, 0, 0);
       const msPerDay = 1000 * 60 * 60 * 24;
-      const daysSinceStart = Math.floor((todayStart - referenceDate) / msPerDay);
+      const daysSinceStart = Math.floor(
+        (todayStart - referenceDate) / msPerDay,
+      );
       currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
     }
 
     // Use requested week or current week
     const targetWeekNumber = requestedWeekNumber || currentWeekNumber;
 
-    // Calculate 2-week date range starting from today (not Monday)
-    // This ensures stats show activities from current date onwards
-    const weekStartDate = new Date(todayStart);
-    const weekEndDate = new Date(todayStart);
-    weekEndDate.setDate(todayStart.getDate() + 13); // 2 weeks = 14 days from today
+    // Anchor the 2-week window to the programme's FIXED week schedule
+    // (referenceDate = upload date), not to "today". This way each pair shows
+    // its own date range — Weeks 1-2, Weeks 3-4, Weeks 5-6 — instead of every
+    // pair appearing as "today .. today+13".
+    const scheduleAnchor = referenceDate
+      ? new Date(referenceDate)
+      : new Date(todayStart);
+    scheduleAnchor.setHours(0, 0, 0, 0);
+    const pairFirstWeek =
+      targetWeekNumber % 2 === 1 ? targetWeekNumber : targetWeekNumber - 1;
+    const weekStartDate = new Date(scheduleAnchor);
+    weekStartDate.setDate(scheduleAnchor.getDate() + (pairFirstWeek - 1) * 7);
+    const weekEndDate = new Date(weekStartDate);
+    weekEndDate.setDate(weekStartDate.getDate() + 13); // 2-week window (14 days)
 
     // Get closed weeks from programme
     const closedWeeks = programme.closedWeeks || [];
@@ -1830,17 +1857,28 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     // Use today's date for RAG calculation to show current status (consistent with Activities & Lookahead)
     const ragReferenceDate = today;
 
+    const cycleEndDate = getCycleEndDate(programme);
     const activities = programme.extractedData.activities.map((activity) => {
       const activityObj = activity.toObject ? activity.toObject() : activity;
-      const ragStatus = calculateRAG(activityObj, ragReferenceDate);
       const linkedActions = actionMap[activityObj.activityId] || [];
-      // Calculate activityStatus with linkedActions - if all actions completed, mark as Complete
+      // Compute RAG/status from assignment + action state (and cycle end for
+      // the auto-Blocked transition), consistent with Activities & Lookahead.
+      const ragStatus = calculateRAG(
+        activityObj,
+        ragReferenceDate,
+        linkedActions,
+        cycleEndDate,
+      );
       const activityStatus = calculateActivityStatus(
         activityObj,
         ragStatus,
         ragReferenceDate,
         linkedActions,
+        cycleEndDate,
       );
+      // Derive isBlocked from the computed status so the Unblock button never
+      // disagrees with the displayed RAG (the persisted flag can go stale).
+      const isBlocked = activityStatus === "Blocked";
       // Debug log for activities that were or might be blocked
       if (
         activityObj.isBlocked === true ||
@@ -1855,6 +1893,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         ...activityObj,
         ragStatus,
         activityStatus,
+        isBlocked,
         weekZone: getWeekZone(activityObj.startDate, weekZones),
         linkedActions,
       };
@@ -1870,7 +1909,8 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       }
 
       // Only include activities that START within the 2-week window
-      const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
+      const startsThisWeek =
+        actStart >= weekStartDate && actStart <= weekEndDate;
       return startsThisWeek;
     };
 
@@ -1881,16 +1921,24 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
 
     // Calculate action stats from ALL actions in database (for Actions by Status chart)
     // This shows ALL actions for the programme, regardless of week
+    const wasOverridden = (a) =>
+      isActionFromClosedWeek(a.createdAt, a.status, a.title);
     const actionsByStatus = {
-      open: actions.filter((a) => a.status === "Open").length,
-      inProgress: actions.filter((a) => a.status === "In Progress").length,
+      open: actions.filter((a) => a.status === "Open" && !wasOverridden(a))
+        .length,
+      inProgress: actions.filter(
+        (a) => a.status === "In Progress" && !wasOverridden(a),
+      ).length,
       closed: actions.filter((a) => a.status === "Completed").length,
-      pmOverride: actions.filter((a) => a.status === "PM Override").length,
+      pmOverride: actions.filter(
+        (a) => a.status === "PM Override" || wasOverridden(a),
+      ).length,
       overdue: actions.filter(
         (a) =>
           a.status !== "Completed" &&
           a.status !== "Cancelled" &&
           a.status !== "PM Override" &&
+          !wasOverridden(a) &&
           a.dueDate &&
           new Date(a.dueDate) < startOfToday,
       ).length,
@@ -1912,6 +1960,14 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     // Filter actions to current 2-week period (matching export logic)
     // This filters by due date OR linked activity date range
     const actionsInCurrentWeek = actions.filter((action) => {
+      // Exclude actions from a previous (closed / PM-overridden) week cycle —
+      // they were already resolved via the override and must not block or count
+      // toward the current week's close.
+      if (
+        isActionFromClosedWeek(action.createdAt, action.status, action.title)
+      ) {
+        return false;
+      }
       // Check if action's due date falls within the week range
       if (action.dueDate && weekStartDate && weekEndDate) {
         const dueDate = new Date(action.dueDate);
@@ -1953,9 +2009,8 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
           a.status !== "Cancelled" &&
           a.status !== "In Progress",
       ).length,
-      inProgress: actionsInCurrentWeek.filter(
-        (a) => a.status === "In Progress",
-      ).length,
+      inProgress: actionsInCurrentWeek.filter((a) => a.status === "In Progress")
+        .length,
       closed: actionsInCurrentWeek.filter((a) => a.status === "Completed")
         .length,
       overdue: 0,
@@ -1993,22 +2048,20 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     // Green = Ready activities, Amber = At Risk activities, Red = Blocked activities
     const ragDistribution = {
       green: allActivities.filter(
-        (a) => a.activityStatus === "Ready" && !a.isBlocked
+        (a) => a.activityStatus === "Ready" && !a.isBlocked,
       ).length,
-      amber: allActivities.filter(
-        (a) => a.activityStatus === "At Risk"
-      ).length,
+      amber: allActivities.filter((a) => a.activityStatus === "At Risk").length,
       red: allActivities.filter(
-        (a) => a.activityStatus === "Blocked" || a.isBlocked
+        (a) => a.activityStatus === "Blocked" || a.isBlocked,
       ).length,
     };
 
     // Separate counts for Ready and Complete activities
     const readyCount = allActivities.filter(
-      (a) => a.activityStatus === "Ready" && !a.isBlocked
+      (a) => a.activityStatus === "Ready" && !a.isBlocked,
     ).length;
     const completeCount = allActivities.filter(
-      (a) => a.activityStatus === "Complete"
+      (a) => a.activityStatus === "Complete",
     ).length;
 
     // Blocked/Risk Activities - show At Risk or Blocked activities from today onwards
@@ -2113,12 +2166,26 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         // Try YYYY-MM-DD format first
         const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
         if (isoMatch) {
-          finishDate = new Date(parseInt(isoMatch[1]), parseInt(isoMatch[2]) - 1, parseInt(isoMatch[3]));
+          finishDate = new Date(
+            parseInt(isoMatch[1]),
+            parseInt(isoMatch[2]) - 1,
+            parseInt(isoMatch[3]),
+          );
         } else {
           // Try DD-MMM-YY format
           const months = {
-            Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
-            Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+            Jan: 0,
+            Feb: 1,
+            Mar: 2,
+            Apr: 3,
+            May: 4,
+            Jun: 5,
+            Jul: 6,
+            Aug: 7,
+            Sep: 8,
+            Oct: 9,
+            Nov: 10,
+            Dec: 11,
           };
           const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
           if (match) {
@@ -2157,14 +2224,20 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     let readyToClose = false;
     const cycleStatus = programme.cycleStatus;
 
-    if (cycleStatus === "Draft" || cycleStatus === "Uploaded" || cycleStatus === "Meeting Open") {
+    if (
+      cycleStatus === "Draft" ||
+      cycleStatus === "Uploaded" ||
+      cycleStatus === "Meeting Open"
+    ) {
       // At Draft, Uploaded or Meeting Open state, never ready to close
       readyToClose = false;
-    } else if (cycleStatus === "Execution" || cycleStatus === "Close-Out Eligible") {
+    } else if (
+      cycleStatus === "Execution" ||
+      cycleStatus === "Close-Out Eligible"
+    ) {
       // At Execution or Close-Out Eligible state, check if all REQUIRED actions are complete
       readyToClose = openRequiredActions === 0;
     }
-
 
     // Weekly Plan Preview - show activities with actions for these 2 weeks
     // Exclude actions from closed weeks
@@ -2335,6 +2408,11 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         open: requiredActionsByStatus.open,
         inProgress: requiredActionsByStatus.inProgress,
       },
+      // Weekly closure condition #1: every current-week activity must be
+      // assigned (No Action chosen or an action assigned).
+      unassignedInWeek: allActivities.filter(
+        (a) => (a.assignmentState || "Unassigned") === "Unassigned",
+      ).length,
       blockedRiskActivities: blockedRiskActivities,
       activityCounts: {
         completed: completedActivitiesCount,
@@ -2884,26 +2962,39 @@ router.post("/recalculate-rag", protect, adminOnly, async (req, res) => {
     let totalUpdated = 0;
     let totalActivities = 0;
 
+    const Action = require("../models/Action");
+
     for (const programme of programmes) {
       if (!programme.extractedData?.activities) continue;
 
       const weekZones = generateWeekZones(today, programme.lookaheadWeeks || 6);
+      const cycleEndDate = getCycleEndDate(programme);
+
+      const programmeActions = await Action.find({ programme: programme._id });
+      const actionsByActivity = {};
+      programmeActions.forEach((action) => {
+        const actId = action.linkedActivity?.activityId;
+        if (!actId) return;
+        (actionsByActivity[actId] = actionsByActivity[actId] || []).push(action);
+      });
 
       for (let i = 0; i < programme.extractedData.activities.length; i++) {
         const activity = programme.extractedData.activities[i];
+        const linkedActions = actionsByActivity[activity.activityId] || [];
 
-        const newRagStatus = calculateRAG(activity, today);
-        const newActivityStatus = calculateActivityStatus(
+        const derived = computeGovernanceStatus(
           activity,
-          newRagStatus,
+          linkedActions,
+          cycleEndDate,
           today,
         );
-        const newWeekZone = getWeekZone(activity.startDate, weekZones);
-
-        programme.extractedData.activities[i].ragStatus = newRagStatus;
+        programme.extractedData.activities[i].ragStatus = derived.ragStatus;
         programme.extractedData.activities[i].activityStatus =
-          newActivityStatus;
-        programme.extractedData.activities[i].weekZone = newWeekZone;
+          derived.activityStatus;
+        programme.extractedData.activities[i].weekZone = getWeekZone(
+          activity.startDate,
+          weekZones,
+        );
 
         totalActivities++;
       }
@@ -2913,34 +3004,12 @@ router.post("/recalculate-rag", protect, adminOnly, async (req, res) => {
         (a) => a.ragStatus !== "Grey",
       );
 
-      programme.extractedData.summary = {
-        total: activities.length,
-        inLookahead: lookaheadActivities.length,
-        completed: activities.filter((a) => a.status === "Completed").length,
-        inProgress: activities.filter((a) => a.status === "In Progress").length,
-        planned: activities.filter(
-          (a) => a.status === "Planned" || a.status === "Forecast",
-        ).length,
-        red: lookaheadActivities.filter((a) => a.ragStatus === "Red").length,
-        amber: lookaheadActivities.filter((a) => a.ragStatus === "Amber")
-          .length,
-        // Exclude blocked activities from green count
-        green: lookaheadActivities.filter(
-          (a) =>
-            a.ragStatus === "Green" &&
-            !a.isBlocked &&
-            a.activityStatus !== "Blocked",
-        ).length,
-        blocked: lookaheadActivities.filter(
-          (a) => a.activityStatus === "Blocked",
-        ).length,
-        atRisk: lookaheadActivities.filter(
-          (a) => a.activityStatus === "At Risk",
-        ).length,
-        ready: lookaheadActivities.filter((a) => a.activityStatus === "Ready")
-          .length,
-      };
+      programme.extractedData.summary = buildActivitySummary(
+        activities,
+        lookaheadActivities,
+      );
 
+      programme.markModified("extractedData.activities");
       programme.weekZones = weekZones;
       // Don't reset lookaheadStartDate - it should stay as the original upload date
 
@@ -2976,6 +3045,7 @@ router.post("/:id/recalculate-rag", protect, adminOnly, async (req, res) => {
 
     const today = new Date();
     const weekZones = generateWeekZones(today, programme.lookaheadWeeks || 6);
+    const cycleEndDate = getCycleEndDate(programme);
 
     // Fetch all actions for this programme to check linked actions completion
     const Action = require("../models/Action");
@@ -2996,18 +3066,19 @@ router.post("/:id/recalculate-rag", protect, adminOnly, async (req, res) => {
       const activity = programme.extractedData.activities[i];
       const linkedActions = actionMap[activity.activityId] || [];
 
-      const newRagStatus = calculateRAG(activity, today);
-      const newActivityStatus = calculateActivityStatus(
+      const derived = computeGovernanceStatus(
         activity,
-        newRagStatus,
-        today,
         linkedActions,
+        cycleEndDate,
+        today,
       );
-      const newWeekZone = getWeekZone(activity.startDate, weekZones);
-
-      programme.extractedData.activities[i].ragStatus = newRagStatus;
-      programme.extractedData.activities[i].activityStatus = newActivityStatus;
-      programme.extractedData.activities[i].weekZone = newWeekZone;
+      programme.extractedData.activities[i].ragStatus = derived.ragStatus;
+      programme.extractedData.activities[i].activityStatus =
+        derived.activityStatus;
+      programme.extractedData.activities[i].weekZone = getWeekZone(
+        activity.startDate,
+        weekZones,
+      );
     }
 
     const activities = programme.extractedData.activities;
@@ -3015,31 +3086,12 @@ router.post("/:id/recalculate-rag", protect, adminOnly, async (req, res) => {
       (a) => a.ragStatus !== "Grey",
     );
 
-    programme.extractedData.summary = {
-      total: activities.length,
-      inLookahead: lookaheadActivities.length,
-      completed: activities.filter((a) => a.status === "Completed").length,
-      inProgress: activities.filter((a) => a.status === "In Progress").length,
-      planned: activities.filter(
-        (a) => a.status === "Planned" || a.status === "Forecast",
-      ).length,
-      red: lookaheadActivities.filter((a) => a.ragStatus === "Red").length,
-      amber: lookaheadActivities.filter((a) => a.ragStatus === "Amber").length,
-      // Exclude blocked activities from green count
-      green: lookaheadActivities.filter(
-        (a) =>
-          a.ragStatus === "Green" &&
-          !a.isBlocked &&
-          a.activityStatus !== "Blocked",
-      ).length,
-      blocked: lookaheadActivities.filter((a) => a.activityStatus === "Blocked")
-        .length,
-      atRisk: lookaheadActivities.filter((a) => a.activityStatus === "At Risk")
-        .length,
-      ready: lookaheadActivities.filter((a) => a.activityStatus === "Ready")
-        .length,
-    };
+    programme.extractedData.summary = buildActivitySummary(
+      activities,
+      lookaheadActivities,
+    );
 
+    programme.markModified("extractedData.activities");
     programme.weekZones = weekZones;
     // Don't reset lookaheadStartDate - it should stay as the original upload date
 
@@ -3184,13 +3236,27 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       // Try YYYY-MM-DD format first
       const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
       if (isoMatch) {
-        return new Date(parseInt(isoMatch[1]), parseInt(isoMatch[2]) - 1, parseInt(isoMatch[3]));
+        return new Date(
+          parseInt(isoMatch[1]),
+          parseInt(isoMatch[2]) - 1,
+          parseInt(isoMatch[3]),
+        );
       }
 
       // Try DD-MMM-YY format
       const months = {
-        Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
-        Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+        Jan: 0,
+        Feb: 1,
+        Mar: 2,
+        Apr: 3,
+        May: 4,
+        Jun: 5,
+        Jul: 6,
+        Aug: 7,
+        Sep: 8,
+        Oct: 9,
+        Nov: 10,
+        Dec: 11,
       };
       const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
       if (!match) return null;
@@ -3267,8 +3333,12 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       // Next cycle starts the day after the last cycle ended
       currentCycleStartDate = new Date(lastCycle.dateRange.endDate);
       currentCycleStartDate.setDate(currentCycleStartDate.getDate() + 1);
+    } else if (referenceDate) {
+      // First cycle - anchor to the programme's week schedule (upload date),
+      // matching the lookahead and weekly-control views so Week 1-2 ends on the
+      // same date everywhere (e.g. 7 Jul -> 20 Jul, not Monday-of-week 6 Jul).
+      currentCycleStartDate = new Date(referenceDate);
     } else {
-      // First cycle - use Monday of current week
       currentCycleStartDate = new Date(mondayOfCurrentWeek);
     }
     currentCycleStartDate.setHours(0, 0, 0, 0);
@@ -3319,9 +3389,10 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       const closedWeekData = closedWeeks.find((w) => w.weekNumber === i);
 
       // Calculate 2-week end date (since UI shows 2 weeks at a time: 1-2, 3-4, 5-6, etc.)
-      // Use the PAIR's first week's start date for both weeks in the pair
+      // Use the PAIR's first week's start date for both weeks in the pair.
+      // Anchor to the upload date (referenceDate) for consistency.
       const pairFirstWeek = i % 2 === 1 ? i : i - 1;
-      const pairStartDate = new Date(earliestDate);
+      const pairStartDate = new Date(referenceDate || earliestDate);
       pairStartDate.setDate(pairStartDate.getDate() + (pairFirstWeek - 1) * 7);
       const twoWeekEndDate = new Date(pairStartDate);
       twoWeekEndDate.setDate(pairStartDate.getDate() + 13); // 2 weeks = 14 days (0-13)
@@ -3458,13 +3529,27 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       // Try YYYY-MM-DD format first
       const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
       if (isoMatch) {
-        return new Date(parseInt(isoMatch[1]), parseInt(isoMatch[2]) - 1, parseInt(isoMatch[3]));
+        return new Date(
+          parseInt(isoMatch[1]),
+          parseInt(isoMatch[2]) - 1,
+          parseInt(isoMatch[3]),
+        );
       }
 
       // Try DD-MMM-YY format
       const months = {
-        Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
-        Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+        Jan: 0,
+        Feb: 1,
+        Mar: 2,
+        Apr: 3,
+        May: 4,
+        Jun: 5,
+        Jul: 6,
+        Aug: 7,
+        Sep: 8,
+        Oct: 9,
+        Nov: 10,
+        Dec: 11,
       };
       const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
       if (!match) return null;
@@ -3495,8 +3580,16 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       return sendError(res, "Cannot determine programme start date", 400);
     }
 
+    // Anchor the week schedule to the upload date (lookaheadStartDate) so the
+    // 2-week boundaries match the lookahead / weekly-control / weeks-status
+    // views (e.g. Week 1-2 = 7 Jul -> 20 Jul), not the earliest activity date.
+    const weekAnchorDate = programme.lookaheadStartDate
+      ? new Date(programme.lookaheadStartDate)
+      : new Date(earliestDate);
+    weekAnchorDate.setHours(0, 0, 0, 0);
+
     // Calculate week dates (2-week view: weeks X and X+1)
-    const weekStartDate = new Date(earliestDate);
+    const weekStartDate = new Date(weekAnchorDate);
     weekStartDate.setDate(weekStartDate.getDate() + (weekNumber - 1) * 7);
     const weekEndDate = new Date(weekStartDate);
     weekEndDate.setDate(weekStartDate.getDate() + 6);
@@ -3505,7 +3598,7 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
     // For the 2-week end date, use the PAIR's first week's start date
     // Week 1,2 use Week 1's start; Week 3,4 use Week 3's start; etc.
     const pairFirstWeek = weekNumber % 2 === 1 ? weekNumber : weekNumber - 1;
-    const pairStartDate = new Date(earliestDate);
+    const pairStartDate = new Date(weekAnchorDate);
     pairStartDate.setDate(pairStartDate.getDate() + (pairFirstWeek - 1) * 7);
     const twoWeekEndDate = new Date(pairStartDate);
     twoWeekEndDate.setDate(pairStartDate.getDate() + 13); // 2 weeks = 14 days (0-13)
@@ -3518,6 +3611,11 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
     const twoWeekEndDateStart = new Date(twoWeekEndDate);
     twoWeekEndDateStart.setHours(0, 0, 0, 0);
 
+    const isOverride = closeType === "PM Override";
+
+    // The 2-week period date gate applies even to PM Override — the override
+    // only bypasses INCOMPLETE ACTIONS, not the calendar. A pair cannot be
+    // closed (normally or via override) until its 2-week window has ended.
     if (!isSecondOfPair && todayStart < twoWeekEndDateStart) {
       const formatDate = (d) => {
         const months = [
@@ -3541,6 +3639,59 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
         `Cannot close Week ${weekNumber}-${weekNumber + 1} yet. The 2-week period ends on ${formatDate(twoWeekEndDate)} and hasn't completed.`,
         400,
       );
+    }
+
+    // -----------------------------------------------------------------
+    // Weekly closure conditions (skipped for PM Override force-close):
+    //  1. Every activity in the current week must be assigned (No Action
+    //     chosen or an action assigned) — none may remain Unassigned.
+    //  2. No action whose due (end) date falls in the current week may
+    //     still be pending.
+    // -----------------------------------------------------------------
+    if (!isOverride) {
+      const isInCurrentWeek = (activity) => {
+        const actStart = parseDate(activity.startDate);
+        const actFinish = parseDate(activity.finishDate);
+        if (!actStart) return false;
+        const startsThisWeek =
+          actStart >= weekStartDate && actStart <= weekEndDate;
+        const spansThisWeek =
+          actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+        return startsThisWeek || spansThisWeek;
+      };
+
+      const currentWeekActivities = activities.filter(isInCurrentWeek);
+      const unassignedActivities = currentWeekActivities.filter(
+        (a) => (a.assignmentState || "Unassigned") === "Unassigned",
+      );
+      if (unassignedActivities.length > 0) {
+        return sendError(
+          res,
+          `Cannot close Week ${weekNumber}. ${unassignedActivities.length} activit${
+            unassignedActivities.length === 1 ? "y is" : "ies are"
+          } still unassigned. Every activity in this week must be assigned before closing.`,
+          400,
+        );
+      }
+
+      const weekEndInclusive = new Date(weekEndDate);
+      weekEndInclusive.setHours(23, 59, 59, 999);
+      const pendingWeekActions = await require("../models/Action").find({
+        programme: req.params.id,
+        dueDate: { $gte: weekStartDate, $lte: weekEndInclusive },
+        status: { $nin: ["Completed", "Complete", "Cancelled"] },
+      });
+      if (pendingWeekActions.length > 0) {
+        return sendError(
+          res,
+          `Cannot close Week ${weekNumber}. ${pendingWeekActions.length} action${
+            pendingWeekActions.length === 1 ? "" : "s"
+          } due this week ${
+            pendingWeekActions.length === 1 ? "is" : "are"
+          } still pending.`,
+          400,
+        );
+      }
     }
 
     // Calculate stats for this week
@@ -3885,10 +4036,27 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         // Try YYYY-MM-DD format first
         const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
         if (isoMatch) {
-          return new Date(parseInt(isoMatch[1]), parseInt(isoMatch[2]) - 1, parseInt(isoMatch[3]));
+          return new Date(
+            parseInt(isoMatch[1]),
+            parseInt(isoMatch[2]) - 1,
+            parseInt(isoMatch[3]),
+          );
         }
         // Try DD-MMM-YY format
-        const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+        const months = {
+          Jan: 0,
+          Feb: 1,
+          Mar: 2,
+          Apr: 3,
+          May: 4,
+          Jun: 5,
+          Jul: 6,
+          Aug: 7,
+          Sep: 8,
+          Oct: 9,
+          Nov: 10,
+          Dec: 11,
+        };
         const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
         if (!match) return null;
         const day = parseInt(match[1]);
@@ -3901,28 +4069,49 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       const startDate = parseDateLocal(activity.startDate);
       const finishDate = parseDateLocal(activity.finishDate);
 
-      if (!startDate) return { zone: "Unknown", color: "gray", reason: "No start date" };
+      if (!startDate)
+        return { zone: "Unknown", color: "gray", reason: "No start date" };
 
       const msPerDay = 1000 * 60 * 60 * 24;
       const daysUntilStart = Math.ceil((startDate - referenceDate) / msPerDay);
 
       if (activity.finishDate && activity.finishDate.includes(" A")) {
-        return { zone: "Complete", color: "blue", reason: "Activity completed (has 'A' suffix)" };
+        return {
+          zone: "Complete",
+          color: "blue",
+          reason: "Activity completed (has 'A' suffix)",
+        };
       }
 
       if (finishDate && finishDate < referenceDate) {
-        return { zone: "Red", color: "red", reason: `Overdue - finish date ${activity.finishDate} has passed` };
+        return {
+          zone: "Red",
+          color: "red",
+          reason: `Overdue - finish date ${activity.finishDate} has passed`,
+        };
       }
 
       if (daysUntilStart <= 14) {
-        return { zone: "Green", color: "green", reason: `Starts within 2 weeks (${daysUntilStart} days)` };
+        return {
+          zone: "Green",
+          color: "green",
+          reason: `Starts within 2 weeks (${daysUntilStart} days)`,
+        };
       }
 
       if (daysUntilStart <= 28) {
-        return { zone: "Amber", color: "amber", reason: `Starts in 2-4 weeks (${daysUntilStart} days)` };
+        return {
+          zone: "Amber",
+          color: "amber",
+          reason: `Starts in 2-4 weeks (${daysUntilStart} days)`,
+        };
       }
 
-      return { zone: "Red", color: "red", reason: `Starts in ${daysUntilStart} days (>4 weeks away - Strategic)` };
+      return {
+        zone: "Red",
+        color: "red",
+        reason: `Starts in ${daysUntilStart} days (>4 weeks away - Strategic)`,
+      };
     };
 
     // =========================================================================
@@ -3939,18 +4128,31 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
 
     const currentStatus = programme.cycleStatus || "Draft";
     const validNextStates = cycleTransitions[currentStatus] || [];
-    const allStates = ["Draft", "Uploaded", "Meeting Open", "Execution", "Close-Out Eligible", "Closed"];
-    const invalidTransitions = allStates.filter(s => s !== currentStatus && !validNextStates.includes(s));
+    const allStates = [
+      "Draft",
+      "Uploaded",
+      "Meeting Open",
+      "Execution",
+      "Close-Out Eligible",
+      "Closed",
+    ];
+    const invalidTransitions = allStates.filter(
+      (s) => s !== currentStatus && !validNextStates.includes(s),
+    );
 
     const stateMachineProof = {
       title: "PROOF 1: State Machine Enforcement",
-      description: "System enforces valid state transitions and BLOCKS invalid attempts",
+      description:
+        "System enforces valid state transitions and BLOCKS invalid attempts",
       currentState: currentStatus,
-      validTransitions: validNextStates.length > 0 ? validNextStates : ["NONE - Terminal state reached"],
-      blockedTransitions: invalidTransitions.map(state => ({
+      validTransitions:
+        validNextStates.length > 0
+          ? validNextStates
+          : ["NONE - Terminal state reached"],
+      blockedTransitions: invalidTransitions.map((state) => ({
         attemptedState: state,
         result: "BLOCKED",
-        errorMessage: `Invalid transition: Cannot go from "${currentStatus}" to "${state}"`
+        errorMessage: `Invalid transition: Cannot go from "${currentStatus}" to "${state}"`,
       })),
       examples: [
         {
@@ -3958,35 +4160,41 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
           fromState: "Draft",
           toState: "Execution",
           result: "BLOCKED",
-          reason: "Must follow sequence: Draft → Meeting Open → Execution"
+          reason: "Must follow sequence: Draft → Meeting Open → Execution",
         },
         {
           scenario: "Try to close week without Execution status",
           requirement: "cycleStatus must be 'Execution' to close weeks",
           currentStatus: currentStatus,
-          canCloseWeek: currentStatus === "Execution" || currentStatus === "Close-Out Eligible",
-          result: currentStatus === "Execution" || currentStatus === "Close-Out Eligible" ? "ALLOWED" : "BLOCKED"
-        }
+          canCloseWeek:
+            currentStatus === "Execution" ||
+            currentStatus === "Close-Out Eligible",
+          result:
+            currentStatus === "Execution" ||
+            currentStatus === "Close-Out Eligible"
+              ? "ALLOWED"
+              : "BLOCKED",
+        },
       ],
       databaseEvidence: {
         collection: "programmes",
         field: "cycleStatus",
         currentValue: currentStatus,
-        query: `db.programmes.findOne({ _id: ObjectId("${req.params.programmeId}") }, { cycleStatus: 1 })`
-      }
+        query: `db.programmes.findOne({ _id: ObjectId("${req.params.programmeId}") }, { cycleStatus: 1 })`,
+      },
     };
 
     // =========================================================================
     // PROOF 2: RAG Classification - Dynamic Calculation
     // =========================================================================
-    const sampleActivities = activities.slice(0, 5).map(activity => {
+    const sampleActivities = activities.slice(0, 5).map((activity) => {
       const currentRAG = calculateRAGDemo(activity, today);
       const futureDate = new Date(today);
       futureDate.setDate(futureDate.getDate() + 42);
 
       const modifiedActivity = {
         ...activity,
-        startDate: `${String(futureDate.getDate()).padStart(2, '0')}-${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][futureDate.getMonth()]}-${String(futureDate.getFullYear()).slice(-2)}`
+        startDate: `${String(futureDate.getDate()).padStart(2, "0")}-${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][futureDate.getMonth()]}-${String(futureDate.getFullYear()).slice(-2)}`,
       };
       const futureRAG = calculateRAGDemo(modifiedActivity, today);
 
@@ -3999,40 +4207,50 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
           description: "If start date changed to 6 weeks from now",
           newStartDate: modifiedActivity.startDate,
           newRAG: futureRAG,
-          ragChange: currentRAG.zone !== futureRAG.zone ? `${currentRAG.zone} → ${futureRAG.zone}` : "No change"
-        }
+          ragChange:
+            currentRAG.zone !== futureRAG.zone
+              ? `${currentRAG.zone} → ${futureRAG.zone}`
+              : "No change",
+        },
       };
     });
 
     const ragProof = {
       title: "PROOF 2: RAG Classification - Dynamic Calculation",
-      description: "RAG zones are calculated in REAL-TIME based on dates, NOT hardcoded values",
+      description:
+        "RAG zones are calculated in REAL-TIME based on dates, NOT hardcoded values",
       calculationLogic: {
         green: "Activity starts within 2 weeks (0-14 days)",
         amber: "Activity starts in 2-4 weeks (15-28 days)",
         red: "Activity overdue OR starts in >4 weeks (Strategic)",
-        blue: "Activity completed (finish date has 'A' suffix)"
+        blue: "Activity completed (finish date has 'A' suffix)",
       },
-      currentDate: today.toISOString().split('T')[0],
+      currentDate: today.toISOString().split("T")[0],
       activitiesAnalyzed: sampleActivities,
       proofOfDynamicCalculation: {
         note: "RAG is NOT stored in database - computed on every request",
         storedInDB: ["startDate", "finishDate"],
-        calculatedAtRuntime: ["ragStatus", "weekZone", "activityStatus"]
-      }
+        calculatedAtRuntime: ["ragStatus", "weekZone", "activityStatus"],
+      },
     };
 
     // =========================================================================
     // PROOF 3: Backend Governance Rules
     // =========================================================================
-    const requiredActions = actions.filter(a => a.type === "Required");
-    const optionalActions = actions.filter(a => a.type === "Optional");
-    const openRequiredActions = requiredActions.filter(a => a.status === "Open" || a.status === "In Progress");
-    const completedActions = actions.filter(a => a.status === "Completed");
-    const overdueActions = actions.filter(a =>
-      a.status !== "Completed" && a.status !== "Cancelled" && a.dueDate && new Date(a.dueDate) < today
+    const requiredActions = actions.filter((a) => a.type === "Required");
+    const optionalActions = actions.filter((a) => a.type === "Optional");
+    const openRequiredActions = requiredActions.filter(
+      (a) => a.status === "Open" || a.status === "In Progress",
     );
-    const blockedActivities = activities.filter(a => a.isBlocked === true);
+    const completedActions = actions.filter((a) => a.status === "Completed");
+    const overdueActions = actions.filter(
+      (a) =>
+        a.status !== "Completed" &&
+        a.status !== "Cancelled" &&
+        a.dueDate &&
+        new Date(a.dueDate) < today,
+    );
+    const blockedActivities = activities.filter((a) => a.isBlocked === true);
 
     const totalWeeks = programme.totalWeeks || 0;
     const closedWeeksCount = (programme.closedWeeks || []).length;
@@ -4042,9 +4260,16 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
     // - Draft / Uploaded / Meeting Open: Always No
     // - Execution / Close-Out Eligible: Yes if all required actions complete
     let readyToClose = false;
-    if (programme.cycleStatus === "Draft" || programme.cycleStatus === "Uploaded" || programme.cycleStatus === "Meeting Open") {
+    if (
+      programme.cycleStatus === "Draft" ||
+      programme.cycleStatus === "Uploaded" ||
+      programme.cycleStatus === "Meeting Open"
+    ) {
       readyToClose = false;
-    } else if (programme.cycleStatus === "Execution" || programme.cycleStatus === "Close-Out Eligible") {
+    } else if (
+      programme.cycleStatus === "Execution" ||
+      programme.cycleStatus === "Close-Out Eligible"
+    ) {
       readyToClose = openRequiredActions.length === 0;
     }
 
@@ -4053,7 +4278,9 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
     // =========================================================================
 
     // Get cycle history for this programme
-    const cycleHistory = await CycleHistory.find({ programme: req.params.programmeId })
+    const cycleHistory = await CycleHistory.find({
+      programme: req.params.programmeId,
+    })
       .populate("closedBy", "name")
       .sort({ createdAt: -1 });
 
@@ -4064,10 +4291,27 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       // Try YYYY-MM-DD format first
       const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
       if (isoMatch) {
-        return new Date(parseInt(isoMatch[1]), parseInt(isoMatch[2]) - 1, parseInt(isoMatch[3]));
+        return new Date(
+          parseInt(isoMatch[1]),
+          parseInt(isoMatch[2]) - 1,
+          parseInt(isoMatch[3]),
+        );
       }
       // Try DD-MMM-YY format
-      const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+      const months = {
+        Jan: 0,
+        Feb: 1,
+        Mar: 2,
+        Apr: 3,
+        May: 4,
+        Jun: 5,
+        Jul: 6,
+        Aug: 7,
+        Sep: 8,
+        Oct: 9,
+        Nov: 10,
+        Dec: 11,
+      };
       const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
       if (!match) return null;
       const day = parseInt(match[1]);
@@ -4095,7 +4339,9 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
     let totalWeeksFromProgramme = 0;
     let currentWeekNumber = 1;
     if (earliestStartDate && latestEndDate) {
-      const totalDays = Math.ceil((latestEndDate - earliestStartDate) / msPerDay);
+      const totalDays = Math.ceil(
+        (latestEndDate - earliestStartDate) / msPerDay,
+      );
       totalWeeksFromProgramme = Math.ceil(totalDays / 7);
 
       // Use lookaheadStartDate (upload date) for week calculation
@@ -4108,13 +4354,19 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
     }
 
     // Calculate weeks closed on time (Normal Close vs PM Override)
-    const weeksClosedOnTime = cycleHistory.filter(c => c.closeType === "Normal Close").length;
-    const pmOverrides = cycleHistory.filter(c => c.closeType === "PM Override").length;
+    const weeksClosedOnTime = cycleHistory.filter(
+      (c) => c.closeType === "Normal Close",
+    ).length;
+    const pmOverrides = cycleHistory.filter(
+      (c) => c.closeType === "PM Override",
+    ).length;
 
     // Calculate Weeks Closed On Time Score
     let weeksClosedOnTimeScore = 0;
     if (totalWeeksFromProgramme > 0) {
-      weeksClosedOnTimeScore = Math.round((weeksClosedOnTime / totalWeeksFromProgramme) * 100);
+      weeksClosedOnTimeScore = Math.round(
+        (weeksClosedOnTime / totalWeeksFromProgramme) * 100,
+      );
     }
 
     // Calculate metrics from closed weeks
@@ -4126,16 +4378,28 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
     }
 
     // Overdue Action Rate Score
-    const overdueFromClosedWeeks = Math.max(0, totalActionsFromClosedWeeks - closedActionsFromClosedWeeks);
-    const overdueRate = totalActionsFromClosedWeeks > 0
-      ? Math.round((overdueFromClosedWeeks / totalActionsFromClosedWeeks) * 100)
-      : 0;
-    const overdueActionRateScore = totalActionsFromClosedWeeks > 0 ? Math.max(0, 100 - overdueRate * 2) : 100;
+    const overdueFromClosedWeeks = Math.max(
+      0,
+      totalActionsFromClosedWeeks - closedActionsFromClosedWeeks,
+    );
+    const overdueRate =
+      totalActionsFromClosedWeeks > 0
+        ? Math.round(
+            (overdueFromClosedWeeks / totalActionsFromClosedWeeks) * 100,
+          )
+        : 0;
+    const overdueActionRateScore =
+      totalActionsFromClosedWeeks > 0
+        ? Math.max(0, 100 - overdueRate * 2)
+        : 100;
 
     // Action Closure Speed Score
-    const closureRate = totalActionsFromClosedWeeks > 0
-      ? Math.round((closedActionsFromClosedWeeks / totalActionsFromClosedWeeks) * 100)
-      : 0;
+    const closureRate =
+      totalActionsFromClosedWeeks > 0
+        ? Math.round(
+            (closedActionsFromClosedWeeks / totalActionsFromClosedWeeks) * 100,
+          )
+        : 0;
     const actionClosureSpeedScore = closureRate;
 
     // Build weekly data
@@ -4145,13 +4409,17 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
 
     // Helper to calculate RAG for activities in a specific week
     const calculateWeekRAG = (weekStartDate, weekEndDate) => {
-      let green = 0, amber = 0, red = 0;
+      let green = 0,
+        amber = 0,
+        red = 0;
       for (const activity of activities) {
         const actStart = parseDateDashboard(activity.startDate);
         const actFinish = parseDateDashboard(activity.finishDate);
         if (!actStart) continue;
-        const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
-        const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+        const startsThisWeek =
+          actStart >= weekStartDate && actStart <= weekEndDate;
+        const spansThisWeek =
+          actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
         if (!startsThisWeek && !spansThisWeek) continue;
         const ragStatus = activity.ragStatus || "Grey";
         if (ragStatus === "Green") green++;
@@ -4171,55 +4439,79 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         weekEndDate.setDate(weekStartDate.getDate() + 6);
 
         const rag = calculateWeekRAG(weekStartDate, weekEndDate);
-        const matchingCycle = cycleHistory.find(c => c.weekNumber === weekNum);
+        const matchingCycle = cycleHistory.find(
+          (c) => c.weekNumber === weekNum,
+        );
 
         weeklyReadinessData.push({
           week: `W${weekNum}`,
           value: matchingCycle
-            ? Math.round(((matchingCycle.stats?.green || 0) / (matchingCycle.stats?.totalActivities || 1)) * 100)
-            : 0
+            ? Math.round(
+                ((matchingCycle.stats?.green || 0) /
+                  (matchingCycle.stats?.totalActivities || 1)) *
+                  100,
+              )
+            : 0,
         });
 
         actionsData.push({
           week: `W${weekNum}`,
           raised: matchingCycle ? matchingCycle.stats?.actionsTotal || 0 : 0,
-          closed: matchingCycle ? matchingCycle.stats?.actionsCompleted || 0 : 0
+          closed: matchingCycle
+            ? matchingCycle.stats?.actionsCompleted || 0
+            : 0,
         });
 
         ragTrendData.push({
           week: `W${weekNum}`,
           green: matchingCycle ? matchingCycle.stats?.green || 0 : 0,
           amber: matchingCycle ? matchingCycle.stats?.amber || 0 : 0,
-          red: matchingCycle ? matchingCycle.stats?.red || 0 : 0
+          red: matchingCycle ? matchingCycle.stats?.red || 0 : 0,
         });
       }
     }
 
     // Calculate average readiness
-    const currentWeekIndex = Math.min(currentWeekNumber, weeklyReadinessData.length);
+    const currentWeekIndex = Math.min(
+      currentWeekNumber,
+      weeklyReadinessData.length,
+    );
     const pastAndCurrentWeeks = weeklyReadinessData.slice(0, currentWeekIndex);
-    const avgReadiness = pastAndCurrentWeeks.length > 0
-      ? Math.round(pastAndCurrentWeeks.reduce((sum, w) => sum + w.value, 0) / pastAndCurrentWeeks.length)
-      : 0;
+    const avgReadiness =
+      pastAndCurrentWeeks.length > 0
+        ? Math.round(
+            pastAndCurrentWeeks.reduce((sum, w) => sum + w.value, 0) /
+              pastAndCurrentWeeks.length,
+          )
+        : 0;
 
     // Calculate Readiness Trend Stability Score
     let readinessTrendScore = 65;
     if (pastAndCurrentWeeks.length >= 2) {
-      const readinessValues = pastAndCurrentWeeks.map(w => w.value);
-      const mean = readinessValues.reduce((a, b) => a + b, 0) / readinessValues.length;
-      const variance = readinessValues.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / readinessValues.length;
-      readinessTrendScore = Math.max(0, Math.min(100, 100 - Math.sqrt(variance)));
+      const readinessValues = pastAndCurrentWeeks.map((w) => w.value);
+      const mean =
+        readinessValues.reduce((a, b) => a + b, 0) / readinessValues.length;
+      const variance =
+        readinessValues.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) /
+        readinessValues.length;
+      readinessTrendScore = Math.max(
+        0,
+        Math.min(100, 100 - Math.sqrt(variance)),
+      );
     } else if (pastAndCurrentWeeks.length === 1) {
       readinessTrendScore = 100;
     }
 
     // PM Override Frequency Score
     const totalCyclesForProgramme = cycleHistory.length;
-    const pmOverridesForProgramme = cycleHistory.filter(c => c.closeType === "PM Override").length;
+    const pmOverridesForProgramme = cycleHistory.filter(
+      (c) => c.closeType === "PM Override",
+    ).length;
     const normalWeeks = totalCyclesForProgramme - pmOverridesForProgramme;
-    const pmOverrideFrequencyScore = totalCyclesForProgramme > 0
-      ? Math.round((normalWeeks / totalCyclesForProgramme) * 100)
-      : 100;
+    const pmOverrideFrequencyScore =
+      totalCyclesForProgramme > 0
+        ? Math.round((normalWeeks / totalCyclesForProgramme) * 100)
+        : 100;
 
     // Calculate dynamic weights
     const allScores = {
@@ -4227,10 +4519,13 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       overdueActionRate: overdueActionRateScore,
       actionClosureSpeed: actionClosureSpeedScore,
       readinessTrendStability: Math.round(readinessTrendScore),
-      pmOverrideFrequency: pmOverrideFrequencyScore
+      pmOverrideFrequency: pmOverrideFrequencyScore,
     };
 
-    const totalScoreSum = Object.values(allScores).reduce((sum, score) => sum + score, 0);
+    const totalScoreSum = Object.values(allScores).reduce(
+      (sum, score) => sum + score,
+      0,
+    );
     const dynamicWeights = {};
     if (totalScoreSum > 0) {
       for (const [key, score] of Object.entries(allScores)) {
@@ -4245,10 +4540,12 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
     // Calculate overall governance score
     const governanceScore = Math.round(
       (allScores.weeksClosedOnTime * dynamicWeights.weeksClosedOnTime +
-       allScores.overdueActionRate * dynamicWeights.overdueActionRate +
-       allScores.actionClosureSpeed * dynamicWeights.actionClosureSpeed +
-       allScores.readinessTrendStability * dynamicWeights.readinessTrendStability +
-       allScores.pmOverrideFrequency * dynamicWeights.pmOverrideFrequency) / 100
+        allScores.overdueActionRate * dynamicWeights.overdueActionRate +
+        allScores.actionClosureSpeed * dynamicWeights.actionClosureSpeed +
+        allScores.readinessTrendStability *
+          dynamicWeights.readinessTrendStability +
+        allScores.pmOverrideFrequency * dynamicWeights.pmOverrideFrequency) /
+        100,
     );
 
     // Determine governance status
@@ -4258,7 +4555,7 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
 
     // Get recurring blockers count
     let blockerTypes = new Set();
-    activities.forEach(a => {
+    activities.forEach((a) => {
       if (a.isBlocked && a.blocker) {
         blockerTypes.add(a.blocker.split(" ")[0]);
       }
@@ -4267,7 +4564,8 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
     // Governance Dashboard Data Object
     const governanceDashboard = {
       title: "Governance Dashboard - Score & Metrics",
-      description: "Overall programme governance health calculated from weighted metrics",
+      description:
+        "Overall programme governance health calculated from weighted metrics",
 
       score: governanceScore,
       status: governanceStatus,
@@ -4277,32 +4575,57 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
           label: "Weeks Closed On Time",
           score: allScores.weeksClosedOnTime,
           weight: dynamicWeights.weeksClosedOnTime,
-          color: allScores.weeksClosedOnTime >= 70 ? "green" : allScores.weeksClosedOnTime >= 50 ? "amber" : "red"
+          color:
+            allScores.weeksClosedOnTime >= 70
+              ? "green"
+              : allScores.weeksClosedOnTime >= 50
+                ? "amber"
+                : "red",
         },
         overdueActionRate: {
           label: "Overdue Action Rate",
           score: allScores.overdueActionRate,
           weight: dynamicWeights.overdueActionRate,
-          color: allScores.overdueActionRate >= 70 ? "green" : allScores.overdueActionRate >= 50 ? "amber" : "red"
+          color:
+            allScores.overdueActionRate >= 70
+              ? "green"
+              : allScores.overdueActionRate >= 50
+                ? "amber"
+                : "red",
         },
         actionClosureSpeed: {
           label: "Action Closure Speed",
           score: allScores.actionClosureSpeed,
           weight: dynamicWeights.actionClosureSpeed,
-          color: allScores.actionClosureSpeed >= 70 ? "green" : allScores.actionClosureSpeed >= 50 ? "amber" : "red"
+          color:
+            allScores.actionClosureSpeed >= 70
+              ? "green"
+              : allScores.actionClosureSpeed >= 50
+                ? "amber"
+                : "red",
         },
         readinessTrendStability: {
           label: "Readiness Trend Stability",
           score: allScores.readinessTrendStability,
           weight: dynamicWeights.readinessTrendStability,
-          color: allScores.readinessTrendStability >= 70 ? "green" : allScores.readinessTrendStability >= 50 ? "amber" : "red"
+          color:
+            allScores.readinessTrendStability >= 70
+              ? "green"
+              : allScores.readinessTrendStability >= 50
+                ? "amber"
+                : "red",
         },
         pmOverrideFrequency: {
           label: "PM Override Frequency",
           score: allScores.pmOverrideFrequency,
           weight: dynamicWeights.pmOverrideFrequency,
-          color: allScores.pmOverrideFrequency >= 70 ? "green" : allScores.pmOverrideFrequency >= 50 ? "amber" : "red"
-        }
+          color:
+            allScores.pmOverrideFrequency >= 70
+              ? "green"
+              : allScores.pmOverrideFrequency >= 50
+                ? "amber"
+                : "red",
+        },
       },
 
       stats: {
@@ -4314,19 +4637,20 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         overdueTrend: "Stable",
         recurringBlockers: blockerTypes.size,
         pmOverrides: pmOverrides,
-        normalCloses: weeksClosedOnTime
+        normalCloses: weeksClosedOnTime,
       },
 
       chartData: {
         weeklyReadinessTrend: weeklyReadinessData,
         actionsRaisedVsClosed: actionsData,
-        weeklyRAGTrend: ragTrendData
-      }
+        weeklyRAGTrend: ragTrendData,
+      },
     };
 
     const governanceProof = {
       title: "PROOF 3: Backend Governance Rules",
-      description: "System enforces governance rules that control Close-Out eligibility",
+      description:
+        "System enforces governance rules that control Close-Out eligibility",
 
       currentStats: {
         totalActions: actions.length,
@@ -4338,7 +4662,7 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         blockedActivities: blockedActivities.length,
         totalWeeks: totalWeeks,
         closedWeeks: closedWeeksCount,
-        remainingWeeks: remainingWeeks
+        remainingWeeks: remainingWeeks,
       },
 
       governanceChecks: [
@@ -4346,34 +4670,43 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
           checkName: "Required Actions Open/In Progress",
           count: openRequiredActions.length,
           blocksCloseOut: openRequiredActions.length > 0,
-          result: openRequiredActions.length > 0 ? "❌ BLOCKS CLOSE-OUT" : "✅ ALLOWS CLOSE-OUT",
-          blockingActions: openRequiredActions.map(a => ({
+          result:
+            openRequiredActions.length > 0
+              ? "❌ BLOCKS CLOSE-OUT"
+              : "✅ ALLOWS CLOSE-OUT",
+          blockingActions: openRequiredActions.map((a) => ({
             _id: a._id,
             title: a.title,
             type: a.type,
             status: a.status,
-            linkedActivity: a.linkedActivity?.activityId || "None"
-          }))
+            linkedActivity: a.linkedActivity?.activityId || "None",
+          })),
         },
         {
           checkName: "Optional Actions (DO NOT block)",
-          count: optionalActions.filter(a => a.status !== "Completed").length,
+          count: optionalActions.filter((a) => a.status !== "Completed").length,
           blocksCloseOut: false,
           result: "✅ DOES NOT BLOCK - Optional actions ignored",
-          codeReference: "Line 1741: a.type !== 'Optional'"
+          codeReference: "Line 1741: a.type !== 'Optional'",
         },
         {
           checkName: "Overdue Actions",
           count: overdueActions.length,
           blocksCloseOut: overdueActions.length > 0,
-          result: overdueActions.length > 0 ? "❌ BLOCKS CLOSE-OUT" : "✅ ALLOWS CLOSE-OUT"
+          result:
+            overdueActions.length > 0
+              ? "❌ BLOCKS CLOSE-OUT"
+              : "✅ ALLOWS CLOSE-OUT",
         },
         {
           checkName: "Blocked Activities",
           count: blockedActivities.length,
           blocksCloseOut: blockedActivities.length > 0,
-          result: blockedActivities.length > 0 ? "❌ BLOCKS CLOSE-OUT" : "✅ ALLOWS CLOSE-OUT"
-        }
+          result:
+            blockedActivities.length > 0
+              ? "❌ BLOCKS CLOSE-OUT"
+              : "✅ ALLOWS CLOSE-OUT",
+        },
       ],
 
       finalDecision: {
@@ -4382,7 +4715,7 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         uiColor: readyToClose ? "GREEN" : "RED",
         reason: !readyToClose
           ? `${openRequiredActions.length} Required action(s) still Open/In Progress`
-          : "All Required actions completed - Ready for Close-Out"
+          : "All Required actions completed - Ready for Close-Out",
       },
 
       scenarios: {
@@ -4390,15 +4723,15 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
           description: "When a Required action is Open or In Progress",
           systemBehavior: "System BLOCKS Close-Out",
           readyToCloseValue: "No (RED)",
-          closeOutButtonState: "Disabled or shows warning"
+          closeOutButtonState: "Disabled or shows warning",
         },
         whenAllConditionsMet: {
           description: "When all Required actions are Completed/Cancelled",
           systemBehavior: "System ALLOWS Close-Out",
           readyToCloseValue: "Yes (GREEN)",
-          closeOutButtonState: "Enabled"
-        }
-      }
+          closeOutButtonState: "Enabled",
+        },
+      },
     };
 
     // =========================================================================
@@ -4416,33 +4749,40 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         score: governanceScore,
         status: governanceStatus,
         metrics: governanceDashboard.metrics,
-        stats: governanceDashboard.stats
-      }
+        stats: governanceDashboard.stats,
+      },
     };
 
     // Save to database - creates "governanceproofs" collection
     const savedProof = await GovernanceProof.create(proofDocument);
-    console.log(`[Governance Proof] Saved to database with ID: ${savedProof._id}`);
+    console.log(
+      `[Governance Proof] Saved to database with ID: ${savedProof._id}`,
+    );
 
     // =========================================================================
     // RETURN RESPONSE - PROOF 2 & PROOF 3 ONLY
     // =========================================================================
-    return sendSuccess(res, {
-      _id: savedProof._id,
-      savedToDatabase: true,
-      collectionName: "governanceproofs",
-      reportGeneratedAt: new Date().toISOString(),
-      programmeId: req.params.programmeId,
-      programmeName: programme.name,
+    return sendSuccess(
+      res,
+      {
+        _id: savedProof._id,
+        savedToDatabase: true,
+        collectionName: "governanceproofs",
+        reportGeneratedAt: new Date().toISOString(),
+        programmeId: req.params.programmeId,
+        programmeName: programme.name,
 
-      // Governance Dashboard - Score, Metrics, Stats, Charts
-      GovernanceDashboard: governanceDashboard
-
-    }, "Governance Proof");
-
+        // Governance Dashboard - Score, Metrics, Stats, Charts
+        GovernanceDashboard: governanceDashboard,
+      },
+      "Governance Proof",
+    );
   } catch (error) {
     console.error("Governance proof error:", error);
-    return sendError(res, "Failed to generate governance proof: " + error.message);
+    return sendError(
+      res,
+      "Failed to generate governance proof: " + error.message,
+    );
   }
 });
 

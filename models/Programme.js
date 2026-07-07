@@ -129,16 +129,27 @@ const programmeSchema = new mongoose.Schema(
               "Blocked",
               "At Risk",
               "Complete",
+              "Completed",
               "Not Ready",
+              "Unassigned",
               "Action Open",
               "Action Overdue",
             ],
-            default: "Ready",
+            default: "Unassigned",
           },
           ragStatus: {
             type: String,
-            enum: ["Red", "Amber", "Green", "Grey"],
+            enum: ["Red", "Amber", "Green", "Grey", "Blue"],
             default: "Grey",
+          },
+          // Assignment/action-driven governance state (not date-driven).
+          // Unassigned (Grey) -> NoAction (Green) or ActionAssigned (Amber).
+          // ActionAssigned resolves to Blue (all actions complete) or
+          // Red (open action past the 6-week cycle end).
+          assignmentState: {
+            type: String,
+            enum: ["Unassigned", "NoAction", "ActionAssigned"],
+            default: "Unassigned",
           },
           weekZone: {
             type: String,
