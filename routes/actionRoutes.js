@@ -12,6 +12,10 @@ const {
 } = require("../utils/errorResponse");
 const { sendPushForNotification } = require("../services/fcmService");
 const auditLogger = require("../utils/auditLogger");
+const {
+  computeGovernanceStatus,
+  getCycleEndDate,
+} = require("../utils/governance");
 
 const checkProgrammeLocked = async (programmeId) => {
   const programme = await Programme.findById(programmeId);
@@ -52,21 +56,10 @@ const checkProjectEnded = (activities) => {
   return today > latestFinishDate;
 };
 
-// Helper function to update linked activity status when action is completed
-// Cycle end = lookahead start (fallback: programme creation) + 6 weeks.
-const getCycleEndDate = (programme) => {
-  if (!programme) return null;
-  const base = programme.lookaheadStartDate || programme.createdAt;
-  if (!base) return null;
-  const end = new Date(base);
-  end.setDate(end.getDate() + 42); // 6 weeks
-  end.setHours(23, 59, 59, 999);
-  return end;
-};
-
 // Re-derive an activity's assignment/action-driven status after an action
-// changes. All actions complete -> Blue/Completed; otherwise back to
-// At Risk (Amber), or Blocked (Red) if past the 6-week cycle end.
+// changes, using the shared governance engine (single source of truth). All
+// actions complete -> Blue/Completed; otherwise At Risk (Amber), or Blocked
+// (Red) once the 6-week cycle has completed (programme end date passed).
 const updateLinkedActivityStatus = async (programmeId, activityId) => {
   try {
     const programme = await Programme.findById(programmeId);
@@ -90,32 +83,16 @@ const updateLinkedActivityStatus = async (programmeId, activityId) => {
       "linkedActivity.activityId": activityId,
     });
 
-    const openActions = allLinkedActions.filter(
-      (action) =>
-        action.status !== "Completed" &&
-        action.status !== "Complete" &&
-        action.status !== "Cancelled"
+    const derived = computeGovernanceStatus(
+      activity,
+      allLinkedActions,
+      getCycleEndDate(programme),
+      new Date()
     );
-
-    if (allLinkedActions.length > 0 && openActions.length === 0) {
-      // All actions complete -> Blue / Completed
-      activity.ragStatus = "Blue";
-      activity.activityStatus = "Completed";
-      activity.isBlocked = false;
-      activity.blocker = "";
-    } else {
-      const cycleEnd = getCycleEndDate(programme);
-      const now = new Date();
-      if (cycleEnd && now > cycleEnd) {
-        activity.ragStatus = "Red";
-        activity.activityStatus = "Blocked";
-        activity.isBlocked = true;
-      } else {
-        activity.ragStatus = "Amber";
-        activity.activityStatus = "At Risk";
-        activity.isBlocked = false;
-      }
-    }
+    activity.ragStatus = derived.ragStatus;
+    activity.activityStatus = derived.activityStatus;
+    activity.isBlocked = derived.activityStatus === "Blocked";
+    if (derived.activityStatus === "Completed") activity.blocker = "";
 
     programme.markModified("extractedData.activities");
     await programme.save();

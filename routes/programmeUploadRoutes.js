@@ -113,75 +113,13 @@ const checkProjectEnded = (activities) => {
   };
 };
 
-// ---------------------------------------------------------------------------
-// Assignment / action-driven governance status engine (NOT date-driven).
-//
-//   Unassigned      -> Grey  (activity untouched after upload)
-//   NoAction        -> Green ("No Action" chosen; Ready)
-//   ActionAssigned  -> Amber (At Risk) while any linked action is open
-//                    -> Blue  (Completed) once all linked actions are done
-//                    -> Red   (Blocked) if an action is still open past the
-//                             6-week cycle end date
-// ---------------------------------------------------------------------------
-
-const CYCLE_LENGTH_DAYS = 42; // 6 weeks
-
-// Cycle end = lookahead start (fallback: programme creation) + 6 weeks.
-const getCycleEndDate = (programme) => {
-  if (!programme) return null;
-  const base = programme.lookaheadStartDate || programme.createdAt;
-  if (!base) return null;
-  const end = new Date(base);
-  end.setDate(end.getDate() + CYCLE_LENGTH_DAYS);
-  end.setHours(23, 59, 59, 999);
-  return end;
-};
-
-const isActionOpen = (action) =>
-  action &&
-  action.status !== "Completed" &&
-  action.status !== "Complete" &&
-  action.status !== "Cancelled";
-
-// Single source of truth for an activity's governance status.
-// linkedActions may be undefined when a caller has no action data — in that
-// case we trust the persisted ragStatus for already-resolved states.
-const computeGovernanceStatus = (
-  activity,
-  linkedActions,
-  cycleEndDate,
-  now,
-) => {
-  const state = activity.assignmentState || "Unassigned";
-
-  if (state === "Unassigned") {
-    return { ragStatus: "Grey", activityStatus: "Unassigned" };
-  }
-  if (state === "NoAction") {
-    return { ragStatus: "Green", activityStatus: "Ready" };
-  }
-
-  // state === "ActionAssigned"
-  const hasActionData = Array.isArray(linkedActions);
-  if (hasActionData) {
-    const openActions = linkedActions.filter(isActionOpen);
-    if (linkedActions.length > 0 && openActions.length === 0) {
-      return { ragStatus: "Blue", activityStatus: "Completed" };
-    }
-  } else {
-    // No action data supplied: respect a persisted resolved status.
-    if (activity.ragStatus === "Blue") {
-      return { ragStatus: "Blue", activityStatus: "Completed" };
-    }
-  }
-
-  const reference = now ? new Date(now) : new Date();
-  if (cycleEndDate && reference > new Date(cycleEndDate)) {
-    return { ragStatus: "Red", activityStatus: "Blocked" };
-  }
-
-  return { ragStatus: "Amber", activityStatus: "At Risk" };
-};
+// Assignment / action-driven governance engine — single source of truth,
+// shared with the dashboard read endpoints. See utils/governance.js.
+const {
+  getCycleEndDate,
+  computeGovernanceStatus,
+  syncProgrammeGovernance,
+} = require("../utils/governance");
 
 // Backwards-compatible wrappers so existing call sites keep working.
 // Optional trailing args (linkedActions, cycleEndDate) enable the full engine.
@@ -655,6 +593,25 @@ router.post(
         closedWeeks: [], // Reset closed weeks for new upload
       });
 
+      // Recompute assignment/action-driven RAG immediately so the upload
+      // response (and the workspace card) show Blocked/Completed straight away,
+      // without the user having to reload. A brand-new programme has no actions,
+      // so this just applies the overdue / Actual-complete / date rules.
+      await syncProgrammeGovernance(programme, Action);
+      const refreshedActivities = programme.extractedData.activities;
+      const refreshedLookahead = refreshedActivities.filter(
+        (a) =>
+          a.weekZone &&
+          !["Beyond Lookahead", "Before Lookahead"].includes(a.weekZone),
+      );
+      const refreshedSummary = buildActivitySummary(
+        refreshedActivities,
+        refreshedLookahead,
+      );
+      programme.extractedData.summary = refreshedSummary;
+      programme.markModified("extractedData.summary");
+      await programme.save();
+
       // Audit log: Programme uploaded
       const projectDoc = project
         ? await Project.findById(project).select("name")
@@ -677,9 +634,9 @@ router.post(
             pageCount: programme.extractedData.pageCount,
             totalActivities: programme.extractedData.totalActivities,
             weekZones: weekZones,
-            summary: summary,
+            summary: refreshedSummary,
             status: programme.status,
-            activities: activities,
+            activities: refreshedActivities,
             createdAt: programme.createdAt,
             lastUpdated: programme.updatedAt,
           },
@@ -1048,6 +1005,10 @@ router.get("/:id/lookahead", protect, async (req, res) => {
       return sendError(res, "Access denied", 403);
     }
 
+    // Auto-refresh: recompute + persist assignment/action-driven RAG so a
+    // cycle-window crossing (e.g. untriaged -> Blocked) is reflected on load.
+    await syncProgrammeGovernance(programme, Action);
+
     const actions = await Action.find({ programme: req.params.id })
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
@@ -1228,6 +1189,7 @@ router.patch("/:id/activity/:activityId", protect, async (req, res) => {
       isBlocked,
       blocker,
       assignmentState,
+      overdueAcknowledged,
     } = req.body;
 
     const programme = await Programme.findById(req.params.id);
@@ -1258,16 +1220,24 @@ router.patch("/:id/activity/:activityId", protect, async (req, res) => {
     if (notes !== undefined) activity.notes = notes;
     if (isBlocked !== undefined) activity.isBlocked = isBlocked;
     if (blocker !== undefined) activity.blocker = blocker;
+    // "Unblock" an overdue activity: acknowledged overdue drops from Blocked to
+    // At Risk (see computeGovernanceStatus) so it stays listed and assignable.
+    if (overdueAcknowledged !== undefined) {
+      activity.overdueAcknowledged = overdueAcknowledged;
+    }
 
-    // Assignment-driven governance transition.
-    // "No Action" -> Green/Ready; "Action Required" is handled when the action
-    // is created (see actionRoutes). Re-derive RAG from the new state.
     if (assignmentState !== undefined) {
       const validStates = ["Unassigned", "NoAction", "ActionAssigned"];
       if (!validStates.includes(assignmentState)) {
         return sendError(res, "Invalid assignmentState", 400);
       }
       activity.assignmentState = assignmentState;
+    }
+
+    // Assignment-driven governance transition. Re-derive RAG/status from the
+    // current state whenever the assignment state or the overdue acknowledgement
+    // changed. ("No Action" -> Green/Ready; actions are handled in actionRoutes.)
+    if (assignmentState !== undefined || overdueAcknowledged !== undefined) {
       const Action = require("../models/Action");
       const linkedActions = await Action.find({
         programme: req.params.id,
@@ -1328,7 +1298,10 @@ router.get("/:id/overview", protect, async (req, res) => {
       return sendError(res, "Access denied", 403);
     }
 
-    const Action = require("../models/Action");
+    // Auto-refresh: recompute + persist assignment/action-driven RAG so a
+    // cycle-window crossing (e.g. untriaged -> Blocked) is reflected on load.
+    await syncProgrammeGovernance(programme, Action);
+
     const CycleHistory = require("../models/CycleHistory");
 
     const actions = await Action.find({ programme: req.params.id });
@@ -1667,12 +1640,15 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return sendError(res, "Access denied", 403);
     }
 
+    // Auto-refresh: recompute + persist assignment/action-driven RAG so a
+    // cycle-window crossing (e.g. untriaged -> Blocked) is reflected on load.
+    await syncProgrammeGovernance(programme, Action);
+
     // Get weekNumber from query params (optional)
     const requestedWeekNumber = req.query.weekNumber
       ? parseInt(req.query.weekNumber)
       : null;
 
-    const Action = require("../models/Action");
     const actions = await Action.find({ programme: req.params.id })
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
@@ -2054,6 +2030,11 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       red: allActivities.filter(
         (a) => a.activityStatus === "Blocked" || a.isBlocked,
       ).length,
+      // Untriaged (no action assigned yet) — shown as a grey ring so the chart
+      // isn't empty before triage.
+      grey: allActivities.filter(
+        (a) => a.activityStatus === "Unassigned" || a.ragStatus === "Grey",
+      ).length,
     };
 
     // Separate counts for Ready and Complete activities
@@ -2066,18 +2047,23 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
 
     // Blocked/Risk Activities - show At Risk or Blocked activities from today onwards
     // Exclude activities with start dates before today and actions from closed weeks
-    const blockedRiskActivities = allActivities
+    // Source from the FULL activity set (not just the current-week window) so
+    // overdue/Blocked and At Risk activities — whose scheduled dates may be in
+    // the past — always surface here for action. This includes an "unblocked"
+    // overdue activity, which drops from Blocked to At Risk but must stay listed
+    // so an action can be assigned to it.
+    const blockedRiskActivities = activities
       .filter((a) => {
-        // Only include activities with start date >= today
-        const activityStartDate = parseActivityDate(a.startDate);
-        if (!activityStartDate || activityStartDate < startOfToday) {
+        if (
+          a.activityStatus === "Complete" ||
+          a.activityStatus === "Completed"
+        ) {
           return false;
         }
         return (
-          a.activityStatus !== "Complete" &&
-          (a.activityStatus === "At Risk" ||
-            a.activityStatus === "Blocked" ||
-            a.isBlocked)
+          a.activityStatus === "Blocked" ||
+          a.activityStatus === "At Risk" ||
+          a.isBlocked
         );
       })
       .slice(0, 20)
@@ -2118,7 +2104,9 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         };
       });
 
-    const blockedActivitiesList = allActivities.filter(
+    // Blocked count spans ALL activities (overdue/blocked past-dated items are
+    // outside the current-week window but must still be counted).
+    const blockedActivitiesList = activities.filter(
       (a) => a.isBlocked || a.activityStatus === "Blocked",
     );
     const blocked = blockedActivitiesList.length;
@@ -2389,6 +2377,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         green: ragDistribution.green,
         amber: ragDistribution.amber,
         red: ragDistribution.red,
+        grey: ragDistribution.grey,
       },
       actionsByStatus: {
         open: actionsByStatus.open,

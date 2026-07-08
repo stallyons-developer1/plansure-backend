@@ -5,6 +5,7 @@ const Programme = require("../models/Programme");
 const Action = require("../models/Action");
 const { protect } = require("../middleware/authMiddleware");
 const { sendError, sendSuccess } = require("../utils/errorResponse");
+const { syncProgrammesGovernance } = require("../utils/governance");
 
 // Helper function to get accessible projects for planners
 const getPlannerAccessibleProjects = async (admin) => {
@@ -107,6 +108,18 @@ const calculateRAG = (activity, today) => {
   }
 };
 
+// Assignment/action-driven RAG is the source of truth (see computeGovernanceStatus
+// in programmeUploadRoutes). The dashboard reflects the STORED ragStatus rather than
+// recomputing a date/zone-based value, so its counts match the Activities & workspace
+// views. Blue (Completed) counts as on-track (Green) for the 3-colour readiness summary;
+// Grey (Unassigned) is not yet triaged and is excluded from the RAG distribution.
+const storedRag = (activity) => {
+  const rag = activity.ragStatus || "Grey";
+  if (rag === "Blue") return "Green";
+  if (rag === "Green" || rag === "Amber" || rag === "Red") return rag;
+  return "Grey";
+};
+
 router.get("/stats", protect, async (req, res) => {
   try {
     const { projectId } = req.query;
@@ -154,6 +167,11 @@ router.get("/stats", protect, async (req, res) => {
       project: { $in: projectIds },
     });
     const programmeIds = programmes.map((p) => p._id);
+
+    // Auto-refresh: recompute + persist assignment/action-driven RAG so the
+    // dashboard counts reflect the current cycle state (e.g. untriaged
+    // activities becoming Blocked once their window passes) on load.
+    await syncProgrammesGovernance(programmes, Action);
 
     let totalActivities = 0;
     let greenCount = 0;
@@ -208,7 +226,7 @@ router.get("/stats", protect, async (req, res) => {
       totalActivities += activities.length;
 
       for (const activity of activities) {
-        const rag = calculateRAG(activity, today);
+        const rag = storedRag(activity);
         if (rag === "Green") greenCount++;
         else if (rag === "Amber") amberCount++;
         else if (rag === "Red") redCount++;
@@ -318,6 +336,10 @@ router.get("/rag-distribution", protect, async (req, res) => {
       });
     }
 
+    // Auto-refresh: recompute + persist assignment/action-driven RAG so the
+    // readiness donut reflects the current cycle state on load.
+    await syncProgrammesGovernance(programmes, Action);
+
     let totalActivities = 0;
     let greenCount = 0;
     let amberCount = 0;
@@ -328,7 +350,7 @@ router.get("/rag-distribution", protect, async (req, res) => {
       const activities = prog.extractedData?.activities || [];
 
       for (const activity of activities) {
-        const rag = calculateRAG(activity, today);
+        const rag = storedRag(activity);
         if (rag !== "Grey") {
           totalActivities++;
           if (rag === "Green") greenCount++;
@@ -675,8 +697,9 @@ router.get("/governance", protect, async (req, res) => {
 
         if (!startsThisWeek && !spansThisWeek) continue;
 
-        // Use the stored ragStatus from the activity (same as Activities & Lookahead page)
-        const ragStatus = activity.ragStatus || "Grey";
+        // Assignment/action-driven RAG (same engine as Programme Upload):
+        // Blue (Completed) counts as on-track Green; Grey is not counted.
+        const ragStatus = storedRag(activity);
 
         if (ragStatus === "Green") {
           green++;
@@ -1243,6 +1266,10 @@ router.get("/weekly", protect, async (req, res) => {
       .populate("project", "name")
       .populate("uploadedBy", "name");
 
+    // Auto-refresh: recompute + persist assignment/action-driven RAG so the
+    // weekly dashboard reflects the current cycle state on load.
+    await syncProgrammesGovernance(programmes, Action);
+
     const sortedProgrammes = programmes.sort(
       (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
     );
@@ -1343,14 +1370,18 @@ router.get("/weekly", protect, async (req, res) => {
       // Filter activities by week dates (only those that START within range)
       if (!activityStartsInWeek(activityObj)) continue;
 
-      const rag = calculateRAG(activityObj, today);
+      // Colour by the stored assignment/action-driven RAG (single source of truth);
+      // the week window above is only a date FILTER for which activities to include.
+      const rag = storedRag(activityObj);
       if (rag !== "Grey") {
         activities.push({ ...activityObj, ragStatus: rag });
         if (rag === "Green") greenCount++;
         else if (rag === "Amber") amberCount++;
         else if (rag === "Red") redCount++;
 
-        if (activityObj.isBlocked) blockedCount++;
+        // Blocked = Red in the assignment/action-driven model (overdue or an
+        // action open past cycle end), not the stale persisted isBlocked flag.
+        if (rag === "Red") blockedCount++;
       }
     }
 
@@ -1566,15 +1597,16 @@ router.get("/weekly", protect, async (req, res) => {
 
           // Check if activity STARTS within this week
           if (actStart >= weekStart && actStart <= weekEnd) {
-            // Use activity status for RAG colors:
-            // Green = Ready, Amber = At Risk, Red = Blocked
-            const status = activity.activityStatus || "Ready";
-            if (status === "Blocked" || activity.isBlocked) {
+            // Assignment/action-driven RAG (same engine as the rest of the
+            // dashboard): Blue (Completed) counts as Green; Grey (Unassigned /
+            // untriaged) is NOT counted — so untriaged activities no longer show
+            // as spurious green bars.
+            const rag = storedRag(activity);
+            if (rag === "Red") {
               weekRed++;
-            } else if (status === "At Risk") {
+            } else if (rag === "Amber") {
               weekAmber++;
-            } else {
-              // Ready, Complete, or any other status = Green
+            } else if (rag === "Green") {
               weekGreen++;
             }
           }

@@ -151,6 +151,13 @@ const programmeSchema = new mongoose.Schema(
             enum: ["Unassigned", "NoAction", "ActionAssigned"],
             default: "Unassigned",
           },
+          // Planner "unblocked" an overdue activity: it stops auto-flagging as
+          // Blocked (drops to At Risk) so it stays in the blocked/risk list and
+          // can be assigned an action. Cleared once an action is assigned.
+          overdueAcknowledged: {
+            type: Boolean,
+            default: false,
+          },
           weekZone: {
             type: String,
           },
