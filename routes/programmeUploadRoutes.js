@@ -2070,7 +2070,26 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     // the past — always surface here for action. This includes an "unblocked"
     // overdue activity, which drops from Blocked to At Risk but must stay listed
     // so an action can be assigned to it.
+    // An activity is at risk *in this window* if it carries an open action due in
+    // it — the activity's own start date may sit in another pair. This mirrors
+    // requiredActionsByStatus, so the list agrees with the "N open required
+    // action(s)" warning rather than contradicting it.
+    const hasOpenActionDueThisWindow = (activity) => {
+      if (!weekStartDate || !weekEndDate) return false;
+      return (activity.linkedActions || []).some((act) => {
+        if (act.isFromClosedWeek) return false;
+        if (act.status === "Completed" || act.status === "Cancelled")
+          return false;
+        if (!act.dueDate) return false;
+        const due = new Date(act.dueDate);
+        return due >= weekStartDate && due <= weekEndDate;
+      });
+    };
+
+    // Scoped to the current 2-week window — this list read from the full
+    // programme, so it surfaced blocked/at-risk activities from other pairs.
     const blockedRiskActivities = activities
+      .filter((a) => isActivityInWeek(a) || hasOpenActionDueThisWindow(a))
       .filter((a) => {
         if (
           a.activityStatus === "Complete" ||
@@ -2330,8 +2349,12 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return `${date.getDate()} ${months[date.getMonth()]}`;
     };
 
+    // Iterates ALL activities, not just those starting in this window: an action
+    // is scoped by its own DUE DATE (below), and an action due this window can
+    // belong to an activity that starts in another one. Using allActivities here
+    // silently dropped those.
     const plannerToDo = [];
-    allActivities.forEach((a) => {
+    activities.forEach((a) => {
       if (a.linkedActions && a.linkedActions.length > 0) {
         // Add each open action as a separate to-do item
         // Exclude actions from closed weeks (PM Override'd weeks)
@@ -2340,7 +2363,14 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
             (action) =>
               action.status !== "Completed" &&
               action.status !== "Cancelled" &&
-              !action.isFromClosedWeek, // Exclude actions from closed weeks
+              !action.isFromClosedWeek && // Exclude actions from closed weeks
+              // Scoped by DUE DATE, matching the planner-todo export. An action
+              // due in a later window is that window's to-do, not this one's.
+              (!weekStartDate ||
+                !weekEndDate ||
+                (action.dueDate &&
+                  new Date(action.dueDate) >= weekStartDate &&
+                  new Date(action.dueDate) <= weekEndDate)),
           )
           .forEach((action) => {
             plannerToDo.push({
