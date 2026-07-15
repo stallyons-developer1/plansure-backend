@@ -208,36 +208,62 @@ router.post("/weekly-plan", protect, async (req, res) => {
       }
     }
 
-    // Calculate current week number
+    // Calculate the 2-week window. Anchored on lookaheadStartDate (upload date)
+    // to match weekly-control and the planner-todo export.
+    let weekStartDate = null;
+    let weekEndDate = null;
     let currentWeekNumber = 1;
-    if (earliestDate) {
-      earliestDate.setHours(0, 0, 0, 0);
-      const msPerDay = 1000 * 60 * 60 * 24;
-      const daysSinceStart = Math.floor((today - earliestDate) / msPerDay);
-      currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
 
-      if (requestedWeekNumber) {
-        currentWeekNumber = requestedWeekNumber;
-      }
+    const referenceDate = activeProgramme.lookaheadStartDate
+      ? new Date(activeProgramme.lookaheadStartDate)
+      : earliestDate;
+
+    if (referenceDate) {
+      referenceDate.setHours(0, 0, 0, 0);
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const daysSinceStart = Math.floor((today - referenceDate) / msPerDay);
+      currentWeekNumber =
+        requestedWeekNumber || Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
+
+      // Align to the week pair (1-2, 3-4, 5-6) the target week belongs to
+      const pairFirstWeek =
+        currentWeekNumber % 2 === 1 ? currentWeekNumber : currentWeekNumber - 1;
+      weekStartDate = new Date(referenceDate);
+      weekStartDate.setDate(referenceDate.getDate() + (pairFirstWeek - 1) * 7);
+      weekEndDate = new Date(weekStartDate);
+      weekEndDate.setDate(weekStartDate.getDate() + 13);
     }
 
-    // Get ALL actions for this programme
+    // Get ALL actions for this programme. This full list stays unfiltered — it
+    // backs actionsByActivity below, and an activity only counts as complete when
+    // EVERY one of its actions is done, including any due outside this window.
     const allActions = await Action.find({
       programme: activeProgramme._id,
     })
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
-    // Categorize actions
-    const completedActions = allActions.filter(a => a.status === "Completed");
-    const overdueActions = allActions.filter(a =>
+    // Actions whose DUE DATE lands in the current window. The action sheets below
+    // report on these only, matching the planner-todo export and the UI counts.
+    const actionsThisWeek =
+      weekStartDate && weekEndDate
+        ? allActions.filter((a) => {
+            if (!a.dueDate) return false;
+            const due = new Date(a.dueDate);
+            return due >= weekStartDate && due <= weekEndDate;
+          })
+        : allActions;
+
+    // Categorize actions (current window only)
+    const completedActions = actionsThisWeek.filter(a => a.status === "Completed");
+    const overdueActions = actionsThisWeek.filter(a =>
       a.status !== "Completed" &&
       a.status !== "Cancelled" &&
       a.status !== "PM Override" &&
       a.dueDate &&
       new Date(a.dueDate) < today
     );
-    const pmOverrideActions = allActions.filter(a => a.status === "PM Override");
+    const pmOverrideActions = actionsThisWeek.filter(a => a.status === "PM Override");
 
     // Build map of actions by activity ID for checking completion status
     const actionsByActivity = {};
@@ -262,15 +288,44 @@ router.post("/weekly-plan", protect, async (req, res) => {
       return false;
     };
 
-    // Get completed activities (status Completed, has " A" suffix, activityStatus is Complete, OR all linked actions completed)
-    const completedActivities = activities.filter(a =>
+    // An activity is "No Action" when the planner explicitly marked it as needing
+    // none (Green/Ready) — as opposed to one that got there by completing actions.
+    const isNoActionActivity = (activity) =>
+      activity.assignmentState === "NoAction";
+
+    const isMarkedComplete = (a) =>
       a.status === "Completed" ||
       a.activityStatus === "Complete" ||
       a.activityStatus === "Completed" ||
       (a.startDate && a.startDate.includes(" A")) ||
-      (a.finishDate && a.finishDate.includes(" A")) ||
-      isActivityCompletedViaActions(a)
+      (a.finishDate && a.finishDate.includes(" A"));
+
+    // Activities needing no action at all — reported on their own sheet.
+    const noActionActivities = activities.filter(isNoActionActivity);
+
+    // Activities ready because their actions are done (or the programme marks them
+    // complete). No-action activities are deliberately excluded — they have their
+    // own sheet, and listing them here too would double-count them.
+    const readyActivities = activities.filter(
+      (a) =>
+        !isNoActionActivity(a) &&
+        (isMarkedComplete(a) || isActivityCompletedViaActions(a))
     );
+
+    // Why each activity is ready.
+    const readinessBasis = (activity) => {
+      const linked = actionsByActivity[activity.activityId] || [];
+      if (linked.length > 0) {
+        const done = linked.filter(
+          (x) =>
+            x.status === "Completed" ||
+            x.status === "Complete" ||
+            x.status === "Cancelled"
+        ).length;
+        return `${done} of ${linked.length} action${linked.length === 1 ? "" : "s"} complete`;
+      }
+      return "Marked complete";
+    };
 
     // Get blocked activities
     const blockedActivities = activities.filter(a => a.isBlocked === true);
@@ -394,26 +449,57 @@ router.post("/weekly-plan", protect, async (req, res) => {
       });
     });
 
-    // Completed Activities Sheet
-    const completedActivitiesSheet = workbook.addWorksheet("Completed Activities");
-    completedActivitiesSheet.columns = [
+    // Ready Activities Sheet — activities whose actions are all complete.
+    // Activities that needed no action are on the "Completed with No Actions" sheet.
+    const readyActivitiesSheet = workbook.addWorksheet("Ready Activities");
+    readyActivitiesSheet.columns = [
       { header: "Activity ID", key: "activityId", width: 15 },
       { header: "Activity Name", key: "activityName", width: 40 },
       { header: "Start Date", key: "startDate", width: 15 },
       { header: "Finish Date", key: "finishDate", width: 15 },
       { header: "Duration", key: "duration", width: 12 },
+      { header: "Basis", key: "basis", width: 26 },
       { header: "Owner", key: "owner", width: 20 },
     ];
-    completedActivitiesSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    completedActivitiesSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF22C55E" } };
+    readyActivitiesSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    readyActivitiesSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF22C55E" } };
 
-    completedActivities.forEach((activity) => {
-      completedActivitiesSheet.addRow({
+    readyActivities.forEach((activity) => {
+      readyActivitiesSheet.addRow({
         activityId: activity.activityId || "-",
         activityName: activity.activityName || "-",
         startDate: activity.startDate || "-",
         finishDate: activity.finishDate || "-",
         duration: activity.duration || "-",
+        basis: readinessBasis(activity),
+        owner: activity.ownerName || "-",
+      });
+    });
+
+    // Completed with No Actions Sheet — activities the planner marked as needing
+    // no action at all. Kept separate from "Ready Activities" so neither sheet
+    // repeats the other.
+    const noActionSheet = workbook.addWorksheet("Completed with No Actions");
+    noActionSheet.columns = [
+      { header: "Activity ID", key: "activityId", width: 15 },
+      { header: "Activity Name", key: "activityName", width: 40 },
+      { header: "Start Date", key: "startDate", width: 15 },
+      { header: "Finish Date", key: "finishDate", width: 15 },
+      { header: "Duration", key: "duration", width: 12 },
+      { header: "RAG Zone", key: "ragZone", width: 14 },
+      { header: "Owner", key: "owner", width: 20 },
+    ];
+    noActionSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    noActionSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF22C55E" } };
+
+    noActionActivities.forEach((activity) => {
+      noActionSheet.addRow({
+        activityId: activity.activityId || "-",
+        activityName: activity.activityName || "-",
+        startDate: activity.startDate || "-",
+        finishDate: activity.finishDate || "-",
+        duration: activity.duration || "-",
+        ragZone: activity.weekZone || "-",
         owner: activity.ownerName || "-",
       });
     });
@@ -497,12 +583,23 @@ router.post("/weekly-plan", protect, async (req, res) => {
     summarySheet.addRow({ category: "PM Override Actions", count: pmOverrideActions.length });
     summarySheet.addRow({ category: "", count: "" });
     summarySheet.addRow({ category: "--- ACTIVITIES ---", count: "" });
-    summarySheet.addRow({ category: "Completed Activities", count: completedActivities.length });
+    summarySheet.addRow({
+      category: "Ready Activities (actions complete)",
+      count: readyActivities.length,
+    });
+    summarySheet.addRow({
+      category: "Completed with No Actions",
+      count: noActionActivities.length,
+    });
     summarySheet.addRow({ category: "Blocked Activities", count: blockedActivities.length });
     summarySheet.addRow({ category: "At Risk (Overdue) Activities", count: atRiskActivities.length });
 
     const totalActions = completedActions.length + overdueActions.length + pmOverrideActions.length;
-    const totalActivities = completedActivities.length + blockedActivities.length + atRiskActivities.length;
+    const totalActivities =
+      readyActivities.length +
+      noActionActivities.length +
+      blockedActivities.length +
+      atRiskActivities.length;
     const totalItems = totalActions + totalActivities;
 
     // Save file
@@ -524,7 +621,7 @@ router.post("/weekly-plan", protect, async (req, res) => {
         completedActionsCount: completedActions.length,
         overdueActionsCount: overdueActions.length,
         pmOverrideActionsCount: pmOverrideActions.length,
-        completedActivitiesCount: completedActivities.length,
+        completedActivitiesCount: readyActivities.length,
         blockedActivitiesCount: blockedActivities.length,
         atRiskActivitiesCount: atRiskActivities.length,
         totalCount: totalItems,
@@ -601,18 +698,34 @@ router.post("/planner-todo", protect, async (req, res) => {
       }
     }
 
-    // Calculate week date range for filtering
+    // Calculate the 2-week window. Anchored on lookaheadStartDate (upload date)
+    // to match weekly-control (programmeUploadRoutes.js:1721) — anchoring on the
+    // earliest activity date made the export's window disagree with the one the
+    // UI shows whenever work was scheduled before the programme was uploaded.
+    // The window is always computed: previously it was skipped unless the client
+    // sent weekNumber (which it never does), so every action was exported.
     let weekStartDate = null;
     let weekEndDate = null;
     let currentWeekNumber = 1;
 
-    if (earliestDate && requestedWeekNumber) {
-      earliestDate.setHours(0, 0, 0, 0);
-      currentWeekNumber = requestedWeekNumber;
+    const referenceDate = activeProgramme.lookaheadStartDate
+      ? new Date(activeProgramme.lookaheadStartDate)
+      : earliestDate;
 
-      // Calculate 2-week date range based on the requested week number
-      weekStartDate = new Date(earliestDate);
-      weekStartDate.setDate(earliestDate.getDate() + (currentWeekNumber - 1) * 7);
+    if (referenceDate) {
+      referenceDate.setHours(0, 0, 0, 0);
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const daysSinceStart = Math.floor((todayStart - referenceDate) / msPerDay);
+      currentWeekNumber =
+        requestedWeekNumber || Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
+
+      // Align to the week pair (1-2, 3-4, 5-6) the target week belongs to
+      const pairFirstWeek =
+        currentWeekNumber % 2 === 1 ? currentWeekNumber : currentWeekNumber - 1;
+      weekStartDate = new Date(referenceDate);
+      weekStartDate.setDate(referenceDate.getDate() + (pairFirstWeek - 1) * 7);
       weekEndDate = new Date(weekStartDate);
       weekEndDate.setDate(weekStartDate.getDate() + 13); // 2 weeks = 14 days
     }
@@ -628,34 +741,15 @@ router.post("/planner-todo", protect, async (req, res) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Filter actions to CURRENT WEEK ONLY (by linked activity or due date)
+    // Filter actions to the current window by DUE DATE ONLY, matching the count
+    // shown in the UI (programmeUploadRoutes.js actionsDueInCurrentWeek). An
+    // action on a week-1-2 activity but due in a later window belongs to that
+    // later window's to-do list, not this one.
     if (weekStartDate && weekEndDate) {
       actions = actions.filter((action) => {
-        // Check if action's due date falls within the week range
-        if (action.dueDate) {
-          const dueDate = new Date(action.dueDate);
-          if (dueDate >= weekStartDate && dueDate <= weekEndDate) {
-            return true;
-          }
-        }
-        // Also include if linked activity is in this week
-        if (action.linkedActivity?.activityId) {
-          const linkedActivity = activities.find(
-            (a) => a.activityId === action.linkedActivity.activityId
-          );
-          if (linkedActivity) {
-            const actStart = parseActivityDate(linkedActivity.startDate);
-            const actFinish = parseActivityDate(linkedActivity.finishDate);
-            if (actStart) {
-              const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
-              const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
-              if (startsThisWeek || spansThisWeek) {
-                return true;
-              }
-            }
-          }
-        }
-        return false;
+        if (!action.dueDate) return false;
+        const dueDate = new Date(action.dueDate);
+        return dueDate >= weekStartDate && dueDate <= weekEndDate;
       });
     }
 
@@ -676,19 +770,11 @@ router.post("/planner-todo", protect, async (req, res) => {
     const inProgressActions = actions.filter((a) => a.status === "In Progress");
 
     // Calculate current week label
-    let currentWeek = requestedWeekNumber ? `W${requestedWeekNumber}` : "N/A";
-    if (!requestedWeekNumber && activeProgramme.lookaheadStartDate) {
-      const startOfYear = new Date(
-        new Date(activeProgramme.lookaheadStartDate).getFullYear(),
-        0,
-        1
-      );
-      const days = Math.floor(
-        (new Date(activeProgramme.lookaheadStartDate) - startOfYear) /
-          (24 * 60 * 60 * 1000)
-      );
-      currentWeek = `W${Math.ceil((days + 1) / 7)}`;
-    }
+    // Label with the PROGRAMME week this window covers. The previous fallback
+    // computed the calendar week-of-year (W28 for a 15-Jul upload) instead —
+    // unrelated to the programme's own week numbering, and it leaked into the
+    // filename and the export history record.
+    const currentWeek = `W${currentWeekNumber}`;
 
     // Create Excel workbook
     const workbook = new ExcelJS.Workbook();

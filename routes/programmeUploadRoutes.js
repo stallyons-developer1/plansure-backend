@@ -1975,9 +1975,26 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return false;
     });
 
-    // Calculate weekly action stats for DISPLAY (includes both Required and Optional)
+    // Actions whose DUE DATE lands inside the current window. Both the display
+    // counts and the close gate are driven by this — an action belongs to the
+    // window its due date falls in, regardless of when its linked activity
+    // starts. (Narrower than actionsInCurrentWeek, which also pulls actions in
+    // via their linked activity's date range.)
+    const actionsDueInCurrentWeek = actions.filter((action) => {
+      if (
+        isActionFromClosedWeek(action.createdAt, action.status, action.title)
+      ) {
+        return false;
+      }
+      if (!action.dueDate || !weekStartDate || !weekEndDate) return false;
+      const dueDate = new Date(action.dueDate);
+      return dueDate >= weekStartDate && dueDate <= weekEndDate;
+    });
+
+    // Calculate weekly action stats for DISPLAY (includes both Required and Optional).
+    // Driven by DUE DATE, same as the gate below.
     const weeklyActionsByStatus = {
-      open: actionsInCurrentWeek.filter(
+      open: actionsDueInCurrentWeek.filter(
         (a) =>
           (a.status === "Open" || !a.status) &&
           a.status !== "Completed" &&
@@ -1985,9 +2002,10 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
           a.status !== "Cancelled" &&
           a.status !== "In Progress",
       ).length,
-      inProgress: actionsInCurrentWeek.filter((a) => a.status === "In Progress")
-        .length,
-      closed: actionsInCurrentWeek.filter((a) => a.status === "Completed")
+      inProgress: actionsDueInCurrentWeek.filter(
+        (a) => a.status === "In Progress",
+      ).length,
+      closed: actionsDueInCurrentWeek.filter((a) => a.status === "Completed")
         .length,
       overdue: 0,
     };
@@ -1995,7 +2013,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     // Calculate REQUIRED-only action stats for Ready to Close logic
     // Optional actions don't block closing
     const requiredActionsByStatus = {
-      open: actionsInCurrentWeek.filter(
+      open: actionsDueInCurrentWeek.filter(
         (a) =>
           (a.status === "Open" || !a.status) &&
           a.status !== "Completed" &&
@@ -2004,7 +2022,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
           a.status !== "In Progress" &&
           a.type !== "Optional",
       ).length,
-      inProgress: actionsInCurrentWeek.filter(
+      inProgress: actionsDueInCurrentWeek.filter(
         (a) => a.status === "In Progress" && a.type !== "Optional",
       ).length,
     };
@@ -2120,6 +2138,13 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         a.activityStatus === "Complete" ||
         (a.startDate && a.startDate.includes(" A")) ||
         (a.finishDate && a.finishDate.includes(" A")),
+    ).length;
+
+    // Count activities the planner marked as needing no action. These ship in the
+    // Weekly Plan's "Completed with No Actions" sheet, so the export count must
+    // include them or the UI card disagrees with the file.
+    const noActionActivitiesCount = activities.filter(
+      (a) => a.assignmentState === "NoAction",
     ).length;
 
     // Count blocked activities - from ALL activities
@@ -2405,6 +2430,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       blockedRiskActivities: blockedRiskActivities,
       activityCounts: {
         completed: completedActivitiesCount,
+        noAction: noActionActivitiesCount,
         blocked: blockedActivitiesCount,
         atRisk: atRiskActivitiesCount,
       },
