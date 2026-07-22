@@ -162,22 +162,35 @@ router.delete("/delete-all", protect, async (req, res) => {
 // If nothing completed → file empty
 router.post("/weekly-plan", protect, async (req, res) => {
   try {
-    // Get weekNumber from request body (sent from frontend)
+    // Get programmeId and weekNumber from request body (sent from frontend)
+    const { programmeId } = req.body;
     const requestedWeekNumber = req.body.weekNumber ? parseInt(req.body.weekNumber) : null;
 
-    const projects = await Project.find({ status: { $ne: "Cancelled" } });
-    const projectIds = projects.map((p) => p._id);
+    // Export the programme the caller asked for. This previously ignored
+    // programmeId entirely and took the newest programme across all projects,
+    // so the file described whichever programme happened to be uploaded last —
+    // not the one on screen. Falls back to the newest only when no id is given,
+    // to keep older callers working.
+    let activeProgramme;
+    if (programmeId) {
+      activeProgramme = await Programme.findById(programmeId);
+      if (!activeProgramme) {
+        return sendError(res, "Programme not found", 404);
+      }
+    } else {
+      const projects = await Project.find({ status: { $ne: "Cancelled" } });
+      const projectIds = projects.map((p) => p._id);
 
-    const programmes = await Programme.find({
-      status: { $in: ["processed", "pending"] },
-      project: { $in: projectIds },
-    }).sort({ createdAt: -1 });
+      const programmes = await Programme.find({
+        status: { $in: ["processed", "pending"] },
+        project: { $in: projectIds },
+      }).sort({ createdAt: -1 });
 
-    if (programmes.length === 0) {
-      return sendError(res, "No active programmes found", 404);
+      if (programmes.length === 0) {
+        return sendError(res, "No active programmes found", 404);
+      }
+      activeProgramme = programmes[0];
     }
-
-    const activeProgramme = programmes[0];
     const activities = activeProgramme.extractedData?.activities || [];
     const today = new Date();
     today.setHours(0, 0, 0, 0);
