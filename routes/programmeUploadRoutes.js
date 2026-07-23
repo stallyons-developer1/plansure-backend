@@ -2529,22 +2529,9 @@ const checkCloseOutEligible = async (programmeId) => {
 
   if (!programme) return { eligible: false, reason: "Programme not found" };
 
-  // Check if this is the last week (all previous weeks must be closed)
-  const totalWeeks = programme.totalWeeks || 0;
-  const closedWeeksCount = await CycleHistory.countDocuments({
-    programme: programmeId,
-  });
-
-  // Close-Out Eligible only when it's the last 2 weeks remaining (since we close 2 weeks at a time)
-  const remainingWeeks = totalWeeks - closedWeeksCount;
-  if (remainingWeeks > 2) {
-    return {
-      eligible: false,
-      reason: `${remainingWeeks} weeks remaining. Close-Out Eligible only available for the last week.`,
-      remainingWeeks: remainingWeeks,
-    };
-  }
-
+  // Single-week model: a week becomes Close-Out Eligible based on its OWN
+  // readiness (no open required actions on Green activities, no overdue, no
+  // blocked) — not on being the last 2 weeks of the programme.
   const today = new Date();
   // Start of today (midnight) - actions are only overdue after due date has fully passed
   const startOfToday = new Date();
@@ -2606,7 +2593,7 @@ const checkCloseOutEligible = async (programmeId) => {
 
   return {
     eligible: true,
-    reason: "All conditions met - Last week ready for close-out",
+    reason: "All conditions met - ready for close-out",
   };
 };
 
@@ -3859,7 +3846,10 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
     const currentClosedCount = (programme.closedWeeks || []).length;
     const isLastWeek = currentClosedCount + 1 >= calculatedTotalWeeks;
 
-    let nextCycleStatus = "Draft";
+    // Non-last week: the meeting stays open and the programme is already
+    // uploaded, so the next week resumes at "Meeting Open" (stepper Upload
+    // step). The last week goes to Close-Out Eligible.
+    let nextCycleStatus = "Meeting Open";
     if (isLastWeek) {
       nextCycleStatus = "Close-Out Eligible";
     }
