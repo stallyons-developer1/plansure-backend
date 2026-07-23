@@ -1828,8 +1828,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       });
     });
 
-    const weekZones = generateWeekZones(today, programme.lookaheadWeeks || 6);
-
     // Use today's date for RAG calculation to show current status (consistent with Activities & Lookahead)
     const ragReferenceDate = today;
 
@@ -1870,25 +1868,51 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         ragStatus,
         activityStatus,
         isBlocked,
-        weekZone: getWeekZone(activityObj.startDate, weekZones),
+        // Keep the STORED weekZone (what the Activities & Lookahead table shows
+        // via the by-project endpoint) rather than recomputing against today,
+        // so the current-week activity scope matches the table exactly.
+        weekZone: activityObj.weekZone,
         linkedActions,
       };
     });
 
-    // Filter activities to only those in the target week
-    const isActivityInWeek = (activity) => {
-      if (!weekStartDate || !weekEndDate) return true; // Show all if no date range
-      const actStart = parseActivityDate(activity.startDate);
-
-      if (!actStart) {
-        return false;
+    // Scope "this week" to the current 2-week zone EXACTLY as the Activities &
+    // Lookahead table computes it. That table derives the RAG zone on the
+    // frontend (ragZoneFor) purely from the start date relative to today:
+    //   weekNum = floor((start - today) / 7) + 1
+    // bucketed as Weeks 1-2 (<=2), 3-4 (<=4), 5-6 (<=6). Crucially there is NO
+    // lower bound, so activities that started BEFORE today (weekNum <= 0) still
+    // fall in Weeks 1-2. That is why the table shows 6 while the old date-window
+    // count (actStart >= weekStartDate) showed 4.
+    const msPerDay = 1000 * 60 * 60 * 24;
+    const zoneForActivity = (activity) => {
+      const status = activity.activityStatus;
+      if (
+        status === "Complete" ||
+        status === "Completed" ||
+        (activity.startDate && activity.startDate.includes(" A")) ||
+        (activity.finishDate && activity.finishDate.includes(" A"))
+      ) {
+        return "Completed";
       }
-
-      // Only include activities that START within the 2-week window
-      const startsThisWeek =
-        actStart >= weekStartDate && actStart <= weekEndDate;
-      return startsThisWeek;
+      if (status === "Blocked") return "Overdue";
+      const start = parseActivityDate(activity.startDate);
+      if (!start) return "N/A";
+      const daysFromToday = Math.floor((start - startOfToday) / msPerDay);
+      const weekNum = Math.floor(daysFromToday / 7) + 1;
+      if (weekNum <= 2) return "Weeks 1-2";
+      if (weekNum <= 4) return "Weeks 3-4";
+      if (weekNum <= 6) return "Weeks 5-6";
+      return `Week ${weekNum}`;
     };
+    const targetZoneLabel =
+      targetWeekNumber <= 2
+        ? "Weeks 1-2"
+        : targetWeekNumber <= 4
+          ? "Weeks 3-4"
+          : "Weeks 5-6";
+    const isActivityInWeek = (activity) =>
+      zoneForActivity(activity) === targetZoneLabel;
 
     const activitiesInWeek = activities.filter((a) => isActivityInWeek(a));
 
@@ -3396,6 +3420,74 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
     // Check if today is still within the current 2-week period
     const canCloseCurrentCycle = today > currentTwoWeekEndDate;
 
+    // ---- Completion-based close gate (replaces the date gate) ---------------
+    // A cycle may be closed once every activity in the current 2-week zone is
+    // triaged (No Action -> Ready, or an action assigned) AND every assigned
+    // action is completed. This mirrors the Activities & Lookahead zone and the
+    // weekly-control "unassigned in this week" logic so the gate matches what
+    // the planner sees, instead of waiting for the calendar.
+    const GateAction = require("../models/Action");
+    const gateActions = await GateAction.find({ programme: req.params.id });
+    const gateOpenByActivity = {};
+    const gateHasActionByActivity = {};
+    for (const action of gateActions) {
+      const actId = action.linkedActivity?.activityId;
+      if (!actId) continue;
+      gateHasActionByActivity[actId] = true;
+      const isOpen =
+        action.status !== "Completed" &&
+        action.status !== "Complete" &&
+        action.status !== "Cancelled";
+      gateOpenByActivity[actId] =
+        (gateOpenByActivity[actId] || 0) + (isOpen ? 1 : 0);
+    }
+    const gateMsPerDay = 1000 * 60 * 60 * 24;
+    // Zone label exactly as the Activities & Lookahead table computes it
+    // (start date relative to today; the <=2 bucket has no lower bound).
+    const gateZoneOf = (activity) => {
+      const start = parseDate(activity.startDate);
+      if (!start) return "N/A";
+      const days = Math.floor((start - today) / gateMsPerDay);
+      const wn = Math.floor(days / 7) + 1;
+      if (wn <= 2) return "Weeks 1-2";
+      if (wn <= 4) return "Weeks 3-4";
+      if (wn <= 6) return "Weeks 5-6";
+      return `Week ${wn}`;
+    };
+    // "Settled" = genuinely done, so it no longer needs triage/action to close:
+    // an Actual finish, a completed status, or an assigned action fully done.
+    const gateIsSettled = (activity) => {
+      if (activity.finishDate && activity.finishDate.includes(" A")) return true;
+      if (
+        activity.activityStatus === "Completed" ||
+        activity.activityStatus === "Complete"
+      )
+        return true;
+      if (
+        gateHasActionByActivity[activity.activityId] &&
+        (gateOpenByActivity[activity.activityId] || 0) === 0
+      )
+        return true;
+      return false;
+    };
+    const currentPairLabel =
+      currentWeekNumber <= 2
+        ? "Weeks 1-2"
+        : currentWeekNumber <= 4
+          ? "Weeks 3-4"
+          : "Weeks 5-6";
+    const cycleOpenActivities = activities.filter(
+      (a) => gateZoneOf(a) === currentPairLabel && !gateIsSettled(a),
+    );
+    const cycleUnassignedCount = cycleOpenActivities.filter(
+      (a) => (a.assignmentState || "Unassigned") === "Unassigned",
+    ).length;
+    const cycleOpenActionCount = cycleOpenActivities.filter(
+      (a) => (gateOpenByActivity[a.activityId] || 0) > 0,
+    ).length;
+    const currentCycleComplete =
+      cycleUnassignedCount === 0 && cycleOpenActionCount === 0;
+
     // Build weeks array
     const weeks = [];
     for (let i = 1; i <= totalWeeks; i++) {
@@ -3457,8 +3549,9 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       // 3. Today > current 2-week cycle end date (the 2-week period must have completed)
       const previousWeeksClosed =
         closedWeekNumbers.filter((n) => n < i).length === i - 1;
-      // Use the current cycle's 2-week end date (calculated from today or last cycle end)
-      const canClose = !isClosed && previousWeeksClosed && canCloseCurrentCycle;
+      // Completion-based gate: closeable once the current cycle's activities are
+      // all assigned and their actions completed (no calendar wait).
+      const canClose = !isClosed && previousWeeksClosed && currentCycleComplete;
 
       // Provide reason if cannot close
       let canCloseReason = null;
@@ -3467,25 +3560,13 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
           canCloseReason = "Already closed";
         } else if (!previousWeeksClosed) {
           canCloseReason = "Previous weeks must be closed first";
-        } else if (!canCloseCurrentCycle) {
-          const formatDate = (d) => {
-            const months = [
-              "Jan",
-              "Feb",
-              "Mar",
-              "Apr",
-              "May",
-              "Jun",
-              "Jul",
-              "Aug",
-              "Sep",
-              "Oct",
-              "Nov",
-              "Dec",
-            ];
-            return `${d.getDate()} ${months[d.getMonth()]}`;
-          };
-          canCloseReason = `Week closes after ${formatDate(currentTwoWeekEndDate)}`;
+        } else if (!currentCycleComplete) {
+          canCloseReason =
+            cycleUnassignedCount > 0
+              ? `Assign all activities before closing (${cycleUnassignedCount} unassigned)`
+              : `Complete all open actions before closing (${cycleOpenActionCount} activit${
+                  cycleOpenActionCount === 1 ? "y" : "ies"
+                } with open actions)`;
         }
       }
 
@@ -3658,82 +3739,86 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
 
     const isOverride = closeType === "PM Override";
 
-    // The 2-week period date gate applies even to PM Override — the override
-    // only bypasses INCOMPLETE ACTIONS, not the calendar. A pair cannot be
-    // closed (normally or via override) until its 2-week window has ended.
-    if (!isSecondOfPair && todayStart < twoWeekEndDateStart) {
-      const formatDate = (d) => {
-        const months = [
-          "Jan",
-          "Feb",
-          "Mar",
-          "Apr",
-          "May",
-          "Jun",
-          "Jul",
-          "Aug",
-          "Sep",
-          "Oct",
-          "Nov",
-          "Dec",
-        ];
-        return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+    // -----------------------------------------------------------------
+    // Completion-based close gate (replaces the old 2-week date gate).
+    // A pair may be closed once every activity in its 2-week zone is triaged
+    // (No Action -> Ready, or an action assigned) AND every assigned action is
+    // completed. PM Override still force-closes past incomplete actions. The
+    // zone + settled logic mirror the weeks-status gate and the Activities &
+    // Lookahead table so enforcement matches exactly what the planner sees.
+    // Skipped for the second week of a pair (already validated on the first).
+    if (!isOverride && !isSecondOfPair) {
+      const gateActions = await require("../models/Action").find({
+        programme: req.params.id,
+      });
+      const openByActivity = {};
+      const hasActionByActivity = {};
+      for (const action of gateActions) {
+        const actId = action.linkedActivity?.activityId;
+        if (!actId) continue;
+        hasActionByActivity[actId] = true;
+        const isOpen =
+          action.status !== "Completed" &&
+          action.status !== "Complete" &&
+          action.status !== "Cancelled";
+        openByActivity[actId] = (openByActivity[actId] || 0) + (isOpen ? 1 : 0);
+      }
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const zoneOf = (activity) => {
+        const start = parseDate(activity.startDate);
+        if (!start) return "N/A";
+        const days = Math.floor((start - todayStart) / msPerDay);
+        const wn = Math.floor(days / 7) + 1;
+        if (wn <= 2) return "Weeks 1-2";
+        if (wn <= 4) return "Weeks 3-4";
+        if (wn <= 6) return "Weeks 5-6";
+        return `Week ${wn}`;
       };
-      return sendError(
-        res,
-        `Cannot close Week ${weekNumber}-${weekNumber + 1} yet. The 2-week period ends on ${formatDate(twoWeekEndDate)} and hasn't completed.`,
-        400,
+      const isSettled = (activity) => {
+        if (activity.finishDate && activity.finishDate.includes(" A"))
+          return true;
+        if (
+          activity.activityStatus === "Completed" ||
+          activity.activityStatus === "Complete"
+        )
+          return true;
+        if (
+          hasActionByActivity[activity.activityId] &&
+          (openByActivity[activity.activityId] || 0) === 0
+        )
+          return true;
+        return false;
+      };
+      const pairLabel =
+        weekNumber <= 2
+          ? "Weeks 1-2"
+          : weekNumber <= 4
+            ? "Weeks 3-4"
+            : "Weeks 5-6";
+      const openActivities = activities.filter(
+        (a) => zoneOf(a) === pairLabel && !isSettled(a),
       );
-    }
-
-    // -----------------------------------------------------------------
-    // Weekly closure conditions (skipped for PM Override force-close):
-    //  1. Every activity in the current week must be assigned (No Action
-    //     chosen or an action assigned) — none may remain Unassigned.
-    //  2. No action whose due (end) date falls in the current week may
-    //     still be pending.
-    // -----------------------------------------------------------------
-    if (!isOverride) {
-      const isInCurrentWeek = (activity) => {
-        const actStart = parseDate(activity.startDate);
-        const actFinish = parseDate(activity.finishDate);
-        if (!actStart) return false;
-        const startsThisWeek =
-          actStart >= weekStartDate && actStart <= weekEndDate;
-        const spansThisWeek =
-          actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
-        return startsThisWeek || spansThisWeek;
-      };
-
-      const currentWeekActivities = activities.filter(isInCurrentWeek);
-      const unassignedActivities = currentWeekActivities.filter(
+      const unassignedActivities = openActivities.filter(
         (a) => (a.assignmentState || "Unassigned") === "Unassigned",
       );
       if (unassignedActivities.length > 0) {
         return sendError(
           res,
-          `Cannot close Week ${weekNumber}. ${unassignedActivities.length} activit${
+          `Cannot close yet. ${unassignedActivities.length} activit${
             unassignedActivities.length === 1 ? "y is" : "ies are"
-          } still unassigned. Every activity in this week must be assigned before closing.`,
+          } still unassigned. Assign every activity before closing.`,
           400,
         );
       }
-
-      const weekEndInclusive = new Date(weekEndDate);
-      weekEndInclusive.setHours(23, 59, 59, 999);
-      const pendingWeekActions = await require("../models/Action").find({
-        programme: req.params.id,
-        dueDate: { $gte: weekStartDate, $lte: weekEndInclusive },
-        status: { $nin: ["Completed", "Complete", "Cancelled"] },
-      });
-      if (pendingWeekActions.length > 0) {
+      const withOpenActions = openActivities.filter(
+        (a) => (openByActivity[a.activityId] || 0) > 0,
+      );
+      if (withOpenActions.length > 0) {
         return sendError(
           res,
-          `Cannot close Week ${weekNumber}. ${pendingWeekActions.length} action${
-            pendingWeekActions.length === 1 ? "" : "s"
-          } due this week ${
-            pendingWeekActions.length === 1 ? "is" : "are"
-          } still pending.`,
+          `Cannot close yet. ${withOpenActions.length} activit${
+            withOpenActions.length === 1 ? "y has" : "ies have"
+          } open actions. Complete all actions before closing.`,
           400,
         );
       }
