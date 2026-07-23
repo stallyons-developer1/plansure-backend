@@ -513,17 +513,21 @@ router.post(
       }
 
       const today = new Date();
-      // Anchor the week schedule to the PROJECT's start date (falls back to the
-      // upload date when the programme isn't linked to a project). This makes
-      // the lookahead / Weekly Control / close windows count weeks from the date
-      // the user set when creating the project.
+      // Anchor the week schedule:
+      //  - FIRST programme for a project -> the project's start date (week 1).
+      //  - RE-UPLOAD (weeks 2+) -> today (the meeting-open / upload date), so
+      //    each new week's lookahead rolls forward from when it was uploaded.
       let anchorDate = new Date(today);
       if (project) {
-        const anchorProject =
-          await Project.findById(project).select("startDate");
-        if (anchorProject?.startDate) {
-          anchorDate = new Date(anchorProject.startDate);
+        const priorCount = await Programme.countDocuments({ project });
+        if (priorCount === 0) {
+          const anchorProject =
+            await Project.findById(project).select("startDate");
+          if (anchorProject?.startDate) {
+            anchorDate = new Date(anchorProject.startDate);
+          }
         }
+        // else: re-upload -> keep anchorDate = today.
       }
       anchorDate.setHours(0, 0, 0, 0);
       const weekZones = generateWeekZones(anchorDate, 6);
@@ -1729,23 +1733,12 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     const weekStart = new Date(todayStart);
     weekStart.setDate(todayStart.getDate() - daysFromMonday); // Go back to Monday
 
-    // Anchor week calculations to the PROJECT start date (falls back to the
-    // upload date / earliest activity). This makes the lookahead / Weekly
-    // Control windows count weeks from when the project starts.
-    let projectStartAnchor = null;
-    if (programme.project) {
-      const anchorProject = await Project.findById(programme.project).select(
-        "startDate",
-      );
-      if (anchorProject?.startDate) {
-        projectStartAnchor = new Date(anchorProject.startDate);
-      }
-    }
-    const referenceDate = projectStartAnchor
-      ? projectStartAnchor
-      : programme.lookaheadStartDate
-        ? new Date(programme.lookaheadStartDate)
-        : earliestDate;
+    // Anchor to the programme's own start (lookaheadStartDate) — set at upload
+    // to the project start for week 1, or the upload/meeting-open date for the
+    // re-uploaded weeks 2+. Each week's lookahead thus rolls forward.
+    const referenceDate = programme.lookaheadStartDate
+      ? new Date(programme.lookaheadStartDate)
+      : earliestDate;
 
     if (referenceDate) {
       referenceDate.setHours(0, 0, 0, 0);
@@ -2472,11 +2465,22 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         open: requiredActionsByStatus.open,
         inProgress: requiredActionsByStatus.inProgress,
       },
-      // Weekly closure condition #1: every current-week activity must be
-      // assigned (No Action chosen or an action assigned).
-      unassignedInWeek: allActivities.filter(
-        (a) => (a.assignmentState || "Unassigned") === "Unassigned",
-      ).length,
+      // Closure condition: EVERY activity in the 6-week lookahead (all zones in
+      // Activities & Lookahead) must be assigned, not just the current week's.
+      unassignedInWeek: (() => {
+        const lookaheadGateEnd = new Date(scheduleAnchor);
+        lookaheadGateEnd.setDate(lookaheadGateEnd.getDate() + 41);
+        lookaheadGateEnd.setHours(23, 59, 59, 999);
+        return activities.filter((a) => {
+          const s = parseActivityDate(a.startDate);
+          return (
+            s &&
+            s >= scheduleAnchor &&
+            s <= lookaheadGateEnd &&
+            (a.assignmentState || "Unassigned") === "Unassigned"
+          );
+        }).length;
+      })(),
       blockedRiskActivities: blockedRiskActivities,
       activityCounts: {
         completed: completedActivitiesCount,
@@ -3352,22 +3356,11 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
     today.setHours(0, 0, 0, 0);
     let currentWeekNumber = 1;
 
-    // Anchor week calculations to the PROJECT start date (falls back to the
-    // upload date / earliest activity).
-    let projectStartAnchor = null;
-    if (programme.project) {
-      const anchorProject = await Project.findById(programme.project).select(
-        "startDate",
-      );
-      if (anchorProject?.startDate) {
-        projectStartAnchor = new Date(anchorProject.startDate);
-      }
-    }
-    const referenceDate = projectStartAnchor
-      ? projectStartAnchor
-      : programme.lookaheadStartDate
-        ? new Date(programme.lookaheadStartDate)
-        : earliestDate;
+    // Anchor to the programme's own start (lookaheadStartDate) — project start
+    // for week 1, upload/meeting-open date for the re-uploaded weeks 2+.
+    const referenceDate = programme.lookaheadStartDate
+      ? new Date(programme.lookaheadStartDate)
+      : earliestDate;
 
     if (referenceDate) {
       referenceDate.setHours(0, 0, 0, 0);
@@ -3457,28 +3450,24 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
     };
     const gateAnchor = new Date(referenceDate || earliestDate);
     gateAnchor.setHours(0, 0, 0, 0);
-    const weekCompletion = (weekNum) => {
-      const ws = new Date(gateAnchor);
-      ws.setDate(ws.getDate() + (weekNum - 1) * 7);
-      const we = new Date(ws);
-      we.setDate(ws.getDate() + 6);
-      we.setHours(23, 59, 59, 999);
-      const openActs = activities.filter((a) => {
-        const s = parseDate(a.startDate);
-        return s && s >= ws && s <= we && !gateIsSettled(a);
-      });
-      const unassigned = openActs.filter(
-        (a) => (a.assignmentState || "Unassigned") === "Unassigned",
-      ).length;
-      const openActions = openActs.filter(
-        (a) => (gateOpenByActivity[a.activityId] || 0) > 0,
-      ).length;
-      return {
-        complete: unassigned === 0 && openActions === 0,
-        unassigned,
-        openActions,
-      };
-    };
+    // Close gate: EVERY activity in the 6-week lookahead (everything shown in
+    // Activities & Lookahead — all zones) must be assigned and have no open
+    // actions, not just the current week's.
+    const lookaheadEnd = new Date(gateAnchor);
+    lookaheadEnd.setDate(lookaheadEnd.getDate() + 41); // 6 weeks (days 0-41)
+    lookaheadEnd.setHours(23, 59, 59, 999);
+    const lookaheadOpen = activities.filter((a) => {
+      const s = parseDate(a.startDate);
+      return s && s >= gateAnchor && s <= lookaheadEnd && !gateIsSettled(a);
+    });
+    const lookaheadUnassigned = lookaheadOpen.filter(
+      (a) => (a.assignmentState || "Unassigned") === "Unassigned",
+    ).length;
+    const lookaheadOpenActions = lookaheadOpen.filter(
+      (a) => (gateOpenByActivity[a.activityId] || 0) > 0,
+    ).length;
+    const lookaheadComplete =
+      lookaheadUnassigned === 0 && lookaheadOpenActions === 0;
 
     const weeks = [];
     for (let i = 1; i <= totalWeeks; i++) {
@@ -3532,8 +3521,7 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
 
       const previousWeeksClosed =
         closedWeekNumbers.filter((n) => n < i).length === i - 1;
-      const wc = weekCompletion(i);
-      const canClose = !isClosed && previousWeeksClosed && wc.complete;
+      const canClose = !isClosed && previousWeeksClosed && lookaheadComplete;
 
       let canCloseReason = null;
       if (!canClose) {
@@ -3541,12 +3529,12 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
           canCloseReason = "Already closed";
         } else if (!previousWeeksClosed) {
           canCloseReason = "Previous weeks must be closed first";
-        } else if (!wc.complete) {
+        } else if (!lookaheadComplete) {
           canCloseReason =
-            wc.unassigned > 0
-              ? `Assign all activities before closing (${wc.unassigned} unassigned)`
-              : `Complete all open actions before closing (${wc.openActions} activit${
-                  wc.openActions === 1 ? "y" : "ies"
+            lookaheadUnassigned > 0
+              ? `Assign all activities before closing (${lookaheadUnassigned} unassigned)`
+              : `Complete all open actions before closing (${lookaheadOpenActions} activit${
+                  lookaheadOpenActions === 1 ? "y" : "ies"
                 } with open actions)`;
         }
       }
@@ -3673,20 +3661,11 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       return sendError(res, "Cannot determine programme start date", 400);
     }
 
-    let projectStartAnchor = null;
-    if (programme.project) {
-      const anchorProject = await Project.findById(programme.project).select(
-        "startDate",
-      );
-      if (anchorProject?.startDate) {
-        projectStartAnchor = new Date(anchorProject.startDate);
-      }
-    }
-    const weekAnchorDate = projectStartAnchor
-      ? projectStartAnchor
-      : programme.lookaheadStartDate
-        ? new Date(programme.lookaheadStartDate)
-        : new Date(earliestDate);
+    // Anchor to the programme's own start (lookaheadStartDate) — project start
+    // for week 1, upload/meeting-open date for the re-uploaded weeks 2+.
+    const weekAnchorDate = programme.lookaheadStartDate
+      ? new Date(programme.lookaheadStartDate)
+      : new Date(earliestDate);
     weekAnchorDate.setHours(0, 0, 0, 0);
 
     const weekStartDate = new Date(weekAnchorDate);
@@ -3739,12 +3718,15 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
           return true;
         return false;
       };
-      const weekEndInclusive = new Date(weekEndDate);
-      weekEndInclusive.setHours(23, 59, 59, 999);
+      // Gate on the ENTIRE 6-week lookahead (all zones in Activities &
+      // Lookahead), not just the week being closed.
+      const lookaheadEnd = new Date(weekAnchorDate);
+      lookaheadEnd.setDate(lookaheadEnd.getDate() + 41); // 6 weeks (days 0-41)
+      lookaheadEnd.setHours(23, 59, 59, 999);
       const openActivities = activities.filter((a) => {
         const s = parseDate(a.startDate);
         return (
-          s && s >= weekStartDate && s <= weekEndInclusive && !isSettled(a)
+          s && s >= weekAnchorDate && s <= lookaheadEnd && !isSettled(a)
         );
       });
       const unassignedActivities = openActivities.filter(
@@ -3846,10 +3828,10 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
     const currentClosedCount = (programme.closedWeeks || []).length;
     const isLastWeek = currentClosedCount + 1 >= calculatedTotalWeeks;
 
-    // Non-last week: the meeting stays open and the programme is already
-    // uploaded, so the next week resumes at "Meeting Open" (stepper Upload
-    // step). The last week goes to Close-Out Eligible.
-    let nextCycleStatus = "Meeting Open";
+    // Non-last week: the next week starts a fresh cycle (Open Meeting -> re-
+    // upload -> ...), so reset to Draft. The last week goes to Close-Out
+    // Eligible.
+    let nextCycleStatus = "Draft";
     if (isLastWeek) {
       nextCycleStatus = "Close-Out Eligible";
     }
