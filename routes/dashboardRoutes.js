@@ -1297,25 +1297,31 @@ router.get("/weekly", protect, async (req, res) => {
     }
 
     if (earliestStartDate) {
-      // Calculate weeks from programme start date to today
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       earliestStartDate.setHours(0, 0, 0, 0);
 
+      // Anchor the week schedule to the PROJECT start date (falls back to the
+      // earliest activity). Weeks are single 7-day weeks counted from there.
+      const anchorDate = projects[0]?.startDate
+        ? new Date(projects[0].startDate)
+        : new Date(earliestStartDate);
+      anchorDate.setHours(0, 0, 0, 0);
+
       const msPerDay = 1000 * 60 * 60 * 24;
-      const daysSinceStart = Math.floor((today - earliestStartDate) / msPerDay);
-      // Use requested week number if provided, otherwise calculate from today
+      const daysSinceStart = Math.floor((today - anchorDate) / msPerDay);
+      // Use requested week number if provided, otherwise the current week.
       const weekNum = requestedWeekNumber
         ? parseInt(requestedWeekNumber)
         : Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
 
-      weekNumber = `Week ${weekNum}-${weekNum + 1}`;
+      weekNumber = `Week ${weekNum}`;
 
-      // Calculate date range starting from TODAY (not Monday)
-      // Show 2-week window from current date onwards
-      currentWeekStart = new Date(today);
-      currentWeekEnd = new Date(today);
-      currentWeekEnd.setDate(today.getDate() + 13); // 2 weeks = 14 days from today
+      // Single 7-day week window, schedule-anchored to the project start.
+      currentWeekStart = new Date(anchorDate);
+      currentWeekStart.setDate(anchorDate.getDate() + (weekNum - 1) * 7);
+      currentWeekEnd = new Date(currentWeekStart);
+      currentWeekEnd.setDate(currentWeekStart.getDate() + 6); // 7-day window
 
       const formatDate = (d) => {
         const day = d.getDate();

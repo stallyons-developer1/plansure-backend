@@ -513,7 +513,20 @@ router.post(
       }
 
       const today = new Date();
-      const weekZones = generateWeekZones(today, 6);
+      // Anchor the week schedule to the PROJECT's start date (falls back to the
+      // upload date when the programme isn't linked to a project). This makes
+      // the lookahead / Weekly Control / close windows count weeks from the date
+      // the user set when creating the project.
+      let anchorDate = new Date(today);
+      if (project) {
+        const anchorProject =
+          await Project.findById(project).select("startDate");
+        if (anchorProject?.startDate) {
+          anchorDate = new Date(anchorProject.startDate);
+        }
+      }
+      anchorDate.setHours(0, 0, 0, 0);
+      const weekZones = generateWeekZones(anchorDate, 6);
 
       activities.forEach((activity) => {
         activity.weekZone = getWeekZone(activity.startDate, weekZones);
@@ -580,7 +593,7 @@ router.post(
         cycleStatus: "Uploaded",
         weekNumber,
         lookaheadWeeks: 6,
-        lookaheadStartDate: today,
+        lookaheadStartDate: anchorDate,
         weekZones: weekZones,
         extractedData: {
           activities: activities,
@@ -1716,11 +1729,23 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     const weekStart = new Date(todayStart);
     weekStart.setDate(todayStart.getDate() - daysFromMonday); // Go back to Monday
 
-    // Use lookaheadStartDate (upload date) for week calculation, not earliest activity date
-    // This ensures weeks start from when the programme was uploaded
-    const referenceDate = programme.lookaheadStartDate
-      ? new Date(programme.lookaheadStartDate)
-      : earliestDate;
+    // Anchor week calculations to the PROJECT start date (falls back to the
+    // upload date / earliest activity). This makes the lookahead / Weekly
+    // Control windows count weeks from when the project starts.
+    let projectStartAnchor = null;
+    if (programme.project) {
+      const anchorProject = await Project.findById(programme.project).select(
+        "startDate",
+      );
+      if (anchorProject?.startDate) {
+        projectStartAnchor = new Date(anchorProject.startDate);
+      }
+    }
+    const referenceDate = projectStartAnchor
+      ? projectStartAnchor
+      : programme.lookaheadStartDate
+        ? new Date(programme.lookaheadStartDate)
+        : earliestDate;
 
     if (referenceDate) {
       referenceDate.setHours(0, 0, 0, 0);
@@ -1734,20 +1759,19 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     // Use requested week or current week
     const targetWeekNumber = requestedWeekNumber || currentWeekNumber;
 
-    // Anchor the 2-week window to the programme's FIXED week schedule
-    // (referenceDate = upload date), not to "today". This way each pair shows
-    // its own date range — Weeks 1-2, Weeks 3-4, Weeks 5-6 — instead of every
-    // pair appearing as "today .. today+13".
+    // Anchor the single 7-day week to the programme's FIXED week schedule
+    // (referenceDate = upload date), not to "today", so each week shows its own
+    // date range (Week 1, Week 2, ...) instead of "today .. today+6".
     const scheduleAnchor = referenceDate
       ? new Date(referenceDate)
       : new Date(todayStart);
     scheduleAnchor.setHours(0, 0, 0, 0);
-    const pairFirstWeek =
-      targetWeekNumber % 2 === 1 ? targetWeekNumber : targetWeekNumber - 1;
     const weekStartDate = new Date(scheduleAnchor);
-    weekStartDate.setDate(scheduleAnchor.getDate() + (pairFirstWeek - 1) * 7);
+    weekStartDate.setDate(
+      scheduleAnchor.getDate() + (targetWeekNumber - 1) * 7,
+    );
     const weekEndDate = new Date(weekStartDate);
-    weekEndDate.setDate(weekStartDate.getDate() + 13); // 2-week window (14 days)
+    weekEndDate.setDate(weekStartDate.getDate() + 6); // 1-week window (7 days)
 
     // Get closed weeks from programme
     const closedWeeks = programme.closedWeeks || [];
@@ -1876,47 +1900,19 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       };
     });
 
-    // Scope "this week" to the current 2-week zone EXACTLY as the Activities &
-    // Lookahead table computes it. That table derives the RAG zone on the
-    // frontend (ragZoneFor) purely from the start date relative to today:
-    //   weekNum = floor((start - today) / 7) + 1
-    // bucketed as Weeks 1-2 (<=2), 3-4 (<=4), 5-6 (<=6). Crucially there is NO
-    // lower bound, so activities that started BEFORE today (weekNum <= 0) still
-    // fall in Weeks 1-2. That is why the table shows 6 while the old date-window
-    // count (actStart >= weekStartDate) showed 4.
-    const msPerDay = 1000 * 60 * 60 * 24;
-    const zoneForActivity = (activity) => {
-      const status = activity.activityStatus;
-      if (
-        status === "Complete" ||
-        status === "Completed" ||
-        (activity.startDate && activity.startDate.includes(" A")) ||
-        (activity.finishDate && activity.finishDate.includes(" A"))
-      ) {
-        return "Completed";
-      }
-      if (status === "Blocked") return "Overdue";
+    // Scope "this week" to the single 7-day week window (schedule-anchored,
+    // matching the date range shown in the header): activities that START
+    // within [weekStartDate, weekEndDate].
+    const weekEndInclusive = new Date(weekEndDate);
+    weekEndInclusive.setHours(23, 59, 59, 999);
+    const isActivityInWeek = (activity) => {
       const start = parseActivityDate(activity.startDate);
-      if (!start) return "N/A";
-      const daysFromToday = Math.floor((start - startOfToday) / msPerDay);
-      const weekNum = Math.floor(daysFromToday / 7) + 1;
-      if (weekNum <= 2) return "Weeks 1-2";
-      if (weekNum <= 4) return "Weeks 3-4";
-      if (weekNum <= 6) return "Weeks 5-6";
-      return `Week ${weekNum}`;
+      return !!start && start >= weekStartDate && start <= weekEndInclusive;
     };
-    const targetZoneLabel =
-      targetWeekNumber <= 2
-        ? "Weeks 1-2"
-        : targetWeekNumber <= 4
-          ? "Weeks 3-4"
-          : "Weeks 5-6";
-    const isActivityInWeek = (activity) =>
-      zoneForActivity(activity) === targetZoneLabel;
 
     const activitiesInWeek = activities.filter((a) => isActivityInWeek(a));
 
-    // Don't filter out Grey activities - show ALL activities in the 2-week window
+    // Show ALL activities in the single-week window (including Grey).
     const allActivities = activitiesInWeek;
 
     // Calculate action stats from ALL actions in database (for Actions by Status chart)
@@ -2498,7 +2494,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       },
       weekInfo: {
         weekNumber: targetWeekNumber,
-        weekNumberEnd: targetWeekNumber + 1,
+        weekNumberEnd: targetWeekNumber, // single 7-day week (no 2-week pairing)
         currentWeekNumber: currentWeekNumber,
         dateRange:
           weekStartDate && weekEndDate
@@ -3044,7 +3040,9 @@ router.post("/recalculate-rag", protect, adminOnly, async (req, res) => {
       programmeActions.forEach((action) => {
         const actId = action.linkedActivity?.activityId;
         if (!actId) return;
-        (actionsByActivity[actId] = actionsByActivity[actId] || []).push(action);
+        (actionsByActivity[actId] = actionsByActivity[actId] || []).push(
+          action,
+        );
       });
 
       for (let i = 0; i < programme.extractedData.activities.length; i++) {
@@ -3367,10 +3365,22 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
     today.setHours(0, 0, 0, 0);
     let currentWeekNumber = 1;
 
-    // Use lookaheadStartDate (upload date) for week calculation
-    const referenceDate = programme.lookaheadStartDate
-      ? new Date(programme.lookaheadStartDate)
-      : earliestDate;
+    // Anchor week calculations to the PROJECT start date (falls back to the
+    // upload date / earliest activity).
+    let projectStartAnchor = null;
+    if (programme.project) {
+      const anchorProject = await Project.findById(programme.project).select(
+        "startDate",
+      );
+      if (anchorProject?.startDate) {
+        projectStartAnchor = new Date(anchorProject.startDate);
+      }
+    }
+    const referenceDate = projectStartAnchor
+      ? projectStartAnchor
+      : programme.lookaheadStartDate
+        ? new Date(programme.lookaheadStartDate)
+        : earliestDate;
 
     if (referenceDate) {
       referenceDate.setHours(0, 0, 0, 0);
@@ -3421,11 +3431,11 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
     const canCloseCurrentCycle = today > currentTwoWeekEndDate;
 
     // ---- Completion-based close gate (replaces the date gate) ---------------
-    // A cycle may be closed once every activity in the current 2-week zone is
-    // triaged (No Action -> Ready, or an action assigned) AND every assigned
-    // action is completed. This mirrors the Activities & Lookahead zone and the
-    // weekly-control "unassigned in this week" logic so the gate matches what
-    // the planner sees, instead of waiting for the calendar.
+    // A week may be closed once every activity in the current single 7-day week
+    // is triaged (No Action -> Ready, or an action assigned) AND every assigned
+    // action is completed. Scope matches the weekly-control single-week window
+    // (schedule-anchored to the upload date) so the gate matches what the
+    // planner sees, instead of waiting for the calendar.
     const GateAction = require("../models/Action");
     const gateActions = await GateAction.find({ programme: req.params.id });
     const gateOpenByActivity = {};
@@ -3441,23 +3451,11 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       gateOpenByActivity[actId] =
         (gateOpenByActivity[actId] || 0) + (isOpen ? 1 : 0);
     }
-    const gateMsPerDay = 1000 * 60 * 60 * 24;
-    // Zone label exactly as the Activities & Lookahead table computes it
-    // (start date relative to today; the <=2 bucket has no lower bound).
-    const gateZoneOf = (activity) => {
-      const start = parseDate(activity.startDate);
-      if (!start) return "N/A";
-      const days = Math.floor((start - today) / gateMsPerDay);
-      const wn = Math.floor(days / 7) + 1;
-      if (wn <= 2) return "Weeks 1-2";
-      if (wn <= 4) return "Weeks 3-4";
-      if (wn <= 6) return "Weeks 5-6";
-      return `Week ${wn}`;
-    };
     // "Settled" = genuinely done, so it no longer needs triage/action to close:
     // an Actual finish, a completed status, or an assigned action fully done.
     const gateIsSettled = (activity) => {
-      if (activity.finishDate && activity.finishDate.includes(" A")) return true;
+      if (activity.finishDate && activity.finishDate.includes(" A"))
+        return true;
       if (
         activity.activityStatus === "Completed" ||
         activity.activityStatus === "Complete"
@@ -3470,25 +3468,31 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
         return true;
       return false;
     };
-    const currentPairLabel =
-      currentWeekNumber <= 2
-        ? "Weeks 1-2"
-        : currentWeekNumber <= 4
-          ? "Weeks 3-4"
-          : "Weeks 5-6";
-    const cycleOpenActivities = activities.filter(
-      (a) => gateZoneOf(a) === currentPairLabel && !gateIsSettled(a),
-    );
-    const cycleUnassignedCount = cycleOpenActivities.filter(
-      (a) => (a.assignmentState || "Unassigned") === "Unassigned",
-    ).length;
-    const cycleOpenActionCount = cycleOpenActivities.filter(
-      (a) => (gateOpenByActivity[a.activityId] || 0) > 0,
-    ).length;
-    const currentCycleComplete =
-      cycleUnassignedCount === 0 && cycleOpenActionCount === 0;
+    const gateAnchor = new Date(referenceDate || earliestDate);
+    gateAnchor.setHours(0, 0, 0, 0);
+    const weekCompletion = (weekNum) => {
+      const ws = new Date(gateAnchor);
+      ws.setDate(ws.getDate() + (weekNum - 1) * 7);
+      const we = new Date(ws);
+      we.setDate(ws.getDate() + 6);
+      we.setHours(23, 59, 59, 999);
+      const openActs = activities.filter((a) => {
+        const s = parseDate(a.startDate);
+        return s && s >= ws && s <= we && !gateIsSettled(a);
+      });
+      const unassigned = openActs.filter(
+        (a) => (a.assignmentState || "Unassigned") === "Unassigned",
+      ).length;
+      const openActions = openActs.filter(
+        (a) => (gateOpenByActivity[a.activityId] || 0) > 0,
+      ).length;
+      return {
+        complete: unassigned === 0 && openActions === 0,
+        unassigned,
+        openActions,
+      };
+    };
 
-    // Build weeks array
     const weeks = [];
     for (let i = 1; i <= totalWeeks; i++) {
       const weekStartDate = new Date(earliestDate);
@@ -3496,7 +3500,6 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       const weekEndDate = new Date(weekStartDate);
       weekEndDate.setDate(weekStartDate.getDate() + 6);
 
-      // Count activities in this week
       let weekActivities = { total: 0, green: 0, amber: 0, red: 0 };
       for (const activity of activities) {
         const actStart = parseDate(activity.startDate);
@@ -3525,14 +3528,11 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       const isClosed = closedWeekNumbers.includes(i);
       const closedWeekData = closedWeeks.find((w) => w.weekNumber === i);
 
-      // Calculate 2-week end date (since UI shows 2 weeks at a time: 1-2, 3-4, 5-6, etc.)
-      // Use the PAIR's first week's start date for both weeks in the pair.
-      // Anchor to the upload date (referenceDate) for consistency.
       const pairFirstWeek = i % 2 === 1 ? i : i - 1;
       const pairStartDate = new Date(referenceDate || earliestDate);
       pairStartDate.setDate(pairStartDate.getDate() + (pairFirstWeek - 1) * 7);
       const twoWeekEndDate = new Date(pairStartDate);
-      twoWeekEndDate.setDate(pairStartDate.getDate() + 13); // 2 weeks = 14 days (0-13)
+      twoWeekEndDate.setDate(pairStartDate.getDate() + 13);
 
       let status = "upcoming";
       if (isClosed) {
@@ -3540,32 +3540,26 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       } else if (i === currentWeekNumber) {
         status = "current";
       } else if (i < currentWeekNumber) {
-        status = "past"; // Past but not closed
+        status = "past";
       }
 
-      // Can close if:
-      // 1. Not already closed
-      // 2. Previous weeks are closed
-      // 3. Today > current 2-week cycle end date (the 2-week period must have completed)
       const previousWeeksClosed =
         closedWeekNumbers.filter((n) => n < i).length === i - 1;
-      // Completion-based gate: closeable once the current cycle's activities are
-      // all assigned and their actions completed (no calendar wait).
-      const canClose = !isClosed && previousWeeksClosed && currentCycleComplete;
+      const wc = weekCompletion(i);
+      const canClose = !isClosed && previousWeeksClosed && wc.complete;
 
-      // Provide reason if cannot close
       let canCloseReason = null;
       if (!canClose) {
         if (isClosed) {
           canCloseReason = "Already closed";
         } else if (!previousWeeksClosed) {
           canCloseReason = "Previous weeks must be closed first";
-        } else if (!currentCycleComplete) {
+        } else if (!wc.complete) {
           canCloseReason =
-            cycleUnassignedCount > 0
-              ? `Assign all activities before closing (${cycleUnassignedCount} unassigned)`
-              : `Complete all open actions before closing (${cycleOpenActionCount} activit${
-                  cycleOpenActionCount === 1 ? "y" : "ies"
+            wc.unassigned > 0
+              ? `Assign all activities before closing (${wc.unassigned} unassigned)`
+              : `Complete all open actions before closing (${wc.openActions} activit${
+                  wc.openActions === 1 ? "y" : "ies"
                 } with open actions)`;
         }
       }
@@ -3605,7 +3599,6 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
   }
 });
 
-// Close a specific week within a programme
 router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
   try {
     const { closeType, notes, isSecondOfPair } = req.body;
@@ -3622,20 +3615,11 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       return sendError(res, "Access denied", 403);
     }
 
-    // TEMPORARILY COMMENTED OUT FOR TESTING
-    // Check if project has ended - no more actions allowed
-    // const projectEndedInfo = checkProjectEnded(programme.extractedData?.activities);
-    // if (projectEndedInfo.isEnded) {
-    //   return sendError(res, "Project has ended. No further actions can be performed.", 400);
-    // }
-
-    // Check if week is already closed
     const closedWeeks = programme.closedWeeks || [];
     if (closedWeeks.some((w) => w.weekNumber === weekNumber)) {
       return sendError(res, `Week ${weekNumber} is already closed`, 400);
     }
 
-    // Check if previous weeks are closed (sequential closure required)
     const closedWeekNumbers = closedWeeks.map((w) => w.weekNumber);
     for (let i = 1; i < weekNumber; i++) {
       if (!closedWeekNumbers.includes(i)) {
@@ -3647,12 +3631,10 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       }
     }
 
-    // Parse dates helper - supports both DD-MMM-YY and YYYY-MM-DD formats
     const parseDate = (dateStr) => {
       if (!dateStr) return null;
       const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
 
-      // Try YYYY-MM-DD format first
       const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
       if (isoMatch) {
         return new Date(
@@ -3662,7 +3644,6 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
         );
       }
 
-      // Try DD-MMM-YY format
       const months = {
         Jan: 0,
         Feb: 1,
@@ -3686,7 +3667,6 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       return new Date(year, month, day);
     };
 
-    // Find programme start date
     const activities = programme.extractedData?.activities || [];
     let earliestDate = null;
     let latestDate = null;
@@ -3706,31 +3686,33 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       return sendError(res, "Cannot determine programme start date", 400);
     }
 
-    // Anchor the week schedule to the upload date (lookaheadStartDate) so the
-    // 2-week boundaries match the lookahead / weekly-control / weeks-status
-    // views (e.g. Week 1-2 = 7 Jul -> 20 Jul), not the earliest activity date.
-    const weekAnchorDate = programme.lookaheadStartDate
-      ? new Date(programme.lookaheadStartDate)
-      : new Date(earliestDate);
+    let projectStartAnchor = null;
+    if (programme.project) {
+      const anchorProject = await Project.findById(programme.project).select(
+        "startDate",
+      );
+      if (anchorProject?.startDate) {
+        projectStartAnchor = new Date(anchorProject.startDate);
+      }
+    }
+    const weekAnchorDate = projectStartAnchor
+      ? projectStartAnchor
+      : programme.lookaheadStartDate
+        ? new Date(programme.lookaheadStartDate)
+        : new Date(earliestDate);
     weekAnchorDate.setHours(0, 0, 0, 0);
 
-    // Calculate week dates (2-week view: weeks X and X+1)
     const weekStartDate = new Date(weekAnchorDate);
     weekStartDate.setDate(weekStartDate.getDate() + (weekNumber - 1) * 7);
     const weekEndDate = new Date(weekStartDate);
     weekEndDate.setDate(weekStartDate.getDate() + 6);
 
-    // The UI displays 2 weeks at a time (Week 1-2, 3-4, 5-6, etc.)
-    // For the 2-week end date, use the PAIR's first week's start date
-    // Week 1,2 use Week 1's start; Week 3,4 use Week 3's start; etc.
     const pairFirstWeek = weekNumber % 2 === 1 ? weekNumber : weekNumber - 1;
     const pairStartDate = new Date(weekAnchorDate);
     pairStartDate.setDate(pairStartDate.getDate() + (pairFirstWeek - 1) * 7);
     const twoWeekEndDate = new Date(pairStartDate);
-    twoWeekEndDate.setDate(pairStartDate.getDate() + 13); // 2 weeks = 14 days (0-13)
+    twoWeekEndDate.setDate(pairStartDate.getDate() + 13);
 
-    // Check if today's date has reached or passed the 2-week period end date
-    // Skip this check if this is the second week of a pair (already validated by the first week)
     const today = new Date();
     const todayStart = new Date(today);
     todayStart.setHours(0, 0, 0, 0);
@@ -3739,14 +3721,6 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
 
     const isOverride = closeType === "PM Override";
 
-    // -----------------------------------------------------------------
-    // Completion-based close gate (replaces the old 2-week date gate).
-    // A pair may be closed once every activity in its 2-week zone is triaged
-    // (No Action -> Ready, or an action assigned) AND every assigned action is
-    // completed. PM Override still force-closes past incomplete actions. The
-    // zone + settled logic mirror the weeks-status gate and the Activities &
-    // Lookahead table so enforcement matches exactly what the planner sees.
-    // Skipped for the second week of a pair (already validated on the first).
     if (!isOverride && !isSecondOfPair) {
       const gateActions = await require("../models/Action").find({
         programme: req.params.id,
@@ -3763,17 +3737,6 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
           action.status !== "Cancelled";
         openByActivity[actId] = (openByActivity[actId] || 0) + (isOpen ? 1 : 0);
       }
-      const msPerDay = 1000 * 60 * 60 * 24;
-      const zoneOf = (activity) => {
-        const start = parseDate(activity.startDate);
-        if (!start) return "N/A";
-        const days = Math.floor((start - todayStart) / msPerDay);
-        const wn = Math.floor(days / 7) + 1;
-        if (wn <= 2) return "Weeks 1-2";
-        if (wn <= 4) return "Weeks 3-4";
-        if (wn <= 6) return "Weeks 5-6";
-        return `Week ${wn}`;
-      };
       const isSettled = (activity) => {
         if (activity.finishDate && activity.finishDate.includes(" A"))
           return true;
@@ -3789,15 +3752,14 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
           return true;
         return false;
       };
-      const pairLabel =
-        weekNumber <= 2
-          ? "Weeks 1-2"
-          : weekNumber <= 4
-            ? "Weeks 3-4"
-            : "Weeks 5-6";
-      const openActivities = activities.filter(
-        (a) => zoneOf(a) === pairLabel && !isSettled(a),
-      );
+      const weekEndInclusive = new Date(weekEndDate);
+      weekEndInclusive.setHours(23, 59, 59, 999);
+      const openActivities = activities.filter((a) => {
+        const s = parseDate(a.startDate);
+        return (
+          s && s >= weekStartDate && s <= weekEndInclusive && !isSettled(a)
+        );
+      });
       const unassignedActivities = openActivities.filter(
         (a) => (a.assignmentState || "Unassigned") === "Unassigned",
       );
@@ -3824,7 +3786,6 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       }
     }
 
-    // Calculate stats for this week
     let weekStats = {
       totalActivities: 0,
       green: 0,
@@ -3859,10 +3820,8 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       }
     }
 
-    // Count actions created since the last week was closed
     const Action = require("../models/Action");
 
-    // Find the most recently closed week's closure date
     const previousClosedWeeks = closedWeeks.filter(
       (w) => w.weekNumber < weekNumber,
     );
@@ -3875,7 +3834,6 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
           )
         : null;
 
-    // Find actions created AFTER the last closure (or all actions if this is the first week)
     const actionQuery = { programme: req.params.id };
     if (lastClosureDate) {
       actionQuery.createdAt = { $gt: lastClosureDate };
@@ -3891,7 +3849,6 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       `[close-week] Week ${weekNumber}: Found ${weekActions.length} actions (${weekStats.actionsCompleted} completed) since last closure`,
     );
 
-    // Calculate totalWeeks if not set
     let calculatedTotalWeeks = programme.totalWeeks;
     if (!calculatedTotalWeeks && earliestDate && latestDate) {
       const msPerDay = 1000 * 60 * 60 * 24;
@@ -3899,19 +3856,14 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       calculatedTotalWeeks = Math.ceil(totalDays / 7);
     }
 
-    // Check if all weeks will be closed after this
     const currentClosedCount = (programme.closedWeeks || []).length;
     const isLastWeek = currentClosedCount + 1 >= calculatedTotalWeeks;
 
-    // Determine next cycle status:
-    // - If last week: "Close-Out Eligible" (user must acknowledge to close)
-    // - Otherwise: "Draft" (ready for next week cycle)
     let nextCycleStatus = "Draft";
     if (isLastWeek) {
       nextCycleStatus = "Close-Out Eligible";
     }
 
-    // Build update object
     const updateData = {
       $push: {
         closedWeeks: {
@@ -3928,9 +3880,6 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       },
     };
 
-    // Note: isLocked and final closure only happens when user acknowledges Close-Out Eligible
-
-    // Use findByIdAndUpdate with $push for atomic update
     const updatedProgramme = await Programme.findByIdAndUpdate(
       req.params.id,
       updateData,
@@ -3945,7 +3894,6 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       `[close-week] Week ${weekNumber} closed. Total closed weeks: ${updatedProgramme.closedWeeks.length}`,
     );
 
-    // Create CycleHistory record for governance tracking
     const formatDateShort = (d) => {
       const months = [
         "Jan",
@@ -3999,7 +3947,7 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
                 ),
               )
             : 0,
-        isFullyClosed: false, // Not fully closed until user acknowledges Close-Out Eligible
+        isFullyClosed: false,
         isLastWeek: isLastWeek,
         cycleStatus: nextCycleStatus,
       },
@@ -4013,7 +3961,6 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
   }
 });
 
-// Reopen a closed week (admin only)
 router.post(
   "/:id/reopen-week/:weekNumber",
   protect,
@@ -4028,7 +3975,6 @@ router.post(
         return sendError(res, "Programme not found", 404);
       }
 
-      // Check if week is closed
       const weekIndex = programme.closedWeeks.findIndex(
         (w) => w.weekNumber === weekNumber,
       );
@@ -4036,7 +3982,6 @@ router.post(
         return sendError(res, `Week ${weekNumber} is not closed`, 400);
       }
 
-      // Can only reopen the last closed week
       const maxClosedWeek = Math.max(
         ...programme.closedWeeks.map((w) => w.weekNumber),
       );
@@ -4048,10 +3993,8 @@ router.post(
         );
       }
 
-      // Remove from closedWeeks
       programme.closedWeeks.splice(weekIndex, 1);
 
-      // Unlock programme if it was fully closed
       if (programme.isLocked) {
         programme.isLocked = false;
         programme.cycleStatus = "Execution";
@@ -4062,7 +4005,6 @@ router.post(
 
       await programme.save();
 
-      // Remove CycleHistory record
       await CycleHistory.deleteOne({
         programme: req.params.id,
         weekNumber,
@@ -4091,7 +4033,6 @@ router.post(
   },
 );
 
-// Link programme to a project
 router.patch("/:id/link-project", protect, async (req, res) => {
   try {
     const { projectId } = req.body;
@@ -4107,17 +4048,14 @@ router.patch("/:id/link-project", protect, async (req, res) => {
       return sendError(res, "Programme not found", 404);
     }
 
-    // Verify project exists
     const project = await Project.findById(projectId);
     if (!project) {
       return sendError(res, "Project not found", 404);
     }
 
-    // Update programme with project
     programme.project = projectId;
     await programme.save();
 
-    // Audit log: Programme linked to project
     await auditLogger.log({
       action: "PROGRAMME_LINKED",
       req,
