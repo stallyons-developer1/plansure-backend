@@ -4,7 +4,6 @@ const AuditLog = require("../models/AuditLog");
 const { protect, adminOnly } = require("../middleware/authMiddleware");
 const { sendError, sendSuccess } = require("../utils/errorResponse");
 
-// GET /api/audit-logs - Get audit logs with filtering and pagination
 router.get("/", protect, adminOnly, async (req, res) => {
   try {
     const {
@@ -21,27 +20,22 @@ router.get("/", protect, adminOnly, async (req, res) => {
 
     const filter = {};
 
-    // Filter by category
     if (category) {
       filter.category = category;
     }
 
-    // Filter by action type
     if (action) {
       filter.action = action;
     }
 
-    // Filter by user who performed the action
     if (userId) {
       filter.performedBy = userId;
     }
 
-    // Filter by project
     if (projectId) {
       filter.project = projectId;
     }
 
-    // Filter by date range
     if (startDate || endDate) {
       filter.createdAt = {};
       if (startDate) {
@@ -54,7 +48,6 @@ router.get("/", protect, adminOnly, async (req, res) => {
       }
     }
 
-    // Search in description or resource name
     if (search) {
       filter.$or = [
         { description: { $regex: search, $options: "i" } },
@@ -90,7 +83,6 @@ router.get("/", protect, adminOnly, async (req, res) => {
   }
 });
 
-// GET /api/audit-logs/categories - Get available categories
 router.get("/categories", protect, adminOnly, async (req, res) => {
   try {
     const categories = [
@@ -112,7 +104,6 @@ router.get("/categories", protect, adminOnly, async (req, res) => {
   }
 });
 
-// GET /api/audit-logs/actions - Get available action types
 router.get("/actions", protect, adminOnly, async (req, res) => {
   try {
     const actions = await AuditLog.distinct("action");
@@ -123,7 +114,6 @@ router.get("/actions", protect, adminOnly, async (req, res) => {
   }
 });
 
-// GET /api/audit-logs/stats - Get audit log statistics
 router.get("/stats", protect, adminOnly, async (req, res) => {
   try {
     const { days = 7 } = req.query;
@@ -143,7 +133,6 @@ router.get("/stats", protect, adminOnly, async (req, res) => {
 
     const totalLogs = stats.reduce((sum, s) => sum + s.count, 0);
 
-    // Get recent activity by day
     const activityByDay = await AuditLog.aggregate([
       { $match: { createdAt: { $gte: startDate } } },
       {
@@ -157,9 +146,10 @@ router.get("/stats", protect, adminOnly, async (req, res) => {
       { $sort: { _id: 1 } },
     ]);
 
-    // Get top users by activity
     const topUsers = await AuditLog.aggregate([
-      { $match: { createdAt: { $gte: startDate }, performedBy: { $ne: null } } },
+      {
+        $match: { createdAt: { $gte: startDate }, performedBy: { $ne: null } },
+      },
       {
         $group: {
           _id: "$performedBy",
@@ -184,7 +174,6 @@ router.get("/stats", protect, adminOnly, async (req, res) => {
   }
 });
 
-// GET /api/audit-logs/:id - Get a specific audit log entry
 router.get("/:id", protect, adminOnly, async (req, res) => {
   try {
     const log = await AuditLog.findById(req.params.id)
@@ -202,7 +191,6 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-// GET /api/audit-logs/resource/:type/:id - Get audit logs for a specific resource
 router.get("/resource/:type/:id", protect, adminOnly, async (req, res) => {
   try {
     const { type, id } = req.params;
@@ -239,18 +227,20 @@ router.get("/resource/:type/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-// DELETE /api/audit-logs/all - Delete all audit logs
 router.delete("/all", protect, adminOnly, async (req, res) => {
   try {
     const result = await AuditLog.deleteMany({});
-    return sendSuccess(res, { deleted: result.deletedCount }, "All audit logs deleted");
+    return sendSuccess(
+      res,
+      { deleted: result.deletedCount },
+      "All audit logs deleted",
+    );
   } catch (error) {
     console.error("Delete all audit logs error:", error);
     return sendError(res, "Server error");
   }
 });
 
-// DELETE /api/audit-logs/:id - Delete a specific audit log
 router.delete("/:id", protect, adminOnly, async (req, res) => {
   try {
     const log = await AuditLog.findByIdAndDelete(req.params.id);

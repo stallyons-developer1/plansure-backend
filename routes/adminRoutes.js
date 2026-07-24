@@ -29,10 +29,6 @@ router.post("/login", async (req, res) => {
 
     const user = await Admin.findOne({ email });
 
-    console.log(
-      `[LOGIN] Attempt for ${email}, found user status: ${user?.status || "NOT FOUND"}`,
-    );
-
     if (!user) {
       await auditLogger.loginFailed(req, email, "No account found");
       return sendValidationError(
@@ -57,9 +53,6 @@ router.post("/login", async (req, res) => {
     }
 
     if (user.status === "pending") {
-      console.log(
-        `[LOGIN] User ${email} rejected - status is still pending. User ID: ${user._id}`,
-      );
       await auditLogger.loginFailed(req, email, "Account pending invitation");
       return sendValidationError(
         res,
@@ -83,7 +76,6 @@ router.post("/login", async (req, res) => {
 
     const token = await Token.generateToken(user._id);
 
-    // Log successful login
     await auditLogger.loginSuccess(req, user);
 
     return sendSuccess(
@@ -226,7 +218,6 @@ router.put("/password", protect, async (req, res) => {
     user.password = newPassword;
     await user.save();
 
-    // Log password change
     await auditLogger.log({
       action: "PASSWORD_CHANGED",
       req,
@@ -254,7 +245,6 @@ router.post("/logout", protect, async (req, res) => {
       token: tokenValue,
     });
 
-    // Log logout
     await auditLogger.logout(req, req.admin);
 
     res.json({ message: "Logged out successfully" });

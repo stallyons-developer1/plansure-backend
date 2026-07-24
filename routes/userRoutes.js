@@ -19,7 +19,6 @@ const {
 } = require("../utils/errorResponse");
 
 router.post("/invite", protect, adminOnly, async (req, res) => {
-  console.log("[INVITE] Invite request received:", req.body);
   try {
     const { name, email, role, projectId } = req.body;
 
@@ -75,12 +74,6 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
         ? process.env.RESEND_API_KEY.length
         : 0,
     };
-    console.log(
-      "[INVITE] About to send invite email to:",
-      user.email,
-      "Debug:",
-      debugInfo,
-    );
     try {
       await sendInviteEmail({
         email: user.email,
@@ -91,9 +84,7 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
         acceptUrl,
         rejectUrl,
       });
-      console.log("[INVITE] Email sent successfully to:", user.email);
     } catch (err) {
-      console.error("[INVITE] Failed to send invite email:", err);
       emailSent = false;
       emailError = err.message || String(err);
     }
@@ -247,9 +238,6 @@ router.get("/invite/accept/:token", async (req, res) => {
     await user.save();
 
     const verifyUser = await Admin.findById(user._id);
-    console.log(
-      `[INVITE ACCEPT] Verified user ${verifyUser.email} status: ${verifyUser.status}`,
-    );
 
     try {
       await sendWelcomeEmail({
@@ -459,19 +447,16 @@ router.get("/", protect, async (req, res) => {
       .populate("invitedBy", "name")
       .sort({ createdAt: -1 });
 
-    // Get all projects for reference
     const allProjects = await Project.find().select("_id name");
     const projectMap = {};
     allProjects.forEach((p) => {
       projectMap[p._id.toString()] = p.name;
     });
 
-    // Build formatted users with full project access (including via actions)
     const formattedUsers = await Promise.all(
       users.map(async (user) => {
         let projectNames = [];
 
-        // For admin role, show "All Projects"
         if (user.role === "admin") {
           return {
             _id: user._id,
@@ -491,23 +476,22 @@ router.get("/", protect, async (req, res) => {
           };
         }
 
-        // Get explicitly assigned projects (filter out deleted/null projects)
-        const validProjects = (user.projects || []).filter((p) => p && p._id && p.name);
+        const validProjects = (user.projects || []).filter(
+          (p) => p && p._id && p.name,
+        );
         const assignedProjectIds = new Set(
-          validProjects.map((p) => p._id.toString())
+          validProjects.map((p) => p._id.toString()),
         );
         projectNames = validProjects.map((p) => p.name);
 
-        // Get projects where user has been assigned actions
         const userActions = await Action.find({
-          $or: [
-            { assignee: user._id },
-            { "previousAssignees.user": user._id },
-          ],
+          $or: [{ assignee: user._id }, { "previousAssignees.user": user._id }],
         }).select("programme");
 
         const programmeIds = [
-          ...new Set(userActions.map((a) => a.programme?.toString()).filter(Boolean)),
+          ...new Set(
+            userActions.map((a) => a.programme?.toString()).filter(Boolean),
+          ),
         ];
 
         if (programmeIds.length > 0) {
@@ -517,7 +501,11 @@ router.get("/", protect, async (req, res) => {
 
           programmes.forEach((prog) => {
             const projId = prog.project?.toString();
-            if (projId && !assignedProjectIds.has(projId) && projectMap[projId]) {
+            if (
+              projId &&
+              !assignedProjectIds.has(projId) &&
+              projectMap[projId]
+            ) {
               assignedProjectIds.add(projId);
               projectNames.push(projectMap[projId]);
             }
@@ -541,7 +529,7 @@ router.get("/", protect, async (req, res) => {
             .toUpperCase()
             .slice(0, 2),
         };
-      })
+      }),
     );
 
     return sendSuccess(res, { users: formattedUsers });

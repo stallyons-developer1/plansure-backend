@@ -35,7 +35,6 @@ const exportSchema = new mongoose.Schema(
     fileName: {
       type: String,
     },
-    // Store export data for re-download
     exportData: {
       activitiesCount: Number,
       actionsCount: Number,
@@ -43,7 +42,7 @@ const exportSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 
 module.exports = mongoose.model("Export", exportSchema);

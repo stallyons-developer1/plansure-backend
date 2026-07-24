@@ -5,30 +5,17 @@ const Admin = require("../models/Admin");
  * Send push notification to a single user
  */
 const sendToUser = async (userId, notification) => {
-  console.log("[Push] ========================================");
-  console.log("[Push] sendToUser called for userId:", userId);
-  console.log("[Push] Notification:", JSON.stringify(notification, null, 2));
   try {
     const user = await Admin.findById(userId);
-    console.log("[Push] User lookup result:");
-    console.log("[Push]   - Found:", !!user);
-    console.log("[Push]   - Email:", user?.email);
-    console.log("[Push]   - Push enabled:", user?.pushNotificationsEnabled);
-    console.log("[Push]   - FCM tokens:", user?.fcmTokens?.length || 0);
+
     if (user?.fcmTokens?.length > 0) {
-      console.log(
-        "[Push]   - Token preview:",
-        user.fcmTokens[0].token.substring(0, 30) + "...",
-      );
     }
 
     if (!user || !user.pushNotificationsEnabled || !user.fcmTokens?.length) {
-      console.log("[Push] BLOCKED - no tokens or push disabled");
       return { success: false, reason: "No valid FCM tokens or push disabled" };
     }
 
     const tokens = user.fcmTokens.map((t) => t.token);
-    console.log("[Push] Sending to", tokens.length, "token(s)...");
     return await sendToTokens(tokens, notification, userId);
   } catch (error) {
     console.error("[Push] sendToUser ERROR:", error);
@@ -40,16 +27,13 @@ const sendToUser = async (userId, notification) => {
  * Send push notification to multiple tokens
  */
 const sendToTokens = async (tokens, notification, userId = null) => {
-  console.log("[Push] sendToTokens with", tokens.length, "token(s)");
   const messaging = getMessaging();
 
   if (!messaging) {
-    console.log("[Push] ERROR: Firebase messaging not initialized!");
     return { success: false, reason: "Firebase not configured" };
   }
 
   if (!tokens.length) {
-    console.log("[Push] ERROR: No tokens provided");
     return { success: false, reason: "No tokens provided" };
   }
 
@@ -71,33 +55,15 @@ const sendToTokens = async (tokens, notification, userId = null) => {
     },
   };
 
-  console.log("[Push] FCM Message payload:", JSON.stringify(message, null, 2));
-
   try {
     const response = await messaging.sendEachForMulticast({
       tokens,
       ...message,
     });
 
-    console.log(
-      "[Push] FCM Response:",
-      JSON.stringify({
-        successCount: response.successCount,
-        failureCount: response.failureCount,
-      }),
-    );
-
     response.responses.forEach((resp, idx) => {
       if (!resp.success) {
-        console.log(
-          "[Push] Token",
-          idx,
-          "FAILED:",
-          resp.error?.code,
-          resp.error?.message,
-        );
       } else {
-        console.log("[Push] Token", idx, "SUCCESS, messageId:", resp.messageId);
       }
     });
 
@@ -117,11 +83,8 @@ const sendToTokens = async (tokens, notification, userId = null) => {
 
       if (invalidTokens.length > 0) {
         await removeInvalidTokens(userId, invalidTokens);
-        console.log("[Push] Removed", invalidTokens.length, "invalid token(s)");
       }
     }
-
-    console.log("[Push] ========================================");
 
     return {
       success: true,
@@ -214,11 +177,6 @@ const sendPushForNotification = async (
     });
 
     if (result.success) {
-      console.log("[Push] Notification sent:", {
-        type,
-        title,
-        recipientId: recipientId.toString(),
-      });
     }
   } catch (error) {}
 };

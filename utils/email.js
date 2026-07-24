@@ -5,9 +5,7 @@ let resend = null;
 const getResend = () => {
   if (!resend) {
     const apiKey = process.env.RESEND_API_KEY;
-    console.log(
-      `[EMAIL] Initializing Resend with key: ${apiKey ? apiKey.substring(0, 10) + "..." : "MISSING"}`,
-    );
+
     if (!apiKey) {
       throw new Error("RESEND_API_KEY environment variable is not set");
     }
@@ -37,23 +35,11 @@ const createTransporter = () => {
 
 const isSmtp = () => {
   const useSmtp = process.env.ISSMTP === "true";
-  console.log(
-    `[EMAIL] ISSMTP=${process.env.ISSMTP}, Using: ${useSmtp ? "SMTP (Mailtrap)" : "Resend API"}`,
-  );
+
   return useSmtp;
 };
 
 const sendInviteEmail = async (options) => {
-  console.log("[EMAIL] sendInviteEmail called, checking env vars:");
-  console.log("[EMAIL] ISSMTP:", process.env.ISSMTP);
-  console.log("[EMAIL] RESEND_API_KEY exists:", !!process.env.RESEND_API_KEY);
-  console.log(
-    "[EMAIL] All env keys:",
-    Object.keys(process.env).filter(
-      (k) => k.includes("RESEND") || k.includes("SMTP") || k.includes("ISSMTP"),
-    ),
-  );
-
   const htmlContent = `
     <!DOCTYPE html>
     <html>
@@ -105,12 +91,7 @@ const sendInviteEmail = async (options) => {
   `;
 
   try {
-    console.log(`[EMAIL] Sending invite email to: ${options.email}`);
-
     if (isSmtp()) {
-      console.log(
-        `[EMAIL] Using SMTP - Host: ${process.env.SMTP_HOST}, Port: ${process.env.SMTP_PORT}`,
-      );
       const transporter = createTransporter();
       const result = await transporter.sendMail({
         from: "Plansure <noreply@plansure.io>",
@@ -118,11 +99,7 @@ const sendInviteEmail = async (options) => {
         subject: "You've been invited to join Plansure",
         html: htmlContent,
       });
-      console.log(`[EMAIL] SMTP send success:`, result.messageId);
     } else {
-      console.log(
-        `[EMAIL] Using Resend API - Key exists: ${!!process.env.RESEND_API_KEY}`,
-      );
       const result = await getResend().emails.send({
         from:
           process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
@@ -130,7 +107,6 @@ const sendInviteEmail = async (options) => {
         subject: "You've been invited to join Plansure",
         html: htmlContent,
       });
-      console.log(`[EMAIL] Resend send success:`, result);
     }
   } catch (error) {
     console.error(`[EMAIL] Error sending invite email:`, error);
@@ -182,8 +158,6 @@ const sendWelcomeEmail = async (options) => {
   `;
 
   try {
-    console.log(`[EMAIL] Sending welcome email to: ${options.email}`);
-
     if (isSmtp()) {
       const transporter = createTransporter();
       const result = await transporter.sendMail({
@@ -192,7 +166,6 @@ const sendWelcomeEmail = async (options) => {
         subject: "Welcome to Plansure!",
         html: htmlContent,
       });
-      console.log(`[EMAIL] SMTP welcome email success:`, result.messageId);
     } else {
       const result = await getResend().emails.send({
         from:
@@ -201,7 +174,6 @@ const sendWelcomeEmail = async (options) => {
         subject: "Welcome to Plansure!",
         html: htmlContent,
       });
-      console.log(`[EMAIL] Resend welcome email success:`, result);
     }
   } catch (error) {
     console.error(`[EMAIL] Error sending welcome email:`, error);
@@ -263,8 +235,6 @@ const sendRoleChangeEmail = async (options) => {
   `;
 
   try {
-    console.log(`[EMAIL] Sending role change email to: ${options.email}`);
-
     if (isSmtp()) {
       const transporter = createTransporter();
       const result = await transporter.sendMail({
@@ -273,7 +243,6 @@ const sendRoleChangeEmail = async (options) => {
         subject: "Your Plansure Account Has Been Updated",
         html: htmlContent,
       });
-      console.log(`[EMAIL] SMTP role change email success:`, result.messageId);
     } else {
       const result = await getResend().emails.send({
         from:
@@ -282,7 +251,6 @@ const sendRoleChangeEmail = async (options) => {
         subject: "Your Plansure Account Has Been Updated",
         html: htmlContent,
       });
-      console.log(`[EMAIL] Resend role change email success:`, result);
     }
   } catch (error) {
     console.error(`[EMAIL] Error sending role change email:`, error);

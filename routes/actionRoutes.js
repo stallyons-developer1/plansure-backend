@@ -23,11 +23,23 @@ const checkProgrammeLocked = async (programmeId) => {
   return { locked: programme.isLocked, programme };
 };
 
-// Helper to parse activity dates
 const parseActivityDate = (dateStr) => {
   if (!dateStr) return null;
   const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
-  const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+  const months = {
+    Jan: 0,
+    Feb: 1,
+    Mar: 2,
+    Apr: 3,
+    May: 4,
+    Jun: 5,
+    Jul: 6,
+    Aug: 7,
+    Sep: 8,
+    Oct: 9,
+    Nov: 10,
+    Dec: 11,
+  };
   const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
   if (!match) return null;
   const day = parseInt(match[1]);
@@ -37,7 +49,6 @@ const parseActivityDate = (dateStr) => {
   return new Date(year, month, day);
 };
 
-// Check if project has ended (last activity date passed)
 const checkProjectEnded = (activities) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -55,25 +66,19 @@ const checkProjectEnded = (activities) => {
   latestFinishDate.setHours(23, 59, 59, 999);
   return today > latestFinishDate;
 };
-
-// Re-derive an activity's assignment/action-driven status after an action
-// changes, using the shared governance engine (single source of truth). All
-// actions complete -> Blue/Completed; otherwise At Risk (Amber), or Blocked
-// (Red) once the 6-week cycle has completed (programme end date passed).
 const updateLinkedActivityStatus = async (programmeId, activityId) => {
   try {
     const programme = await Programme.findById(programmeId);
     if (!programme || !programme.extractedData?.activities) return;
 
     const activityIndex = programme.extractedData.activities.findIndex(
-      (a) => a.activityId === activityId
+      (a) => a.activityId === activityId,
     );
 
     if (activityIndex === -1) return;
 
     const activity = programme.extractedData.activities[activityIndex];
 
-    // An activity with linked actions is, by definition, ActionAssigned.
     if (activity.assignmentState !== "ActionAssigned") {
       activity.assignmentState = "ActionAssigned";
     }
@@ -87,7 +92,7 @@ const updateLinkedActivityStatus = async (programmeId, activityId) => {
       activity,
       allLinkedActions,
       getCycleEndDate(programme),
-      new Date()
+      new Date(),
     );
     activity.ragStatus = derived.ragStatus;
     activity.activityStatus = derived.activityStatus;
@@ -144,16 +149,6 @@ router.post("/", protect, async (req, res) => {
       );
     }
 
-    // TEMPORARILY COMMENTED OUT FOR TESTING
-    // Check if project has ended - no more actions allowed
-    // if (checkProjectEnded(programme.extractedData?.activities)) {
-    //   return sendError(
-    //     res,
-    //     "Project has ended. No new actions can be created.",
-    //     400,
-    //   );
-    // }
-
     if (!["Meeting Open", "Execution"].includes(programme.cycleStatus)) {
       return sendError(
         res,
@@ -162,7 +157,6 @@ router.post("/", protect, async (req, res) => {
       );
     }
 
-    // Get assignee name
     const Admin = require("../models/Admin");
     const assigneeUser = await Admin.findById(assignee).select("name");
     const assigneeName = assigneeUser?.name || "";
@@ -183,8 +177,6 @@ router.post("/", protect, async (req, res) => {
       createdBy: req.admin._id,
     });
 
-    // Assignment-driven governance transition: assigning an action moves the
-    // linked activity to ActionAssigned -> At Risk (Amber).
     const linkedIdx = programme.extractedData?.activities?.findIndex(
       (a) => a.activityId === linkedActivity.activityId,
     );
@@ -201,8 +193,12 @@ router.post("/", protect, async (req, res) => {
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
-    // Audit log: Action created
-    await auditLogger.actionCreated(req, req.admin, populatedAction, programme.project);
+    await auditLogger.actionCreated(
+      req,
+      req.admin,
+      populatedAction,
+      programme.project,
+    );
 
     if (assignee.toString() !== req.admin._id.toString()) {
       await Notification.create({
@@ -395,7 +391,6 @@ router.put("/:id", protect, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    // Store old values for audit logging
     const oldStatus = action.status;
     const oldAssignee = action.assignee?.toString();
 
@@ -407,16 +402,6 @@ router.put("/:id", protect, async (req, res) => {
         403,
       );
     }
-
-    // TEMPORARILY COMMENTED OUT FOR TESTING
-    // Check if project has ended - no more actions allowed
-    // if (programme && checkProjectEnded(programme.extractedData?.activities)) {
-    //   return sendError(
-    //     res,
-    //     "Project has ended. No actions can be updated.",
-    //     400,
-    //   );
-    // }
 
     if (programmeId) {
       const programme = await Programme.findById(programmeId);
@@ -461,7 +446,6 @@ router.put("/:id", protect, async (req, res) => {
         });
       }
       action.assignee = assignee;
-      // Update assigneeName
       const Admin = require("../models/Admin");
       const newAssigneeUser = await Admin.findById(assignee).select("name");
       action.assigneeName = newAssigneeUser?.name || "";
@@ -472,12 +456,11 @@ router.put("/:id", protect, async (req, res) => {
       action.status = status;
       if (status === "Completed") {
         action.completedAt = new Date();
-        // Update linked activity status to Complete
         if (action.linkedActivity?.activityId) {
           await updateLinkedActivityStatus(
             action.programme,
             action.linkedActivity.activityId,
-            true
+            true,
           );
         }
       } else {
@@ -492,20 +475,17 @@ router.put("/:id", protect, async (req, res) => {
       .populate("createdBy", "name email")
       .populate("programme", "name");
 
-    // Audit logging
     if (status && status !== oldStatus) {
-      // Status change
       await auditLogger.actionStatusChanged(
         req,
         req.admin,
         updatedAction,
         oldStatus,
         status,
-        programme?.project
+        programme?.project,
       );
     }
     if (wasReassigned) {
-      // Reassignment
       const Admin = require("../models/Admin");
       const oldAssigneeUser = await Admin.findById(oldAssignee).select("name");
       await auditLogger.log({
@@ -630,38 +610,26 @@ router.patch("/:id/complete", protect, async (req, res) => {
       );
     }
 
-    // TEMPORARILY COMMENTED OUT FOR TESTING
-    // Check if project has ended - no more actions allowed
-    // if (programme && checkProjectEnded(programme.extractedData?.activities)) {
-    //   return sendError(
-    //     res,
-    //     "Project has ended. No actions can be modified.",
-    //     400,
-    //   );
-    // }
-
     const wasCompleted = action.status === "Completed";
 
     if (action.status === "Completed") {
       action.status = "Open";
       action.completedAt = null;
-      // Revert linked activity status since action is no longer complete
       if (action.linkedActivity?.activityId) {
         await updateLinkedActivityStatus(
           action.programme,
           action.linkedActivity.activityId,
-          false
+          false,
         );
       }
     } else {
       action.status = "Completed";
       action.completedAt = new Date();
-      // Update linked activity status to Complete if all actions are done
       if (action.linkedActivity?.activityId) {
         await updateLinkedActivityStatus(
           action.programme,
           action.linkedActivity.activityId,
-          true
+          true,
         );
       }
     }
@@ -672,9 +640,13 @@ router.patch("/:id/complete", protect, async (req, res) => {
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
-    // Audit logging for completion toggle
     if (!wasCompleted && action.status === "Completed") {
-      await auditLogger.actionCompleted(req, req.admin, updatedAction, programme?.project);
+      await auditLogger.actionCompleted(
+        req,
+        req.admin,
+        updatedAction,
+        programme?.project,
+      );
     } else if (wasCompleted && action.status === "Open") {
       await auditLogger.actionStatusChanged(
         req,
@@ -682,7 +654,7 @@ router.patch("/:id/complete", protect, async (req, res) => {
         updatedAction,
         "Completed",
         "Open",
-        programme?.project
+        programme?.project,
       );
     }
 
@@ -724,14 +696,18 @@ router.patch("/:id/complete", protect, async (req, res) => {
 
 router.delete("/:id", protect, async (req, res) => {
   try {
-    const action = await Action.findById(req.params.id)
-      .populate("programme", "project");
+    const action = await Action.findById(req.params.id).populate(
+      "programme",
+      "project",
+    );
 
     if (!action) {
       return sendError(res, "Action not found", 404);
     }
 
-    const { locked } = await checkProgrammeLocked(action.programme._id || action.programme);
+    const { locked } = await checkProgrammeLocked(
+      action.programme._id || action.programme,
+    );
     if (locked) {
       return sendError(
         res,
@@ -740,7 +716,6 @@ router.delete("/:id", protect, async (req, res) => {
       );
     }
 
-    // Audit log before deletion
     await auditLogger.log({
       action: "ACTION_DELETED",
       req,
@@ -780,7 +755,6 @@ router.get("/stats/summary", protect, async (req, res) => {
       ];
     }
 
-    // Start of today (midnight) - actions are only overdue after due date has fully passed
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
 

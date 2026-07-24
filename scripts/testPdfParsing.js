@@ -47,9 +47,6 @@ const parseDate = (dateStr) => {
 };
 
 async function testParsing() {
-  console.log(`\n📄 Testing PDF parsing: ${pdfPath}\n`);
-  console.log("=".repeat(80));
-
   const pdfBuffer = fs.readFileSync(pdfPath);
   const uint8Array = new Uint8Array(pdfBuffer);
   const pdfDoc = await pdfjsLib.getDocument({ data: uint8Array }).promise;
@@ -228,14 +225,9 @@ async function testParsing() {
 
   if (activities.length === 0) {
   } else {
-    activities.slice(0, 20).forEach((a, idx) => {
-      console.log(
-        `${(idx + 1).toString().padStart(2)}. ${a.activityId.padEnd(15)} | ${a.activityName.substring(0, 45).padEnd(45)} | ${a.startDate.padEnd(12)} | ${a.finishDate.padEnd(12)} | ${a.status}`,
-      );
-    });
+    activities.slice(0, 20).forEach((a, idx) => {});
 
     if (activities.length > 20) {
-      console.log(`\n... and ${activities.length - 20} more activities`);
     }
   }
 }

@@ -12,20 +12,28 @@ const { protect } = require("../middleware/authMiddleware");
 const { sendError, sendSuccess } = require("../utils/errorResponse");
 const auditLogger = require("../utils/auditLogger");
 
-// Ensure exports directory exists
 const exportsDir = path.join(__dirname, "../uploads/exports");
 if (!fs.existsSync(exportsDir)) {
   fs.mkdirSync(exportsDir, { recursive: true });
 }
 
-// Helper to calculate RAG status
 const calculateRAG = (activity, today) => {
   const parseDate = (dateStr) => {
     if (!dateStr) return null;
     const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
     const months = {
-      Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
-      Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+      Jan: 0,
+      Feb: 1,
+      Mar: 2,
+      Apr: 3,
+      May: 4,
+      Jun: 5,
+      Jul: 6,
+      Aug: 7,
+      Sep: 8,
+      Oct: 9,
+      Nov: 10,
+      Dec: 11,
     };
     const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
     if (!match) return null;
@@ -62,7 +70,6 @@ const calculateRAG = (activity, today) => {
   else return "Grey";
 };
 
-// GET /api/exports/gating-status - Get export gating status
 router.get("/gating-status", protect, async (req, res) => {
   try {
     const projects = await Project.find({ status: { $ne: "Cancelled" } });
@@ -85,21 +92,24 @@ router.get("/gating-status", protect, async (req, res) => {
     const activeProgramme = programmes[0];
     const cycleStatus = activeProgramme.cycleStatus || "Draft";
 
-    // Exports are ungated if cycle is in Execution, Close-Out Eligible, Approved, or Closed
-    const ungatedStatuses = ["Execution", "Close-Out Eligible", "Approved", "Closed"];
+    const ungatedStatuses = [
+      "Execution",
+      "Close-Out Eligible",
+      "Approved",
+      "Closed",
+    ];
     const isGated = !ungatedStatuses.includes(cycleStatus);
 
-    // Calculate current week
     let currentWeek = "N/A";
     if (activeProgramme.lookaheadStartDate) {
       const startOfYear = new Date(
         new Date(activeProgramme.lookaheadStartDate).getFullYear(),
         0,
-        1
+        1,
       );
       const days = Math.floor(
         (new Date(activeProgramme.lookaheadStartDate) - startOfYear) /
-          (24 * 60 * 60 * 1000)
+          (24 * 60 * 60 * 1000),
       );
       currentWeek = `W${Math.ceil((days + 1) / 7)}`;
     }
@@ -117,7 +127,6 @@ router.get("/gating-status", protect, async (req, res) => {
   }
 });
 
-// GET /api/exports/history - Get export history
 router.get("/history", protect, async (req, res) => {
   try {
     const exports = await Export.find()
@@ -143,13 +152,12 @@ router.get("/history", protect, async (req, res) => {
   }
 });
 
-// DELETE /api/exports/delete-all - Delete all exports
 router.delete("/delete-all", protect, async (req, res) => {
   try {
     const result = await Export.deleteMany({});
     return sendSuccess(res, {
       message: "All exports deleted",
-      deletedCount: result.deletedCount
+      deletedCount: result.deletedCount,
     });
   } catch (error) {
     console.error("Delete all exports error:", error);
@@ -157,20 +165,13 @@ router.delete("/delete-all", protect, async (req, res) => {
   }
 });
 
-// POST /api/exports/weekly-plan - Generate Weekly Plan export
-// Shows: Completed Actions + Overdue Actions (all weeks) + Blocked Activities (all weeks)
-// If nothing completed → file empty
 router.post("/weekly-plan", protect, async (req, res) => {
   try {
-    // Get programmeId and weekNumber from request body (sent from frontend)
     const { programmeId } = req.body;
-    const requestedWeekNumber = req.body.weekNumber ? parseInt(req.body.weekNumber) : null;
+    const requestedWeekNumber = req.body.weekNumber
+      ? parseInt(req.body.weekNumber)
+      : null;
 
-    // Export the programme the caller asked for. This previously ignored
-    // programmeId entirely and took the newest programme across all projects,
-    // so the file described whichever programme happened to be uploaded last —
-    // not the one on screen. Falls back to the newest only when no id is given,
-    // to keep older callers working.
     let activeProgramme;
     if (programmeId) {
       activeProgramme = await Programme.findById(programmeId);
@@ -195,13 +196,22 @@ router.post("/weekly-plan", protect, async (req, res) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Helper to parse date strings
     const parseActivityDate = (dateStr) => {
       if (!dateStr) return null;
       const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
       const months = {
-        Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
-        Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+        Jan: 0,
+        Feb: 1,
+        Mar: 2,
+        Apr: 3,
+        May: 4,
+        Jun: 5,
+        Jul: 6,
+        Aug: 7,
+        Sep: 8,
+        Oct: 9,
+        Nov: 10,
+        Dec: 11,
       };
       const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
       if (!match) return null;
@@ -212,7 +222,6 @@ router.post("/weekly-plan", protect, async (req, res) => {
       return new Date(year, month, day);
     };
 
-    // Find programme start date (earliest activity)
     let earliestDate = null;
     for (const activity of activities) {
       const startDate = parseActivityDate(activity.startDate);
@@ -221,8 +230,6 @@ router.post("/weekly-plan", protect, async (req, res) => {
       }
     }
 
-    // Calculate the 2-week window. Anchored on lookaheadStartDate (upload date)
-    // to match weekly-control and the planner-todo export.
     let weekStartDate = null;
     let weekEndDate = null;
     let currentWeekNumber = 1;
@@ -238,7 +245,6 @@ router.post("/weekly-plan", protect, async (req, res) => {
       currentWeekNumber =
         requestedWeekNumber || Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
 
-      // Align to the week pair (1-2, 3-4, 5-6) the target week belongs to
       const pairFirstWeek =
         currentWeekNumber % 2 === 1 ? currentWeekNumber : currentWeekNumber - 1;
       weekStartDate = new Date(referenceDate);
@@ -247,17 +253,12 @@ router.post("/weekly-plan", protect, async (req, res) => {
       weekEndDate.setDate(weekStartDate.getDate() + 13);
     }
 
-    // Get ALL actions for this programme. This full list stays unfiltered — it
-    // backs actionsByActivity below, and an activity only counts as complete when
-    // EVERY one of its actions is done, including any due outside this window.
     const allActions = await Action.find({
       programme: activeProgramme._id,
     })
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
-    // Actions whose DUE DATE lands in the current window. The action sheets below
-    // report on these only, matching the planner-todo export and the UI counts.
     const actionsThisWeek =
       weekStartDate && weekEndDate
         ? allActions.filter((a) => {
@@ -267,18 +268,21 @@ router.post("/weekly-plan", protect, async (req, res) => {
           })
         : allActions;
 
-    // Categorize actions (current window only)
-    const completedActions = actionsThisWeek.filter(a => a.status === "Completed");
-    const overdueActions = actionsThisWeek.filter(a =>
-      a.status !== "Completed" &&
-      a.status !== "Cancelled" &&
-      a.status !== "PM Override" &&
-      a.dueDate &&
-      new Date(a.dueDate) < today
+    const completedActions = actionsThisWeek.filter(
+      (a) => a.status === "Completed",
     );
-    const pmOverrideActions = actionsThisWeek.filter(a => a.status === "PM Override");
+    const overdueActions = actionsThisWeek.filter(
+      (a) =>
+        a.status !== "Completed" &&
+        a.status !== "Cancelled" &&
+        a.status !== "PM Override" &&
+        a.dueDate &&
+        new Date(a.dueDate) < today,
+    );
+    const pmOverrideActions = actionsThisWeek.filter(
+      (a) => a.status === "PM Override",
+    );
 
-    // Build map of actions by activity ID for checking completion status
     const actionsByActivity = {};
     allActions.forEach((action) => {
       const actId = action.linkedActivity?.activityId;
@@ -290,19 +294,19 @@ router.post("/weekly-plan", protect, async (req, res) => {
       }
     });
 
-    // Helper to check if activity is completed via linked actions
     const isActivityCompletedViaActions = (activity) => {
       const linkedActions = actionsByActivity[activity.activityId] || [];
       if (linkedActions.length > 0) {
         return linkedActions.every(
-          action => action.status === "Completed" || action.status === "Complete" || action.status === "Cancelled"
+          (action) =>
+            action.status === "Completed" ||
+            action.status === "Complete" ||
+            action.status === "Cancelled",
         );
       }
       return false;
     };
 
-    // An activity is "No Action" when the planner explicitly marked it as needing
-    // none (Green/Ready) — as opposed to one that got there by completing actions.
     const isNoActionActivity = (activity) =>
       activity.assignmentState === "NoAction";
 
@@ -313,19 +317,14 @@ router.post("/weekly-plan", protect, async (req, res) => {
       (a.startDate && a.startDate.includes(" A")) ||
       (a.finishDate && a.finishDate.includes(" A"));
 
-    // Activities needing no action at all — reported on their own sheet.
     const noActionActivities = activities.filter(isNoActionActivity);
 
-    // Activities ready because their actions are done (or the programme marks them
-    // complete). No-action activities are deliberately excluded — they have their
-    // own sheet, and listing them here too would double-count them.
     const readyActivities = activities.filter(
       (a) =>
         !isNoActionActivity(a) &&
-        (isMarkedComplete(a) || isActivityCompletedViaActions(a))
+        (isMarkedComplete(a) || isActivityCompletedViaActions(a)),
     );
 
-    // Why each activity is ready.
     const readinessBasis = (activity) => {
       const linked = actionsByActivity[activity.activityId] || [];
       if (linked.length > 0) {
@@ -333,35 +332,45 @@ router.post("/weekly-plan", protect, async (req, res) => {
           (x) =>
             x.status === "Completed" ||
             x.status === "Complete" ||
-            x.status === "Cancelled"
+            x.status === "Cancelled",
         ).length;
         return `${done} of ${linked.length} action${linked.length === 1 ? "" : "s"} complete`;
       }
       return "Marked complete";
     };
 
-    // Get blocked activities
-    const blockedActivities = activities.filter(a => a.isBlocked === true);
+    const blockedActivities = activities.filter((a) => a.isBlocked === true);
 
-    // Get At Risk (Overdue) activities - finish date passed but not completed
-    const atRiskActivities = activities.filter(a => {
-      // Skip if completed (including via linked actions)
-      if (a.status === "Completed" ||
-          a.activityStatus === "Complete" ||
-          a.activityStatus === "Completed" ||
-          (a.startDate && a.startDate.includes(" A")) ||
-          (a.finishDate && a.finishDate.includes(" A")) ||
-          isActivityCompletedViaActions(a)) {
+    const atRiskActivities = activities.filter((a) => {
+      if (
+        a.status === "Completed" ||
+        a.activityStatus === "Complete" ||
+        a.activityStatus === "Completed" ||
+        (a.startDate && a.startDate.includes(" A")) ||
+        (a.finishDate && a.finishDate.includes(" A")) ||
+        isActivityCompletedViaActions(a)
+      ) {
         return false;
       }
-      // Skip if blocked (already in blocked list)
       if (a.isBlocked === true) {
         return false;
       }
-      // Check if finish date has passed
       if (a.finishDate) {
         const cleanDate = a.finishDate.replace(/\s*[AB\*]$/, "").trim();
-        const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+        const months = {
+          Jan: 0,
+          Feb: 1,
+          Mar: 2,
+          Apr: 3,
+          May: 4,
+          Jun: 5,
+          Jul: 6,
+          Aug: 7,
+          Sep: 8,
+          Oct: 9,
+          Nov: 10,
+          Dec: 11,
+        };
         const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
         if (match) {
           const day = parseInt(match[1]);
@@ -375,15 +384,12 @@ router.post("/weekly-plan", protect, async (req, res) => {
       return false;
     });
 
-    // Use calculated week number for the 2-week period
     const currentWeek = `W${currentWeekNumber}-${currentWeekNumber + 1}`;
 
-    // Create Excel workbook
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "PlanSure";
     workbook.created = new Date();
 
-    // Completed Actions Sheet
     const completedSheet = workbook.addWorksheet("Completed Actions");
     completedSheet.columns = [
       { header: "Action ID", key: "actionId", width: 15 },
@@ -395,7 +401,11 @@ router.post("/weekly-plan", protect, async (req, res) => {
       { header: "Priority", key: "priority", width: 12 },
     ];
     completedSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    completedSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF22C55E" } };
+    completedSheet.getRow(1).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF22C55E" },
+    };
 
     completedActions.forEach((action) => {
       completedSheet.addRow({
@@ -403,13 +413,16 @@ router.post("/weekly-plan", protect, async (req, res) => {
         title: action.title || "-",
         linkedActivity: action.linkedActivity?.activityName || "-",
         assignee: action.assignee?.name || "-",
-        dueDate: action.dueDate ? new Date(action.dueDate).toLocaleDateString() : "-",
-        completedDate: action.updatedAt ? new Date(action.updatedAt).toLocaleDateString() : "-",
+        dueDate: action.dueDate
+          ? new Date(action.dueDate).toLocaleDateString()
+          : "-",
+        completedDate: action.updatedAt
+          ? new Date(action.updatedAt).toLocaleDateString()
+          : "-",
         priority: action.priority || "-",
       });
     });
 
-    // Overdue Actions Sheet
     const overdueSheet = workbook.addWorksheet("Overdue Actions");
     overdueSheet.columns = [
       { header: "Action ID", key: "actionId", width: 15 },
@@ -421,22 +434,29 @@ router.post("/weekly-plan", protect, async (req, res) => {
       { header: "Priority", key: "priority", width: 12 },
     ];
     overdueSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    overdueSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEF4444" } };
+    overdueSheet.getRow(1).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFEF4444" },
+    };
 
     overdueActions.forEach((action) => {
-      const daysOverdue = Math.ceil((today - new Date(action.dueDate)) / (24 * 60 * 60 * 1000));
+      const daysOverdue = Math.ceil(
+        (today - new Date(action.dueDate)) / (24 * 60 * 60 * 1000),
+      );
       overdueSheet.addRow({
         actionId: `ACT-${String(action._id).slice(-4).toUpperCase()}`,
         title: action.title || "-",
         linkedActivity: action.linkedActivity?.activityName || "-",
         assignee: action.assignee?.name || "-",
-        dueDate: action.dueDate ? new Date(action.dueDate).toLocaleDateString() : "-",
+        dueDate: action.dueDate
+          ? new Date(action.dueDate).toLocaleDateString()
+          : "-",
         daysOverdue: daysOverdue,
         priority: action.priority || "-",
       });
     });
 
-    // PM Override Actions Sheet
     const pmOverrideSheet = workbook.addWorksheet("PM Override Actions");
     pmOverrideSheet.columns = [
       { header: "Action ID", key: "actionId", width: 15 },
@@ -447,8 +467,15 @@ router.post("/weekly-plan", protect, async (req, res) => {
       { header: "Override Date", key: "overrideDate", width: 15 },
       { header: "Priority", key: "priority", width: 12 },
     ];
-    pmOverrideSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    pmOverrideSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF9333EA" } }; // Purple for PM Override
+    pmOverrideSheet.getRow(1).font = {
+      bold: true,
+      color: { argb: "FFFFFFFF" },
+    };
+    pmOverrideSheet.getRow(1).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF9333EA" },
+    };
 
     pmOverrideActions.forEach((action) => {
       pmOverrideSheet.addRow({
@@ -456,14 +483,16 @@ router.post("/weekly-plan", protect, async (req, res) => {
         title: action.title || "-",
         linkedActivity: action.linkedActivity?.activityName || "-",
         assignee: action.assignee?.name || "-",
-        dueDate: action.dueDate ? new Date(action.dueDate).toLocaleDateString() : "-",
-        overrideDate: action.updatedAt ? new Date(action.updatedAt).toLocaleDateString() : "-",
+        dueDate: action.dueDate
+          ? new Date(action.dueDate).toLocaleDateString()
+          : "-",
+        overrideDate: action.updatedAt
+          ? new Date(action.updatedAt).toLocaleDateString()
+          : "-",
         priority: action.priority || "-",
       });
     });
 
-    // Ready Activities Sheet — activities whose actions are all complete.
-    // Activities that needed no action are on the "Completed with No Actions" sheet.
     const readyActivitiesSheet = workbook.addWorksheet("Ready Activities");
     readyActivitiesSheet.columns = [
       { header: "Activity ID", key: "activityId", width: 15 },
@@ -474,8 +503,15 @@ router.post("/weekly-plan", protect, async (req, res) => {
       { header: "Basis", key: "basis", width: 26 },
       { header: "Owner", key: "owner", width: 20 },
     ];
-    readyActivitiesSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    readyActivitiesSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF22C55E" } };
+    readyActivitiesSheet.getRow(1).font = {
+      bold: true,
+      color: { argb: "FFFFFFFF" },
+    };
+    readyActivitiesSheet.getRow(1).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF22C55E" },
+    };
 
     readyActivities.forEach((activity) => {
       readyActivitiesSheet.addRow({
@@ -489,9 +525,6 @@ router.post("/weekly-plan", protect, async (req, res) => {
       });
     });
 
-    // Completed with No Actions Sheet — activities the planner marked as needing
-    // no action at all. Kept separate from "Ready Activities" so neither sheet
-    // repeats the other.
     const noActionSheet = workbook.addWorksheet("Completed with No Actions");
     noActionSheet.columns = [
       { header: "Activity ID", key: "activityId", width: 15 },
@@ -503,7 +536,11 @@ router.post("/weekly-plan", protect, async (req, res) => {
       { header: "Owner", key: "owner", width: 20 },
     ];
     noActionSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    noActionSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF22C55E" } };
+    noActionSheet.getRow(1).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF22C55E" },
+    };
 
     noActionActivities.forEach((activity) => {
       noActionSheet.addRow({
@@ -517,7 +554,6 @@ router.post("/weekly-plan", protect, async (req, res) => {
       });
     });
 
-    // Blocked Activities Sheet
     const blockedActivitiesSheet = workbook.addWorksheet("Blocked Activities");
     blockedActivitiesSheet.columns = [
       { header: "Activity ID", key: "activityId", width: 15 },
@@ -528,8 +564,15 @@ router.post("/weekly-plan", protect, async (req, res) => {
       { header: "Owner", key: "owner", width: 20 },
       { header: "Blocker", key: "blocker", width: 30 },
     ];
-    blockedActivitiesSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    blockedActivitiesSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF59E0B" } };
+    blockedActivitiesSheet.getRow(1).font = {
+      bold: true,
+      color: { argb: "FFFFFFFF" },
+    };
+    blockedActivitiesSheet.getRow(1).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFF59E0B" },
+    };
 
     blockedActivities.forEach((activity) => {
       blockedActivitiesSheet.addRow({
@@ -543,7 +586,6 @@ router.post("/weekly-plan", protect, async (req, res) => {
       });
     });
 
-    // At Risk (Overdue) Activities Sheet
     const atRiskActivitiesSheet = workbook.addWorksheet("At Risk Activities");
     atRiskActivitiesSheet.columns = [
       { header: "Activity ID", key: "activityId", width: 15 },
@@ -554,14 +596,34 @@ router.post("/weekly-plan", protect, async (req, res) => {
       { header: "Owner", key: "owner", width: 20 },
       { header: "Days Overdue", key: "daysOverdue", width: 15 },
     ];
-    atRiskActivitiesSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    atRiskActivitiesSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEF4444" } }; // Red for overdue
+    atRiskActivitiesSheet.getRow(1).font = {
+      bold: true,
+      color: { argb: "FFFFFFFF" },
+    };
+    atRiskActivitiesSheet.getRow(1).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFEF4444" },
+    };
 
     atRiskActivities.forEach((activity) => {
       let daysOverdue = 0;
       if (activity.finishDate) {
         const cleanDate = activity.finishDate.replace(/\s*[AB\*]$/, "").trim();
-        const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+        const months = {
+          Jan: 0,
+          Feb: 1,
+          Mar: 2,
+          Apr: 3,
+          May: 4,
+          Jun: 5,
+          Jul: 6,
+          Aug: 7,
+          Sep: 8,
+          Oct: 9,
+          Nov: 10,
+          Dec: 11,
+        };
         const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
         if (match) {
           const day = parseInt(match[1]);
@@ -583,7 +645,6 @@ router.post("/weekly-plan", protect, async (req, res) => {
       });
     });
 
-    // Summary sheet
     const summarySheet = workbook.addWorksheet("Summary");
     summarySheet.columns = [
       { header: "Category", key: "category", width: 25 },
@@ -591,9 +652,18 @@ router.post("/weekly-plan", protect, async (req, res) => {
     ];
     summarySheet.getRow(1).font = { bold: true };
     summarySheet.addRow({ category: "--- ACTIONS ---", count: "" });
-    summarySheet.addRow({ category: "Completed Actions", count: completedActions.length });
-    summarySheet.addRow({ category: "Overdue Actions", count: overdueActions.length });
-    summarySheet.addRow({ category: "PM Override Actions", count: pmOverrideActions.length });
+    summarySheet.addRow({
+      category: "Completed Actions",
+      count: completedActions.length,
+    });
+    summarySheet.addRow({
+      category: "Overdue Actions",
+      count: overdueActions.length,
+    });
+    summarySheet.addRow({
+      category: "PM Override Actions",
+      count: pmOverrideActions.length,
+    });
     summarySheet.addRow({ category: "", count: "" });
     summarySheet.addRow({ category: "--- ACTIVITIES ---", count: "" });
     summarySheet.addRow({
@@ -604,10 +674,19 @@ router.post("/weekly-plan", protect, async (req, res) => {
       category: "Completed with No Actions",
       count: noActionActivities.length,
     });
-    summarySheet.addRow({ category: "Blocked Activities", count: blockedActivities.length });
-    summarySheet.addRow({ category: "At Risk (Overdue) Activities", count: atRiskActivities.length });
+    summarySheet.addRow({
+      category: "Blocked Activities",
+      count: blockedActivities.length,
+    });
+    summarySheet.addRow({
+      category: "At Risk (Overdue) Activities",
+      count: atRiskActivities.length,
+    });
 
-    const totalActions = completedActions.length + overdueActions.length + pmOverrideActions.length;
+    const totalActions =
+      completedActions.length +
+      overdueActions.length +
+      pmOverrideActions.length;
     const totalActivities =
       readyActivities.length +
       noActionActivities.length +
@@ -615,12 +694,10 @@ router.post("/weekly-plan", protect, async (req, res) => {
       atRiskActivities.length;
     const totalItems = totalActions + totalActivities;
 
-    // Save file
     const fileName = `Weekly_Plan_${currentWeek}_${Date.now()}.xlsx`;
     const filePath = path.join(exportsDir, fileName);
     await workbook.xlsx.writeFile(filePath);
 
-    // Save export record
     const exportRecord = await Export.create({
       type: "Weekly Plan",
       week: currentWeek,
@@ -641,19 +718,17 @@ router.post("/weekly-plan", protect, async (req, res) => {
       },
     });
 
-    // Audit log: Weekly plan exported
     await auditLogger.weeklyPlanExported(
       req,
       req.admin,
       activeProgramme.project,
       currentWeekNumber,
-      totalItems
+      totalItems,
     );
 
-    // Send file
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
     res.setHeader("X-Export-Id", exportRecord._id.toString());
@@ -666,10 +741,8 @@ router.post("/weekly-plan", protect, async (req, res) => {
   }
 });
 
-// POST /api/exports/planner-todo - Generate Planner To-Do export (outstanding actions)
 router.post("/planner-todo", protect, async (req, res) => {
   try {
-    // Get programmeId and weekNumber from request body (sent from frontend)
     const { programmeId, weekNumber: reqWeekNumber } = req.body;
     const requestedWeekNumber = reqWeekNumber ? parseInt(reqWeekNumber) : null;
 
@@ -677,7 +750,6 @@ router.post("/planner-todo", protect, async (req, res) => {
       return sendError(res, "Programme ID is required", 400);
     }
 
-    // Find the specific programme
     const activeProgramme = await Programme.findById(programmeId);
 
     if (!activeProgramme) {
@@ -685,13 +757,22 @@ router.post("/planner-todo", protect, async (req, res) => {
     }
     const activities = activeProgramme.extractedData?.activities || [];
 
-    // Helper to parse date strings
     const parseActivityDate = (dateStr) => {
       if (!dateStr) return null;
       const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
       const months = {
-        Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
-        Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+        Jan: 0,
+        Feb: 1,
+        Mar: 2,
+        Apr: 3,
+        May: 4,
+        Jun: 5,
+        Jul: 6,
+        Aug: 7,
+        Sep: 8,
+        Oct: 9,
+        Nov: 10,
+        Dec: 11,
       };
       const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
       if (!match) return null;
@@ -702,7 +783,6 @@ router.post("/planner-todo", protect, async (req, res) => {
       return new Date(year, month, day);
     };
 
-    // Find programme start date (earliest activity)
     let earliestDate = null;
     for (const activity of activities) {
       const startDate = parseActivityDate(activity.startDate);
@@ -711,12 +791,6 @@ router.post("/planner-todo", protect, async (req, res) => {
       }
     }
 
-    // Calculate the 2-week window. Anchored on lookaheadStartDate (upload date)
-    // to match weekly-control (programmeUploadRoutes.js:1721) — anchoring on the
-    // earliest activity date made the export's window disagree with the one the
-    // UI shows whenever work was scheduled before the programme was uploaded.
-    // The window is always computed: previously it was skipped unless the client
-    // sent weekNumber (which it never does), so every action was exported.
     let weekStartDate = null;
     let weekEndDate = null;
     let currentWeekNumber = 1;
@@ -730,34 +804,29 @@ router.post("/planner-todo", protect, async (req, res) => {
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
       const msPerDay = 1000 * 60 * 60 * 24;
-      const daysSinceStart = Math.floor((todayStart - referenceDate) / msPerDay);
+      const daysSinceStart = Math.floor(
+        (todayStart - referenceDate) / msPerDay,
+      );
       currentWeekNumber =
         requestedWeekNumber || Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
 
-      // Align to the week pair (1-2, 3-4, 5-6) the target week belongs to
       const pairFirstWeek =
         currentWeekNumber % 2 === 1 ? currentWeekNumber : currentWeekNumber - 1;
       weekStartDate = new Date(referenceDate);
       weekStartDate.setDate(referenceDate.getDate() + (pairFirstWeek - 1) * 7);
       weekEndDate = new Date(weekStartDate);
-      weekEndDate.setDate(weekStartDate.getDate() + 13); // 2 weeks = 14 days
+      weekEndDate.setDate(weekStartDate.getDate() + 13);
     }
 
-    // Get ALL actions for the current 2 weeks (Open, In Progress, Completed, PM Override)
     let actions = await Action.find({
       programme: programmeId,
     })
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
-    // Start of today (midnight) - actions are only overdue after due date has fully passed
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Filter actions to the current window by DUE DATE ONLY, matching the count
-    // shown in the UI (programmeUploadRoutes.js actionsDueInCurrentWeek). An
-    // action on a week-1-2 activity but due in a later window belongs to that
-    // later window's to-do list, not this one.
     if (weekStartDate && weekEndDate) {
       actions = actions.filter((action) => {
         if (!action.dueDate) return false;
@@ -766,35 +835,23 @@ router.post("/planner-todo", protect, async (req, res) => {
       });
     }
 
-    // Categorize actions by status (from current week only)
-    // Only Open and In Progress actions for Planner To-Do
-
-    // Open actions - status is Open or no status, not completed/PM Override/cancelled/in progress
     const openActions = actions.filter(
       (a) =>
         (a.status === "Open" || !a.status) &&
         a.status !== "Completed" &&
         a.status !== "PM Override" &&
         a.status !== "Cancelled" &&
-        a.status !== "In Progress"
+        a.status !== "In Progress",
     );
 
-    // In Progress actions
     const inProgressActions = actions.filter((a) => a.status === "In Progress");
 
-    // Calculate current week label
-    // Label with the PROGRAMME week this window covers. The previous fallback
-    // computed the calendar week-of-year (W28 for a 15-Jul upload) instead —
-    // unrelated to the programme's own week numbering, and it leaked into the
-    // filename and the export history record.
     const currentWeek = `W${currentWeekNumber}`;
 
-    // Create Excel workbook
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "PlanSure";
     workbook.created = new Date();
 
-    // Helper function to add action rows
     const addActionRows = (sheet, actionList, includeOverdue = false) => {
       actionList.forEach((action) => {
         const row = {
@@ -809,14 +866,15 @@ router.post("/planner-todo", protect, async (req, res) => {
         };
         if (includeOverdue) {
           row.daysOverdue = action.dueDate
-            ? Math.ceil((today - new Date(action.dueDate)) / (24 * 60 * 60 * 1000))
+            ? Math.ceil(
+                (today - new Date(action.dueDate)) / (24 * 60 * 60 * 1000),
+              )
             : 0;
         }
         sheet.addRow(row);
       });
     };
 
-    // Common columns for action sheets
     const baseColumns = [
       { header: "Action ID", key: "actionId", width: 15 },
       { header: "Title", key: "title", width: 40 },
@@ -826,47 +884,74 @@ router.post("/planner-todo", protect, async (req, res) => {
       { header: "Priority", key: "priority", width: 12 },
     ];
 
-    // 1. Open Actions Sheet (Amber/Yellow)
     const openSheet = workbook.addWorksheet("Open Actions");
     openSheet.columns = [...baseColumns];
     openSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    openSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF59E0B" } };
+    openSheet.getRow(1).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFF59E0B" },
+    };
     addActionRows(openSheet, openActions);
 
-    // 2. In Progress Actions Sheet (Blue)
     const inProgressSheet = workbook.addWorksheet("In Progress Actions");
     inProgressSheet.columns = [...baseColumns];
-    inProgressSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    inProgressSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3B82F6" } };
+    inProgressSheet.getRow(1).font = {
+      bold: true,
+      color: { argb: "FFFFFFFF" },
+    };
+    inProgressSheet.getRow(1).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF3B82F6" },
+    };
     addActionRows(inProgressSheet, inProgressActions);
 
-    // 3. Summary Sheet
     const summarySheet = workbook.addWorksheet("Summary");
     summarySheet.columns = [
       { header: "Metric", key: "metric", width: 30 },
       { header: "Value", key: "value", width: 20 },
     ];
     summarySheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    summarySheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1E3A5F" } };
+    summarySheet.getRow(1).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF1E3A5F" },
+    };
 
-    summarySheet.addRow({ metric: "Report Generated", value: new Date().toLocaleDateString() });
+    summarySheet.addRow({
+      metric: "Report Generated",
+      value: new Date().toLocaleDateString(),
+    });
     summarySheet.addRow({ metric: "Week", value: currentWeek });
     if (weekStartDate && weekEndDate) {
-      const formatDate = (d) => d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-      summarySheet.addRow({ metric: "Date Range", value: `${formatDate(weekStartDate)} - ${formatDate(weekEndDate)}` });
+      const formatDate = (d) =>
+        d.toLocaleDateString("en-GB", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        });
+      summarySheet.addRow({
+        metric: "Date Range",
+        value: `${formatDate(weekStartDate)} - ${formatDate(weekEndDate)}`,
+      });
     }
     summarySheet.addRow({ metric: "", value: "" });
-    summarySheet.addRow({ metric: "Total Actions (Current 2 Weeks)", value: openActions.length + inProgressActions.length });
+    summarySheet.addRow({
+      metric: "Total Actions (Current 2 Weeks)",
+      value: openActions.length + inProgressActions.length,
+    });
     summarySheet.addRow({ metric: "", value: "" });
     summarySheet.addRow({ metric: "Open Actions", value: openActions.length });
-    summarySheet.addRow({ metric: "In Progress Actions", value: inProgressActions.length });
+    summarySheet.addRow({
+      metric: "In Progress Actions",
+      value: inProgressActions.length,
+    });
 
-    // Save file
     const fileName = `Planner_ToDo_${currentWeek}_${Date.now()}.xlsx`;
     const filePath = path.join(exportsDir, fileName);
     await workbook.xlsx.writeFile(filePath);
 
-    // Save export record
     const totalActions = openActions.length + inProgressActions.length;
     const exportRecord = await Export.create({
       type: "Planner To-Do",
@@ -884,19 +969,17 @@ router.post("/planner-todo", protect, async (req, res) => {
       },
     });
 
-    // Audit log: Planner to-do exported
     await auditLogger.plannerTodoExported(
       req,
       req.admin,
       activeProgramme.project,
       currentWeekNumber,
-      totalActions
+      totalActions,
     );
 
-    // Send file
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
     res.setHeader("X-Export-Id", exportRecord._id.toString());
@@ -909,7 +992,6 @@ router.post("/planner-todo", protect, async (req, res) => {
   }
 });
 
-// GET /api/exports/download/:id - Download a previous export
 router.get("/download/:id", protect, async (req, res) => {
   try {
     const exportRecord = await Export.findById(req.params.id);
@@ -922,7 +1004,6 @@ router.get("/download/:id", protect, async (req, res) => {
       return sendError(res, "Export file not found", 404);
     }
 
-    // Audit log: Export downloaded
     await auditLogger.log({
       action: "EXPORT_DOWNLOADED",
       req,
@@ -940,11 +1021,11 @@ router.get("/download/:id", protect, async (req, res) => {
 
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="${exportRecord.fileName}"`
+      `attachment; filename="${exportRecord.fileName}"`,
     );
 
     const fileStream = fs.createReadStream(exportRecord.filePath);
@@ -955,10 +1036,11 @@ router.get("/download/:id", protect, async (req, res) => {
   }
 });
 
-// POST /api/exports/activities-pdf - Generate Activities PDF with blocked indicator
 router.post("/activities-pdf", protect, async (req, res) => {
   try {
-    const requestedWeekNumber = req.body.weekNumber ? parseInt(req.body.weekNumber) : null;
+    const requestedWeekNumber = req.body.weekNumber
+      ? parseInt(req.body.weekNumber)
+      : null;
 
     const projects = await Project.find({ status: { $ne: "Cancelled" } });
     const projectIds = projects.map((p) => p._id);
@@ -976,13 +1058,22 @@ router.post("/activities-pdf", protect, async (req, res) => {
     const activities = activeProgramme.extractedData?.activities || [];
     const today = new Date();
 
-    // Helper to parse date strings
     const parseActivityDate = (dateStr) => {
       if (!dateStr) return null;
       const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
       const months = {
-        Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
-        Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+        Jan: 0,
+        Feb: 1,
+        Mar: 2,
+        Apr: 3,
+        May: 4,
+        Jun: 5,
+        Jul: 6,
+        Aug: 7,
+        Sep: 8,
+        Oct: 9,
+        Nov: 10,
+        Dec: 11,
       };
       const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
       if (!match) return null;
@@ -993,7 +1084,6 @@ router.post("/activities-pdf", protect, async (req, res) => {
       return new Date(year, month, day);
     };
 
-    // Find programme start date (earliest activity)
     let earliestDate = null;
     for (const activity of activities) {
       const startDate = parseActivityDate(activity.startDate);
@@ -1002,7 +1092,6 @@ router.post("/activities-pdf", protect, async (req, res) => {
       }
     }
 
-    // Calculate week number and date range
     let currentWeekNumber = 1;
     let weekStartDate = earliestDate;
     let weekEndDate = earliestDate ? new Date(earliestDate) : null;
@@ -1020,37 +1109,38 @@ router.post("/activities-pdf", protect, async (req, res) => {
       }
 
       weekStartDate = new Date(earliestDate);
-      weekStartDate.setDate(earliestDate.getDate() + (currentWeekNumber - 1) * 7);
+      weekStartDate.setDate(
+        earliestDate.getDate() + (currentWeekNumber - 1) * 7,
+      );
       weekEndDate = new Date(weekStartDate);
       weekEndDate.setDate(weekStartDate.getDate() + 13);
     }
 
-    // Helper to check if activity is in current 2-week period
     const isActivityInWeek = (activity) => {
       if (!weekStartDate || !weekEndDate) return true;
       const actStart = parseActivityDate(activity.startDate);
       const actFinish = parseActivityDate(activity.finishDate);
       if (!actStart) return false;
 
-      const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
-      const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+      const startsThisWeek =
+        actStart >= weekStartDate && actStart <= weekEndDate;
+      const spansThisWeek =
+        actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
       return startsThisWeek || spansThisWeek;
     };
 
-    // Filter activities in week and add indicators
     const weekActivities = activities
       .filter(isActivityInWeek)
       .map((activity) => {
-        const isCompleted = activity.status === "Completed" ||
+        const isCompleted =
+          activity.status === "Completed" ||
           (activity.startDate && activity.startDate.includes(" A")) ||
           (activity.finishDate && activity.finishDate.includes(" A"));
         const isBlocked = activity.isBlocked === true;
 
-        // Add indicators to dates
         let startDate = activity.startDate || "-";
         let finishDate = activity.finishDate || "-";
 
-        // Clean existing indicators first
         const cleanStart = startDate.replace(/\s*[AB\*]$/, "").trim();
         const cleanFinish = finishDate.replace(/\s*[AB\*]$/, "").trim();
 
@@ -1065,7 +1155,6 @@ router.post("/activities-pdf", protect, async (req, res) => {
           finishDate = cleanFinish;
         }
 
-        // Determine status
         let status = "Ready";
         if (isCompleted) status = "Complete";
         else if (isBlocked) status = "Blocked";
@@ -1083,63 +1172,100 @@ router.post("/activities-pdf", protect, async (req, res) => {
 
     const currentWeek = `W${currentWeekNumber}-${currentWeekNumber + 1}`;
 
-    // Create PDF
-    const doc = new PDFDocument({ margin: 40, size: "A4", layout: "landscape" });
+    const doc = new PDFDocument({
+      margin: 40,
+      size: "A4",
+      layout: "landscape",
+    });
 
     const fileName = `Activities_${currentWeek}_${Date.now()}.pdf`;
     const filePath = path.join(exportsDir, fileName);
     const writeStream = fs.createWriteStream(filePath);
     doc.pipe(writeStream);
 
-    // Header
-    doc.fontSize(18).font("Helvetica-Bold").text("Activities Report", { align: "center" });
+    doc
+      .fontSize(18)
+      .font("Helvetica-Bold")
+      .text("Activities Report", { align: "center" });
     doc.moveDown(0.3);
-    doc.fontSize(12).font("Helvetica").text(`Week: ${currentWeek}`, { align: "center" });
-    doc.fontSize(10).text(`Generated: ${new Date().toLocaleDateString()}`, { align: "center" });
+    doc
+      .fontSize(12)
+      .font("Helvetica")
+      .text(`Week: ${currentWeek}`, { align: "center" });
+    doc.fontSize(10).text(`Generated: ${new Date().toLocaleDateString()}`, {
+      align: "center",
+    });
     doc.moveDown(0.5);
 
-    // Legend
-    doc.fontSize(9).font("Helvetica-Bold").text("Legend:", { continued: false });
-    doc.font("Helvetica").text("A = Completed  |  B = Blocked", { continued: false });
+    doc
+      .fontSize(9)
+      .font("Helvetica-Bold")
+      .text("Legend:", { continued: false });
+    doc
+      .font("Helvetica")
+      .text("A = Completed  |  B = Blocked", { continued: false });
     doc.moveDown(0.5);
 
-    // Table setup
     const tableTop = doc.y;
     const colWidths = [60, 200, 80, 80, 60, 70, 80];
-    const headers = ["Activity ID", "Activity Name", "Start Date", "End Date", "Duration", "Status", "Owner"];
+    const headers = [
+      "Activity ID",
+      "Activity Name",
+      "Start Date",
+      "End Date",
+      "Duration",
+      "Status",
+      "Owner",
+    ];
     const rowHeight = 20;
 
-    // Draw header row
     let x = 40;
     doc.font("Helvetica-Bold").fontSize(9);
-    doc.rect(40, tableTop, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill("#1E3A5F");
+    doc
+      .rect(
+        40,
+        tableTop,
+        colWidths.reduce((a, b) => a + b, 0),
+        rowHeight,
+      )
+      .fill("#1E3A5F");
 
     x = 40;
     doc.fillColor("white");
     headers.forEach((header, i) => {
-      doc.text(header, x + 3, tableTop + 5, { width: colWidths[i] - 6, align: "left" });
+      doc.text(header, x + 3, tableTop + 5, {
+        width: colWidths[i] - 6,
+        align: "left",
+      });
       x += colWidths[i];
     });
 
-    // Draw data rows
     doc.font("Helvetica").fontSize(8).fillColor("black");
     let y = tableTop + rowHeight;
 
     weekActivities.forEach((activity, index) => {
-      // Check for page break
       if (y + rowHeight > doc.page.height - 40) {
         doc.addPage({ margin: 40, size: "A4", layout: "landscape" });
         y = 40;
 
-        // Redraw header on new page
         x = 40;
         doc.font("Helvetica-Bold").fontSize(9);
-        doc.rect(40, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill("#1E3A5F");
+        doc
+          .rect(
+            40,
+            y,
+            colWidths.reduce((a, b) => a + b, 0),
+            rowHeight,
+          )
+          .fill("#1E3A5F");
 
         x = 40;
         doc.fillColor("white");
         headers.forEach((header, i) => {
-          doc.text(header, x + 3, y + 5, { width: colWidths[i] - 6, align: "left" });
+          doc.text(header, x + 3, y + 5, {
+            width: colWidths[i] - 6,
+            align: "left",
+          });
           x += colWidths[i];
         });
 
@@ -1147,18 +1273,29 @@ router.post("/activities-pdf", protect, async (req, res) => {
         y += rowHeight;
       }
 
-      // Alternating row colors
       const bgColor = index % 2 === 0 ? "#F8F9FA" : "#FFFFFF";
-      doc.rect(40, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).fill(bgColor);
+      doc
+        .rect(
+          40,
+          y,
+          colWidths.reduce((a, b) => a + b, 0),
+          rowHeight,
+        )
+        .fill(bgColor);
 
-      // Row border
-      doc.rect(40, y, colWidths.reduce((a, b) => a + b, 0), rowHeight).stroke("#E5E7EB");
+      doc
+        .rect(
+          40,
+          y,
+          colWidths.reduce((a, b) => a + b, 0),
+          rowHeight,
+        )
+        .stroke("#E5E7EB");
 
-      // Status color indicator
-      let statusColor = "#6B7280"; // grey default
-      if (activity.isCompleted) statusColor = "#22C55E"; // green
-      else if (activity.isBlocked) statusColor = "#EF4444"; // red
-      else if (activity.displayStatus === "At Risk") statusColor = "#F59E0B"; // amber
+      let statusColor = "#6B7280";
+      if (activity.isCompleted) statusColor = "#22C55E";
+      else if (activity.isBlocked) statusColor = "#EF4444";
+      else if (activity.displayStatus === "At Risk") statusColor = "#F59E0B";
 
       const rowData = [
         activity.activityId || "-",
@@ -1173,11 +1310,13 @@ router.post("/activities-pdf", protect, async (req, res) => {
       x = 40;
       doc.fillColor("black");
       rowData.forEach((cell, i) => {
-        // Special coloring for status column
         if (i === 5) {
           doc.fillColor(statusColor);
         }
-        doc.text(String(cell), x + 3, y + 5, { width: colWidths[i] - 6, align: "left" });
+        doc.text(String(cell), x + 3, y + 5, {
+          width: colWidths[i] - 6,
+          align: "left",
+        });
         if (i === 5) {
           doc.fillColor("black");
         }
@@ -1187,23 +1326,28 @@ router.post("/activities-pdf", protect, async (req, res) => {
       y += rowHeight;
     });
 
-    // Summary
     doc.moveDown(1);
     const summaryY = y + 20;
     doc.fontSize(10).font("Helvetica-Bold").fillColor("black");
     doc.text(`Total Activities: ${weekActivities.length}`, 40, summaryY);
-    doc.text(`Completed: ${weekActivities.filter(a => a.isCompleted).length}`, 200, summaryY);
-    doc.text(`Blocked: ${weekActivities.filter(a => a.isBlocked).length}`, 350, summaryY);
+    doc.text(
+      `Completed: ${weekActivities.filter((a) => a.isCompleted).length}`,
+      200,
+      summaryY,
+    );
+    doc.text(
+      `Blocked: ${weekActivities.filter((a) => a.isBlocked).length}`,
+      350,
+      summaryY,
+    );
 
     doc.end();
 
-    // Wait for PDF to finish writing
     await new Promise((resolve, reject) => {
       writeStream.on("finish", resolve);
       writeStream.on("error", reject);
     });
 
-    // Save export record
     const exportRecord = await Export.create({
       type: "Activities PDF",
       week: currentWeek,
@@ -1215,12 +1359,11 @@ router.post("/activities-pdf", protect, async (req, res) => {
       fileName: fileName,
       exportData: {
         activitiesCount: weekActivities.length,
-        completedCount: weekActivities.filter(a => a.isCompleted).length,
-        blockedCount: weekActivities.filter(a => a.isBlocked).length,
+        completedCount: weekActivities.filter((a) => a.isCompleted).length,
+        blockedCount: weekActivities.filter((a) => a.isBlocked).length,
       },
     });
 
-    // Audit log
     await auditLogger.log({
       action: "ACTIVITIES_PDF_EXPORTED",
       req,
@@ -1236,7 +1379,6 @@ router.post("/activities-pdf", protect, async (req, res) => {
       },
     });
 
-    // Send file
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
     res.setHeader("X-Export-Id", exportRecord._id.toString());
@@ -1249,7 +1391,6 @@ router.post("/activities-pdf", protect, async (req, res) => {
   }
 });
 
-// Keep the old project-based exports for backward compatibility
 router.get("/projects", protect, async (req, res) => {
   try {
     const projects = await Project.find({ status: { $ne: "Cancelled" } })

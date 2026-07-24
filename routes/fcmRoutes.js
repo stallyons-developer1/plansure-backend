@@ -7,12 +7,6 @@ const { sendSuccess, sendError } = require("../utils/errorResponse");
 router.post("/register-token", protect, async (req, res) => {
   try {
     const { token, deviceInfo } = req.body;
-    console.log(
-      "[FCM Route] Register token for user:",
-      req.admin._id,
-      req.admin.email,
-    );
-    console.log("[FCM Route] Token preview:", token?.substring(0, 30) + "...");
 
     if (!token) {
       return sendError(res, "FCM token is required", 400);
@@ -35,7 +29,6 @@ router.post("/register-token", protect, async (req, res) => {
     if (existingTokenIndex !== -1) {
       user.fcmTokens[existingTokenIndex].lastUsed = new Date();
       await user.save();
-      console.log("[FCM Route] Token already exists, updated lastUsed");
       return sendSuccess(res, {}, "Token already registered, updated lastUsed");
     }
 
@@ -47,10 +40,6 @@ router.post("/register-token", protect, async (req, res) => {
     });
 
     await user.save();
-    console.log(
-      "[FCM Route] NEW token registered, total tokens:",
-      user.fcmTokens.length,
-    );
     return sendSuccess(res, {}, "FCM token registered successfully");
   } catch (error) {
     console.error("FCM token registration error:", error);

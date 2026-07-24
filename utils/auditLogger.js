@@ -1,26 +1,17 @@
 const AuditLog = require("../models/AuditLog");
 
-/**
- * Audit Logger Utility
- * Provides easy-to-use functions for logging audit events
- */
-
-// Category mapping for actions
 const ACTION_CATEGORIES = {
-  // Auth
   USER_LOGIN: "AUTH",
   USER_LOGOUT: "AUTH",
   USER_LOGIN_FAILED: "AUTH",
   PASSWORD_CHANGED: "AUTH",
   PASSWORD_RESET_REQUESTED: "AUTH",
 
-  // User
   USER_CREATED: "USER",
   USER_UPDATED: "USER",
   USER_DELETED: "USER",
   USER_ROLE_CHANGED: "USER",
 
-  // Project
   PROJECT_CREATED: "PROJECT",
   PROJECT_UPDATED: "PROJECT",
   PROJECT_DELETED: "PROJECT",
@@ -28,19 +19,16 @@ const ACTION_CATEGORIES = {
   PROJECT_TEAM_MEMBER_ADDED: "PROJECT",
   PROJECT_TEAM_MEMBER_REMOVED: "PROJECT",
 
-  // Programme
   PROGRAMME_UPLOADED: "PROGRAMME",
   PROGRAMME_PROCESSED: "PROGRAMME",
   PROGRAMME_UPDATED: "PROGRAMME",
   PROGRAMME_DELETED: "PROGRAMME",
   PROGRAMME_REPROCESSED: "PROGRAMME",
 
-  // Activity
   ACTIVITY_STATUS_CHANGED: "ACTIVITY",
   ACTIVITY_RAG_CHANGED: "ACTIVITY",
   ACTIVITY_UPDATED: "ACTIVITY",
 
-  // Action
   ACTION_CREATED: "ACTION",
   ACTION_UPDATED: "ACTION",
   ACTION_STATUS_CHANGED: "ACTION",
@@ -50,26 +38,20 @@ const ACTION_CATEGORIES = {
   ACTION_COMPLETED: "ACTION",
   ACTION_CANCELLED: "ACTION",
 
-  // Week
   WEEK_CLOSED: "WEEK",
   WEEK_CLOSED_PM_OVERRIDE: "WEEK",
   WEEK_REOPENED: "WEEK",
   CYCLE_STATUS_CHANGED: "WEEK",
 
-  // Export
   WEEKLY_PLAN_EXPORTED: "EXPORT",
   PLANNER_TODO_EXPORTED: "EXPORT",
   EXPORT_DOWNLOADED: "EXPORT",
 
-  // System
   SYSTEM_SETTINGS_CHANGED: "SYSTEM",
   DATA_IMPORTED: "SYSTEM",
   DATA_EXPORTED: "SYSTEM",
 };
 
-/**
- * Get IP address from request
- */
 const getIpAddress = (req) => {
   return (
     req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
@@ -80,9 +62,6 @@ const getIpAddress = (req) => {
   );
 };
 
-/**
- * Get user agent from request
- */
 const getUserAgent = (req) => {
   return req.headers["user-agent"] || "unknown";
 };
@@ -105,7 +84,6 @@ const getUserAgent = (req) => {
  */
 const logAudit = async (options) => {
   try {
-    console.log("[AUDIT] Logging:", options.action, options.description);
     const {
       action,
       req,
@@ -148,18 +126,13 @@ const logAudit = async (options) => {
     return auditEntry;
   } catch (error) {
     console.error("Failed to create audit log:", error);
-    // Don't throw - audit logging should not break the main flow
     return null;
   }
 };
 
-// Convenience functions for common actions
-
 const auditLogger = {
-  // Core function
   log: logAudit,
 
-  // Auth events
   loginSuccess: (req, user) =>
     logAudit({
       action: "USER_LOGIN",
@@ -193,7 +166,6 @@ const auditLogger = {
       description: `${user.name} logged out`,
     }),
 
-  // Project events
   projectCreated: (req, user, project) =>
     logAudit({
       action: "PROJECT_CREATED",
@@ -259,7 +231,6 @@ const auditLogger = {
       metadata: { memberId: member._id, memberName: member.name },
     }),
 
-  // Programme events
   programmeUploaded: (req, user, programme, project) =>
     logAudit({
       action: "PROGRAMME_UPLOADED",
@@ -269,8 +240,11 @@ const auditLogger = {
       resourceId: programme._id,
       resourceName: programme.name,
       project,
-      description: `Uploaded programme "${programme.name}" to project "${project?.name || 'Unknown'}"`,
-      metadata: { fileName: programme.fileName, activityCount: programme.extractedData?.activities?.length || 0 },
+      description: `Uploaded programme "${programme.name}" to project "${project?.name || "Unknown"}"`,
+      metadata: {
+        fileName: programme.fileName,
+        activityCount: programme.extractedData?.activities?.length || 0,
+      },
     }),
 
   programmeProcessed: (req, user, programme, project) =>
@@ -283,10 +257,11 @@ const auditLogger = {
       resourceName: programme.name,
       project,
       description: `Processed programme "${programme.name}"`,
-      metadata: { activityCount: programme.extractedData?.activities?.length || 0 },
+      metadata: {
+        activityCount: programme.extractedData?.activities?.length || 0,
+      },
     }),
 
-  // Action events
   actionCreated: (req, user, action, project) =>
     logAudit({
       action: "ACTION_CREATED",
@@ -330,7 +305,6 @@ const auditLogger = {
       description: `Completed action "${action.title}"`,
     }),
 
-  // Week events
   weekClosed: (req, user, weekNumber, project, stats) =>
     logAudit({
       action: "WEEK_CLOSED",
@@ -339,7 +313,7 @@ const auditLogger = {
       resourceType: "Week",
       resourceName: `Week ${weekNumber}`,
       project,
-      description: `Closed Week ${weekNumber} for project "${project?.name || 'Unknown'}"`,
+      description: `Closed Week ${weekNumber} for project "${project?.name || "Unknown"}"`,
       metadata: { weekNumber, stats },
     }),
 
@@ -351,7 +325,7 @@ const auditLogger = {
       resourceType: "Week",
       resourceName: `Week ${weekNumber}`,
       project,
-      description: `PM Override: Closed Week ${weekNumber} for project "${project?.name || 'Unknown'}"`,
+      description: `PM Override: Closed Week ${weekNumber} for project "${project?.name || "Unknown"}"`,
       metadata: { weekNumber, reason, stats },
     }),
 
@@ -365,10 +339,12 @@ const auditLogger = {
       resourceName: project.name,
       project,
       description: `Changed cycle status from ${oldStatus} to ${newStatus}`,
-      changes: { before: { cycleStatus: oldStatus }, after: { cycleStatus: newStatus } },
+      changes: {
+        before: { cycleStatus: oldStatus },
+        after: { cycleStatus: newStatus },
+      },
     }),
 
-  // Export events
   weeklyPlanExported: (req, user, project, weekNumber, activityCount) =>
     logAudit({
       action: "WEEKLY_PLAN_EXPORTED",

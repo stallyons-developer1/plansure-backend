@@ -7,37 +7,39 @@ const { protect } = require("../middleware/authMiddleware");
 const { sendError, sendSuccess } = require("../utils/errorResponse");
 const { syncProgrammesGovernance } = require("../utils/governance");
 
-// Helper function to get accessible projects for planners
 const getPlannerAccessibleProjects = async (admin) => {
-  // Get projects directly assigned to the planner
   const userAssignedProjects = (admin.projects || []).map((p) => p.toString());
 
-  // Get projects from actions assigned to the planner
   const userActions = await Action.find({
-    $or: [
-      { assignee: admin._id },
-      { "previousAssignees.user": admin._id },
-    ],
+    $or: [{ assignee: admin._id }, { "previousAssignees.user": admin._id }],
   }).select("programme");
 
   let actionProjectIds = [];
   if (userActions.length > 0) {
-    const programmeIds = [...new Set(userActions.map((a) => a.programme.toString()))];
+    const programmeIds = [
+      ...new Set(userActions.map((a) => a.programme.toString())),
+    ];
     const programmes = await Programme.find({
       _id: { $in: programmeIds },
     }).select("project");
-    actionProjectIds = programmes.map((p) => p.project?.toString()).filter(Boolean);
+    actionProjectIds = programmes
+      .map((p) => p.project?.toString())
+      .filter(Boolean);
   }
 
-  // Get projects where planner is in the team
   const teamProjects = await Project.find({
     "team.user": admin._id,
     status: { $ne: "Cancelled" },
   }).select("_id");
   const teamProjectIds = teamProjects.map((p) => p._id.toString());
 
-  // Combine all project IDs
-  return [...new Set([...userAssignedProjects, ...actionProjectIds, ...teamProjectIds])];
+  return [
+    ...new Set([
+      ...userAssignedProjects,
+      ...actionProjectIds,
+      ...teamProjectIds,
+    ]),
+  ];
 };
 
 const parseDate = (dateStr) => {
@@ -70,7 +72,6 @@ const calculateRAG = (activity, today) => {
   const startDate = parseDate(activity.startDate);
   const finishDate = parseDate(activity.finishDate);
 
-  // Check if completed (status or "A" suffix in dates means Actual/Complete)
   const isCompleted =
     activity.status === "Completed" ||
     activity.activityStatus === "Complete" ||
@@ -108,11 +109,6 @@ const calculateRAG = (activity, today) => {
   }
 };
 
-// Assignment/action-driven RAG is the source of truth (see computeGovernanceStatus
-// in programmeUploadRoutes). The dashboard reflects the STORED ragStatus rather than
-// recomputing a date/zone-based value, so its counts match the Activities & workspace
-// views. Blue (Completed) counts as on-track (Green) for the 3-colour readiness summary;
-// Grey (Unassigned) is not yet triaged and is excluded from the RAG distribution.
 const storedRag = (activity) => {
   const rag = activity.ragStatus || "Grey";
   if (rag === "Blue") return "Green";
@@ -128,19 +124,26 @@ router.get("/stats", protect, async (req, res) => {
     let projectIds;
 
     if (projectId) {
-      // Filter by specific project
       const project = await Project.findById(projectId);
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
     } else if (req.admin.role === "planner") {
-      // Planners see projects they have access to (assigned, team member, or via actions)
-      const accessibleProjectIds = await getPlannerAccessibleProjects(req.admin);
+      const accessibleProjectIds = await getPlannerAccessibleProjects(
+        req.admin,
+      );
       if (accessibleProjectIds.length === 0) {
         return sendSuccess(res, {
           stats: {
             projects: { total: 0, byPhase: {} },
             cycle: { current: "N/A", status: "N/A", dayInfo: null },
-            activities: { total: 0, inLookahead: 0, green: 0, amber: 0, red: 0, grey: 0 },
+            activities: {
+              total: 0,
+              inLookahead: 0,
+              green: 0,
+              amber: 0,
+              red: 0,
+              grey: 0,
+            },
             actions: { open: 0, overdue: 0, pending: 0 },
           },
         });
@@ -151,7 +154,6 @@ router.get("/stats", protect, async (req, res) => {
       });
       projectIds = projects.map((p) => p._id);
     } else {
-      // Admins see all non-cancelled projects
       projects = await Project.find({ status: { $ne: "Cancelled" } });
       projectIds = projects.map((p) => p._id);
     }
@@ -167,10 +169,6 @@ router.get("/stats", protect, async (req, res) => {
       project: { $in: projectIds },
     });
     const programmeIds = programmes.map((p) => p._id);
-
-    // Auto-refresh: recompute + persist assignment/action-driven RAG so the
-    // dashboard counts reflect the current cycle state (e.g. untriaged
-    // activities becoming Blocked once their window passes) on load.
     await syncProgrammesGovernance(programmes, Action);
 
     let totalActivities = 0;
@@ -190,25 +188,28 @@ router.get("/stats", protect, async (req, res) => {
       activeProgramme = sortedProgrammes[0];
       cycleStatus = activeProgramme.cycleStatus;
 
-      // Find the earliest activity start date from the programme
       const activities = activeProgramme.extractedData?.activities || [];
       let earliestStartDate = null;
 
       for (const activity of activities) {
         const startDate = parseDate(activity.startDate);
-        if (startDate && (!earliestStartDate || startDate < earliestStartDate)) {
+        if (
+          startDate &&
+          (!earliestStartDate || startDate < earliestStartDate)
+        ) {
           earliestStartDate = startDate;
         }
       }
 
       if (earliestStartDate) {
-        // Calculate weeks from programme start date to today
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         earliestStartDate.setHours(0, 0, 0, 0);
 
         const msPerDay = 1000 * 60 * 60 * 24;
-        const daysSinceStart = Math.floor((today - earliestStartDate) / msPerDay);
+        const daysSinceStart = Math.floor(
+          (today - earliestStartDate) / msPerDay,
+        );
         const weekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
 
         currentCycle = `W${weekNumber}`;
@@ -216,7 +217,6 @@ router.get("/stats", protect, async (req, res) => {
     }
 
     const today = new Date();
-    // Start of today (midnight) - actions are only overdue after due date has fully passed
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
 
@@ -251,13 +251,10 @@ router.get("/stats", protect, async (req, res) => {
     let cycleDayInfo = null;
     if (activeProgramme?.lookaheadStartDate) {
       const today = new Date();
-
-      // Get current day of week (0 = Sunday, 1 = Monday, ..., 6 = Saturday)
-      // Convert to Monday-based: Monday = 1, Sunday = 7
       const dayOfWeek = today.getDay();
-      const currentDay = dayOfWeek === 0 ? 7 : dayOfWeek; // Sunday becomes 7
+      const currentDay = dayOfWeek === 0 ? 7 : dayOfWeek;
 
-      const cycleDuration = 14; // 2 weeks
+      const cycleDuration = 14;
       const daysRemaining = cycleDuration - currentDay;
 
       cycleDayInfo = {
@@ -313,8 +310,9 @@ router.get("/rag-distribution", protect, async (req, res) => {
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
     } else if (req.admin.role === "planner") {
-      // Planners see projects they have access to
-      const accessibleProjectIds = await getPlannerAccessibleProjects(req.admin);
+      const accessibleProjectIds = await getPlannerAccessibleProjects(
+        req.admin,
+      );
       projects = await Project.find({
         _id: { $in: accessibleProjectIds },
         status: { $ne: "Cancelled" },
@@ -336,8 +334,6 @@ router.get("/rag-distribution", protect, async (req, res) => {
       });
     }
 
-    // Auto-refresh: recompute + persist assignment/action-driven RAG so the
-    // readiness donut reflects the current cycle state on load.
     await syncProgrammesGovernance(programmes, Action);
 
     let totalActivities = 0;
@@ -401,8 +397,9 @@ router.get("/recent-activity", protect, async (req, res) => {
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
     } else if (req.admin.role === "planner") {
-      // Planners see projects they have access to
-      const accessibleProjectIds = await getPlannerAccessibleProjects(req.admin);
+      const accessibleProjectIds = await getPlannerAccessibleProjects(
+        req.admin,
+      );
       projects = await Project.find({
         _id: { $in: accessibleProjectIds },
         status: { $ne: "Cancelled" },
@@ -496,7 +493,6 @@ router.get("/governance", protect, async (req, res) => {
     const { projectId } = req.query;
     const CycleHistory = require("../models/CycleHistory");
 
-    // Get all projects or filter by projectId
     let projects;
     let projectIds;
 
@@ -505,18 +501,18 @@ router.get("/governance", protect, async (req, res) => {
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
     } else if (req.admin.role === "admin") {
-      // Admins see all projects
       projects = await Project.find({ status: { $ne: "Cancelled" } });
       projectIds = projects.map((p) => p._id);
     } else {
-      // Planners & Users see only projects they have access to
-      // (assigned, team member, or via actions)
-      const accessibleProjectIds = await getPlannerAccessibleProjects(req.admin);
+      const accessibleProjectIds = await getPlannerAccessibleProjects(
+        req.admin,
+      );
       if (accessibleProjectIds.length === 0) {
         return sendSuccess(res, {
           governance: {
             hasData: false,
-            message: "No projects assigned to you. Contact an admin to get assigned to a project.",
+            message:
+              "No projects assigned to you. Contact an admin to get assigned to a project.",
           },
         });
       }
@@ -527,63 +523,51 @@ router.get("/governance", protect, async (req, res) => {
       projectIds = projects.map((p) => p._id);
     }
 
-    // Get all programmes for these projects
     const programmes = await Programme.find({
       project: { $in: projectIds },
     }).sort({ createdAt: -1 });
 
-    // Check if there's any data to show
     if (projects.length === 0 || programmes.length === 0) {
       return sendSuccess(res, {
         governance: {
           hasData: false,
-          message: programmes.length === 0
-            ? "No programmes uploaded yet. Upload a programme PDF to see governance data."
-            : "No projects found. Create a project to get started.",
+          message:
+            programmes.length === 0
+              ? "No programmes uploaded yet. Upload a programme PDF to see governance data."
+              : "No projects found. Create a project to get started.",
         },
       });
     }
 
     const programmeIds = programmes.map((p) => p._id);
 
-    console.log(`[governance] Found ${projects.length} projects, ${programmes.length} programmes`);
-    console.log(`[governance] Programme IDs:`, programmeIds);
-
-    // Get all cycle history
     const cycleHistory = await CycleHistory.find({
       programme: { $in: programmeIds },
     })
       .populate("closedBy", "name")
       .sort({ createdAt: -1 });
 
-    console.log(`[governance] Found ${cycleHistory.length} cycle history records`);
-
-    // Only show governance data if at least one week has been closed
     if (cycleHistory.length === 0) {
       return sendSuccess(res, {
         governance: {
           hasData: false,
-          message: "No weeks closed yet. Governance data will appear after you close your first week.",
+          message:
+            "No weeks closed yet. Governance data will appear after you close your first week.",
         },
       });
     }
 
-    // Get all actions
     const actions = await Action.find({
       programme: { $in: programmeIds },
     });
 
-    console.log(`[governance] Found ${actions.length} actions`);
-
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Get earliest and latest dates from all programme activities
     let earliestStartDate = null;
     let latestEndDate = null;
     let allActivities = [];
 
-    // Build a map of project IDs to project names
     const projectMap = {};
     for (const project of projects) {
       projectMap[project._id.toString()] = project.name;
@@ -598,14 +582,16 @@ router.get("/governance", protect, async (req, res) => {
         const startDate = parseDate(activity.startDate);
         const finishDate = parseDate(activity.finishDate);
 
-        if (startDate && (!earliestStartDate || startDate < earliestStartDate)) {
+        if (
+          startDate &&
+          (!earliestStartDate || startDate < earliestStartDate)
+        ) {
           earliestStartDate = startDate;
         }
         if (finishDate && (!latestEndDate || finishDate > latestEndDate)) {
           latestEndDate = finishDate;
         }
 
-        // Add activity with project info (convert Mongoose subdoc to plain object)
         const activityObj = activity.toObject ? activity.toObject() : activity;
         allActivities.push({
           ...activityObj,
@@ -615,42 +601,38 @@ router.get("/governance", protect, async (req, res) => {
       }
     }
 
-    // Calculate total weeks from programme span
     const msPerDay = 1000 * 60 * 60 * 24;
     let totalWeeksFromProgramme = 0;
     let currentWeekNumber = 1;
 
     if (earliestStartDate && latestEndDate) {
-      const totalDays = Math.ceil((latestEndDate - earliestStartDate) / msPerDay);
+      const totalDays = Math.ceil(
+        (latestEndDate - earliestStartDate) / msPerDay,
+      );
       totalWeeksFromProgramme = Math.ceil(totalDays / 7);
 
-      // Calculate current week number
       const daysSinceStart = Math.floor((today - earliestStartDate) / msPerDay);
       currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
     }
 
-    // Use cycle history count if available, otherwise use calculated weeks
-    const totalWeeks = cycleHistory.length > 0 ? cycleHistory.length : Math.min(currentWeekNumber, totalWeeksFromProgramme);
+    const totalWeeks =
+      cycleHistory.length > 0
+        ? cycleHistory.length
+        : Math.min(currentWeekNumber, totalWeeksFromProgramme);
 
-    // Calculate weeks closed on time (Normal Close vs PM Override)
     const weeksClosedOnTime = cycleHistory.filter(
-      (c) => c.closeType === "Normal Close"
+      (c) => c.closeType === "Normal Close",
     ).length;
     const pmOverrides = cycleHistory.filter(
-      (c) => c.closeType === "PM Override"
+      (c) => c.closeType === "PM Override",
     ).length;
-
-    // Calculate Weeks Closed On Time Score
-    // Score = (Normal Close weeks / Total Programme Weeks) × 100
-    // This measures how many weeks of the total project have been closed on time
     let weeksClosedOnTimeScore = 0;
     if (totalWeeksFromProgramme > 0) {
-      weeksClosedOnTimeScore = Math.round((weeksClosedOnTime / totalWeeksFromProgramme) * 100);
+      weeksClosedOnTimeScore = Math.round(
+        (weeksClosedOnTime / totalWeeksFromProgramme) * 100,
+      );
     }
-    // If no programme weeks, score remains 0
 
-    // Calculate metrics ONLY from closed weeks (cycleHistory)
-    // Sum up stats from all closed weeks
     let totalActionsFromClosedWeeks = 0;
     let closedActionsFromClosedWeeks = 0;
     for (const cycle of cycleHistory) {
@@ -658,32 +640,37 @@ router.get("/governance", protect, async (req, res) => {
       closedActionsFromClosedWeeks += cycle.stats?.actionsCompleted || 0;
     }
 
-    // Calculate Overdue Action Rate Score (Weight 25%)
-    // Since overdue is not stored in cycle history, calculate from difference
-    const overdueFromClosedWeeks = Math.max(0, totalActionsFromClosedWeeks - closedActionsFromClosedWeeks);
+    const overdueFromClosedWeeks = Math.max(
+      0,
+      totalActionsFromClosedWeeks - closedActionsFromClosedWeeks,
+    );
     const overdueRate =
       totalActionsFromClosedWeeks > 0
-        ? Math.round((overdueFromClosedWeeks / totalActionsFromClosedWeeks) * 100)
+        ? Math.round(
+            (overdueFromClosedWeeks / totalActionsFromClosedWeeks) * 100,
+          )
         : 0;
-    const overdueActionRateScore = totalActionsFromClosedWeeks > 0 ? Math.max(0, 100 - overdueRate * 2) : 100;
+    const overdueActionRateScore =
+      totalActionsFromClosedWeeks > 0
+        ? Math.max(0, 100 - overdueRate * 2)
+        : 100;
 
-    // Calculate Action Closure Speed (Weight 20%)
     const closureRate =
       totalActionsFromClosedWeeks > 0
-        ? Math.round((closedActionsFromClosedWeeks / totalActionsFromClosedWeeks) * 100)
+        ? Math.round(
+            (closedActionsFromClosedWeeks / totalActionsFromClosedWeeks) * 100,
+          )
         : 0;
     const actionClosureSpeedScore = closureRate;
 
-    // Build weekly data from programme activities (not just cycle history)
     const weeklyReadinessData = [];
     const actionsData = [];
     const ragTrendData = [];
     const historicalWeeks = [];
-
-    // Helper to calculate RAG for activities in a specific week only
-    // Helper to calculate RAG counts using stored ragStatus (same as Activities & Lookahead)
     const calculateWeekRAG = (weekStartDate, weekEndDate, activities) => {
-      let green = 0, amber = 0, red = 0;
+      let green = 0,
+        amber = 0,
+        red = 0;
 
       for (const activity of activities) {
         const actStart = parseDate(activity.startDate);
@@ -691,14 +678,13 @@ router.get("/governance", protect, async (req, res) => {
 
         if (!actStart) continue;
 
-        // Check if activity STARTS within this week OR is active during this week
-        const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
-        const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+        const startsThisWeek =
+          actStart >= weekStartDate && actStart <= weekEndDate;
+        const spansThisWeek =
+          actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
 
         if (!startsThisWeek && !spansThisWeek) continue;
 
-        // Assignment/action-driven RAG (same engine as Programme Upload):
-        // Blue (Completed) counts as on-track Green; Grey is not counted.
         const ragStatus = storedRag(activity);
 
         if (ragStatus === "Green") {
@@ -708,15 +694,12 @@ router.get("/governance", protect, async (req, res) => {
         } else if (ragStatus === "Red") {
           red++;
         }
-        // Grey activities are not counted in RAG totals
       }
 
       return { green, amber, red, total: green + amber + red };
     };
 
-    // Generate weekly data for ALL weeks from programme start to programme end
     if (earliestStartDate) {
-      // Show all weeks in the programme (not just until today)
       const weeksToGenerate = totalWeeksFromProgramme;
 
       for (let weekNum = 1; weekNum <= weeksToGenerate; weekNum++) {
@@ -729,24 +712,30 @@ router.get("/governance", protect, async (req, res) => {
         weekEndDate.setHours(23, 59, 59, 999);
 
         const rag = calculateWeekRAG(weekStartDate, weekEndDate, allActivities);
-        const readinessPercent = rag.total > 0 ? Math.round((rag.green / rag.total) * 100) : 0;
+        const readinessPercent =
+          rag.total > 0 ? Math.round((rag.green / rag.total) * 100) : 0;
 
-        // Find matching cycle history if exists
-        const matchingCycle = cycleHistory.find((c) => c.weekNumber === weekNum);
+        const matchingCycle = cycleHistory.find(
+          (c) => c.weekNumber === weekNum,
+        );
 
-        // Only show data from formally closed weeks
         weeklyReadinessData.push({
           week: `W${weekNum}`,
-          value: matchingCycle ?
-            Math.round(((matchingCycle.stats?.green || 0) / (matchingCycle.stats?.totalActivities || 1)) * 100) :
-            0,
+          value: matchingCycle
+            ? Math.round(
+                ((matchingCycle.stats?.green || 0) /
+                  (matchingCycle.stats?.totalActivities || 1)) *
+                  100,
+              )
+            : 0,
         });
 
-        // Only show data from formally closed weeks
         actionsData.push({
           week: `W${weekNum}`,
           raised: matchingCycle ? matchingCycle.stats?.actionsTotal || 0 : 0,
-          closed: matchingCycle ? matchingCycle.stats?.actionsCompleted || 0 : 0,
+          closed: matchingCycle
+            ? matchingCycle.stats?.actionsCompleted || 0
+            : 0,
         });
 
         ragTrendData.push({
@@ -756,40 +745,48 @@ router.get("/governance", protect, async (req, res) => {
           red: matchingCycle ? matchingCycle.stats?.red || 0 : 0,
         });
 
-        // Build historical weeks
         const formatDate = (d) => {
-          const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+          const months = [
+            "Jan",
+            "Feb",
+            "Mar",
+            "Apr",
+            "May",
+            "Jun",
+            "Jul",
+            "Aug",
+            "Sep",
+            "Oct",
+            "Nov",
+            "Dec",
+          ];
           return `${String(d.getDate()).padStart(2, "0")} ${months[d.getMonth()]} ${d.getFullYear()}`;
         };
 
-        // Determine week status based on timing and data
         let weekStatus;
         let weekIcon;
         let closeType;
 
         if (matchingCycle) {
-          // Week has been closed
-          weekStatus = matchingCycle.closeType === "Normal Close" ? "Green" : "Amber";
-          weekIcon = matchingCycle.closeType === "Normal Close" ? "check" : "warning";
+          weekStatus =
+            matchingCycle.closeType === "Normal Close" ? "Green" : "Amber";
+          weekIcon =
+            matchingCycle.closeType === "Normal Close" ? "check" : "warning";
           closeType = matchingCycle.closeType;
         } else if (weekEndDate < today) {
-          // Past week - auto-calculated
           weekStatus = rag.red > rag.green ? "Amber" : "Green";
           weekIcon = weekStatus === "Green" ? "check" : "warning";
           closeType = "Auto-calculated";
         } else if (weekStartDate <= today && weekEndDate >= today) {
-          // Current week
           weekStatus = "Current";
           weekIcon = "current";
           closeType = "In Progress";
         } else {
-          // Future week
           weekStatus = "Upcoming";
           weekIcon = "upcoming";
           closeType = "Upcoming";
         }
 
-        // Get activities with their week-specific RAG for this week
         const weekActivities = [];
         for (const activity of allActivities) {
           const actStart = parseDate(activity.startDate);
@@ -797,19 +794,18 @@ router.get("/governance", protect, async (req, res) => {
 
           if (!actStart) continue;
 
-          // Check if activity is in this week
-          const startsThisWeek = actStart >= weekStartDate && actStart <= weekEndDate;
-          const spansThisWeek = actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+          const startsThisWeek =
+            actStart >= weekStartDate && actStart <= weekEndDate;
+          const spansThisWeek =
+            actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
 
           if (!startsThisWeek && !spansThisWeek) continue;
 
-          // Check if activity is completed
-          const isCompleted = activity.status === "Completed" ||
+          const isCompleted =
+            activity.status === "Completed" ||
             (activity.startDate && activity.startDate.includes(" A")) ||
             (activity.finishDate && activity.finishDate.includes(" A"));
 
-          // Use the stored ragStatus from the activity (same as Activities & Lookahead page)
-          // This ensures consistency across all views
           const activityRAG = activity.ragStatus || "Grey";
 
           weekActivities.push({
@@ -826,7 +822,6 @@ router.get("/governance", protect, async (req, res) => {
           });
         }
 
-        // Sort activities by RAG (Red first, then Amber, then Green)
         weekActivities.sort((a, b) => {
           const ragOrder = { Red: 1, Amber: 2, Green: 3 };
           return (ragOrder[a.ragStatus] || 4) - (ragOrder[b.ragStatus] || 4);
@@ -855,31 +850,37 @@ router.get("/governance", protect, async (req, res) => {
       }
     }
 
-    // Calculate average readiness from PAST and CURRENT weeks only (not future weeks)
-    const currentWeekIndex = Math.min(currentWeekNumber, weeklyReadinessData.length);
+    const currentWeekIndex = Math.min(
+      currentWeekNumber,
+      weeklyReadinessData.length,
+    );
     const pastAndCurrentWeeks = weeklyReadinessData.slice(0, currentWeekIndex);
-    const avgReadiness = pastAndCurrentWeeks.length > 0
-      ? Math.round(pastAndCurrentWeeks.reduce((sum, w) => sum + w.value, 0) / pastAndCurrentWeeks.length)
-      : 0;
-
-    // Calculate Readiness Trend Stability (Weight 15%)
-    // Only use past and current weeks, not future weeks
+    const avgReadiness =
+      pastAndCurrentWeeks.length > 0
+        ? Math.round(
+            pastAndCurrentWeeks.reduce((sum, w) => sum + w.value, 0) /
+              pastAndCurrentWeeks.length,
+          )
+        : 0;
     let readinessTrendScore = 65;
     if (pastAndCurrentWeeks.length >= 2) {
       const readinessValues = pastAndCurrentWeeks.map((w) => w.value);
-      const mean = readinessValues.reduce((a, b) => a + b, 0) / readinessValues.length;
-      const variance = readinessValues.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / readinessValues.length;
-      readinessTrendScore = Math.max(0, Math.min(100, 100 - Math.sqrt(variance)));
+      const mean =
+        readinessValues.reduce((a, b) => a + b, 0) / readinessValues.length;
+      const variance =
+        readinessValues.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) /
+        readinessValues.length;
+      readinessTrendScore = Math.max(
+        0,
+        Math.min(100, 100 - Math.sqrt(variance)),
+      );
     } else if (pastAndCurrentWeeks.length === 1) {
-      // Only 1 week - assume stable (100%)
       readinessTrendScore = 100;
     }
 
-    // Calculate PM Override Frequency Score - AVERAGED PER PROJECT
-    // Group cycle history by programme and calculate score for each project
     const cyclesByProgramme = {};
     for (const cycle of cycleHistory) {
-      const progId = cycle.programme?.toString() || 'unknown';
+      const progId = cycle.programme?.toString() || "unknown";
       if (!cyclesByProgramme[progId]) {
         cyclesByProgramme[progId] = { total: 0, pmOverrides: 0 };
       }
@@ -889,38 +890,31 @@ router.get("/governance", protect, async (req, res) => {
       }
     }
 
-    // Calculate PM Override score for each project and average them
-    // Include ALL programmes (even those without cycle history get 100 score)
-    let pmOverrideFrequencyScore = 100; // Default if no programmes
+    let pmOverrideFrequencyScore = 100;
     const allProgrammeScores = [];
 
-    // First, add scores for programmes WITH cycle history
-    // Score = (Normal Weeks / Total Weeks) × 100 (week-wise calculation)
     for (const progId of Object.keys(cyclesByProgramme)) {
       const prog = cyclesByProgramme[progId];
       const normalWeeks = prog.total - prog.pmOverrides;
-      const projectScore = prog.total > 0 ? Math.round((normalWeeks / prog.total) * 100) : 100;
+      const projectScore =
+        prog.total > 0 ? Math.round((normalWeeks / prog.total) * 100) : 100;
       allProgrammeScores.push(projectScore);
     }
 
-    // Add 100 score for programmes WITHOUT any cycle history (no PM overrides = perfect)
     for (const prog of programmes) {
       const progId = prog._id.toString();
       if (!cyclesByProgramme[progId]) {
-        allProgrammeScores.push(100); // No cycles closed = no PM overrides
+        allProgrammeScores.push(100);
       }
     }
 
-    // Average all programme scores
     if (allProgrammeScores.length > 0) {
       const totalScore = allProgrammeScores.reduce((sum, s) => sum + s, 0);
-      pmOverrideFrequencyScore = Math.round(totalScore / allProgrammeScores.length);
+      pmOverrideFrequencyScore = Math.round(
+        totalScore / allProgrammeScores.length,
+      );
     }
 
-
-    // Calculate DYNAMIC WEIGHTS based on scores
-    // Higher scores get more weight, proportional to their contribution
-    // Metrics with the same score will always have the same weight
     const allScores = {
       weeksClosedOnTime: weeksClosedOnTimeScore,
       overdueActionRate: overdueActionRateScore,
@@ -929,11 +923,11 @@ router.get("/governance", protect, async (req, res) => {
       pmOverrideFrequency: pmOverrideFrequencyScore,
     };
 
-    // Sum all scores
-    const totalScoreSum = Object.values(allScores).reduce((sum, score) => sum + score, 0);
+    const totalScoreSum = Object.values(allScores).reduce(
+      (sum, score) => sum + score,
+      0,
+    );
 
-    // Calculate dynamic weights (proportional to each score)
-    // Use exact rounding without any adjustment
     const dynamicWeights = {};
     if (totalScoreSum > 0) {
       for (const [key, score] of Object.entries(allScores)) {
@@ -941,31 +935,27 @@ router.get("/governance", protect, async (req, res) => {
         dynamicWeights[key] = Math.round(rawWeight);
       }
     } else {
-      // Equal distribution if no scores
       for (const key of Object.keys(allScores)) {
         dynamicWeights[key] = 20;
       }
     }
 
-    // Calculate overall governance score using dynamic weights
     const governanceScore = Math.round(
       (allScores.weeksClosedOnTime * dynamicWeights.weeksClosedOnTime +
-       allScores.overdueActionRate * dynamicWeights.overdueActionRate +
-       allScores.actionClosureSpeed * dynamicWeights.actionClosureSpeed +
-       allScores.readinessTrendStability * dynamicWeights.readinessTrendStability +
-       allScores.pmOverrideFrequency * dynamicWeights.pmOverrideFrequency) / 100
+        allScores.overdueActionRate * dynamicWeights.overdueActionRate +
+        allScores.actionClosureSpeed * dynamicWeights.actionClosureSpeed +
+        allScores.readinessTrendStability *
+          dynamicWeights.readinessTrendStability +
+        allScores.pmOverrideFrequency * dynamicWeights.pmOverrideFrequency) /
+        100,
     );
 
-    // Determine governance status based on score
     let governanceStatus = "GREEN";
     if (governanceScore < 50) governanceStatus = "RED";
     else if (governanceScore < 70) governanceStatus = "AMBER";
 
-    // Calculate overdue trend from closed weeks only
-    // Since we don't have historical overdue data per week, use stable
     const overdueTrend = "Stable";
 
-    // Get blocked activities to determine recurring blockers
     let blockerTypes = new Set();
     for (const prog of programmes) {
       const activities = prog.extractedData?.activities || [];
@@ -976,49 +966,106 @@ router.get("/governance", protect, async (req, res) => {
       });
     }
 
-    // Build constraint intelligence data using DYNAMIC activity analysis
     const constraintData = [];
     const activityTypeMap = {};
 
-    // Helper function to extract activity type dynamically from name
     const extractActivityType = (activityName) => {
       const name = (activityName || "").toLowerCase().trim();
 
-      // Remove common prefixes (activity IDs, numbers, etc.)
       const cleanName = name
-        .replace(/^[a-z]{1,3}[-_]?\d+[-_:]?\s*/i, "") // Remove IDs like "A1-001", "WP-FW-001"
-        .replace(/^(phase|stage|step|task)\s*\d*[-:]?\s*/i, "") // Remove "Phase 1", "Stage 2"
-        .replace(/\s*(phase|stage)\s*\d*$/i, "") // Remove trailing "Phase 1"
+        .replace(/^[a-z]{1,3}[-_]?\d+[-_:]?\s*/i, "")
+        .replace(/^(phase|stage|step|task)\s*\d*[-:]?\s*/i, "")
+        .replace(/\s*(phase|stage)\s*\d*$/i, "")
         .replace(/[-_]/g, " ")
         .trim();
 
-      // Extract main activity type (first 2-3 key words)
-      const words = cleanName.split(/\s+/).filter(w => w.length > 2);
+      const words = cleanName.split(/\s+/).filter((w) => w.length > 2);
 
-      // Common construction activity patterns - group similar activities
       const activityPatterns = {
-        "Foundation": ["foundation", "footing", "pile", "piling", "excavation", "ground"],
-        "Structural": ["steel", "structure", "column", "beam", "slab", "concrete", "rebar", "structural"],
-        "MEP Works": ["mep", "electrical", "plumbing", "hvac", "mechanical", "piping", "wiring"],
-        "Facade & Cladding": ["facade", "cladding", "curtain", "glazing", "external", "envelope"],
-        "Interior Fit-Out": ["interior", "fit-out", "fitout", "partition", "ceiling", "flooring", "tiling", "painting", "plastering"],
-        "Roofing": ["roof", "roofing", "waterproof", "membrane"],
-        "Site Works": ["site", "mobilization", "survey", "clearing", "demolition"],
-        "Testing & Commissioning": ["test", "testing", "commission", "commissioning", "inspection", "handover", "snag"],
-        "Design & Approvals": ["design", "drawing", "approval", "permit", "submittal"],
-        "Procurement": ["material", "delivery", "procurement", "supply", "order"],
+        Foundation: [
+          "foundation",
+          "footing",
+          "pile",
+          "piling",
+          "excavation",
+          "ground",
+        ],
+        Structural: [
+          "steel",
+          "structure",
+          "column",
+          "beam",
+          "slab",
+          "concrete",
+          "rebar",
+          "structural",
+        ],
+        "MEP Works": [
+          "mep",
+          "electrical",
+          "plumbing",
+          "hvac",
+          "mechanical",
+          "piping",
+          "wiring",
+        ],
+        "Facade & Cladding": [
+          "facade",
+          "cladding",
+          "curtain",
+          "glazing",
+          "external",
+          "envelope",
+        ],
+        "Interior Fit-Out": [
+          "interior",
+          "fit-out",
+          "fitout",
+          "partition",
+          "ceiling",
+          "flooring",
+          "tiling",
+          "painting",
+          "plastering",
+        ],
+        Roofing: ["roof", "roofing", "waterproof", "membrane"],
+        "Site Works": [
+          "site",
+          "mobilization",
+          "survey",
+          "clearing",
+          "demolition",
+        ],
+        "Testing & Commissioning": [
+          "test",
+          "testing",
+          "commission",
+          "commissioning",
+          "inspection",
+          "handover",
+          "snag",
+        ],
+        "Design & Approvals": [
+          "design",
+          "drawing",
+          "approval",
+          "permit",
+          "submittal",
+        ],
+        Procurement: ["material", "delivery", "procurement", "supply", "order"],
       };
 
-      // Find matching pattern
       for (const [type, keywords] of Object.entries(activityPatterns)) {
-        if (keywords.some(kw => cleanName.includes(kw))) {
+        if (keywords.some((kw) => cleanName.includes(kw))) {
           return type;
         }
       }
 
-      // If no pattern matched, use first 2 meaningful words as type
       if (words.length >= 2) {
-        return words.slice(0, 2).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+        return words
+          .slice(0, 2)
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(" ");
       } else if (words.length === 1) {
         return words[0].charAt(0).toUpperCase() + words[0].slice(1);
       }
@@ -1026,20 +1073,20 @@ router.get("/governance", protect, async (req, res) => {
       return "General Works";
     };
 
-    // Step 1: Collect ALL activities from all projects with their status
     const allActivitiesByType = {};
 
     for (const prog of programmes) {
       const activities = prog.extractedData?.activities || [];
       const projectId = prog.project?.toString();
-      const projectName = projects.find(p => p._id.toString() === projectId)?.name || "Unknown";
+      const projectName =
+        projects.find((p) => p._id.toString() === projectId)?.name || "Unknown";
 
       activities.forEach((a) => {
         const activityType = extractActivityType(a.activityName);
         const finishDate = parseDate(a.finishDate);
 
-        // Determine activity status
-        const isCompleted = a.status === "Completed" ||
+        const isCompleted =
+          a.status === "Completed" ||
           (a.finishDate && a.finishDate.includes(" A"));
         const isOverdue = finishDate && finishDate < today && !isCompleted;
         const isOnTime = finishDate && finishDate >= today && !isCompleted;
@@ -1060,7 +1107,6 @@ router.get("/governance", protect, async (req, res) => {
 
         const typeData = allActivitiesByType[activityType];
 
-        // Only track overdue and completed activities (ignore future/on-time)
         if (isOverdue) {
           typeData.projectsWithOverdue.add(projectId);
           typeData.totalOverdue++;
@@ -1071,60 +1117,51 @@ router.get("/governance", protect, async (req, res) => {
             finishDate: a.finishDate,
             status: "Overdue",
           });
-          if (!typeData.lastOverdueDate || finishDate > typeData.lastOverdueDate) {
+          if (
+            !typeData.lastOverdueDate ||
+            finishDate > typeData.lastOverdueDate
+          ) {
             typeData.lastOverdueDate = finishDate;
           }
         } else if (isCompleted) {
           typeData.projectsWithCompleted.add(projectId);
           typeData.totalCompleted++;
         }
-        // Note: Future/on-time activities are ignored for constraint intelligence
       });
     }
 
-    // Step 2: Calculate trends by comparing across projects
-    // Trend logic:
-    // - "down" = some projects have this activity completed/on-time while others have it overdue (improving)
-    // - "stable" = same activity overdue in multiple projects (consistent issue across projects)
-    // - "up" = only 1 project has this activity overdue (unique/new problem)
-
     Object.values(allActivitiesByType)
-      .filter(typeData => typeData.totalOverdue > 0) // Only show types with overdue activities
-      .sort((a, b) => b.projectsWithOverdue.size - a.projectsWithOverdue.size || b.totalOverdue - a.totalOverdue)
-      // No limit - show all constraint types
+      .filter((typeData) => typeData.totalOverdue > 0)
+      .sort(
+        (a, b) =>
+          b.projectsWithOverdue.size - a.projectsWithOverdue.size ||
+          b.totalOverdue - a.totalOverdue,
+      )
       .forEach((typeData) => {
         let trend = "stable";
 
         const overdueProjects = typeData.projectsWithOverdue.size;
         const completedProjects = typeData.projectsWithCompleted.size;
-        // Only consider overdue and completed (future activities ignored)
         const totalProjectsWithThisType = new Set([
           ...typeData.projectsWithOverdue,
           ...typeData.projectsWithCompleted,
         ]).size;
 
-        // Smart trend calculation:
-        // DOWN = One project completed, other overdue (someone fixed it - improving)
-        // STABLE = Same activity overdue in multiple projects (consistent issue)
-        // UP = Only 1 project has this activity overdue (unique/new problem)
-
         if (totalProjectsWithThisType > 1) {
           if (completedProjects > 0) {
-            // Some projects have completed, others overdue = improving trend
             trend = "down";
           } else if (overdueProjects > 1) {
-            // Same activity overdue in multiple projects = consistent issue
             trend = "stable";
           }
         } else {
-          // Only 1 project has this activity type = unique/new problem
           trend = "up";
         }
 
-        // Format last seen date
         let lastSeenStr = "-";
         if (typeData.lastOverdueDate) {
-          const daysSince = Math.floor((today - typeData.lastOverdueDate) / msPerDay);
+          const daysSince = Math.floor(
+            (today - typeData.lastOverdueDate) / msPerDay,
+          );
           if (daysSince === 0) {
             lastSeenStr = "Today";
           } else if (daysSince === 1) {
@@ -1139,11 +1176,10 @@ router.get("/governance", protect, async (req, res) => {
 
         constraintData.push({
           type: typeData.type,
-          frequency: overdueProjects, // Number of projects with overdue activities of this type
+          frequency: overdueProjects,
           trend: trend,
           lastSeen: lastSeenStr,
           activities: typeData.overdueActivities.slice(0, 5),
-          // Additional context for UI
           stats: {
             overdueCount: typeData.totalOverdue,
             completedCount: typeData.totalCompleted,
@@ -1154,8 +1190,6 @@ router.get("/governance", protect, async (req, res) => {
         });
       });
 
-    // Return response
-    console.log(`[governance] Returning data with score: ${governanceScore}, status: ${governanceStatus}`);
     return sendSuccess(res, {
       governance: {
         hasData: true,
@@ -1165,27 +1199,52 @@ router.get("/governance", protect, async (req, res) => {
           weeksClosedOnTime: {
             score: allScores.weeksClosedOnTime,
             weight: dynamicWeights.weeksClosedOnTime,
-            color: allScores.weeksClosedOnTime >= 70 ? "green" : allScores.weeksClosedOnTime >= 50 ? "amber" : "red",
+            color:
+              allScores.weeksClosedOnTime >= 70
+                ? "green"
+                : allScores.weeksClosedOnTime >= 50
+                  ? "amber"
+                  : "red",
           },
           overdueActionRate: {
             score: allScores.overdueActionRate,
             weight: dynamicWeights.overdueActionRate,
-            color: allScores.overdueActionRate >= 70 ? "green" : allScores.overdueActionRate >= 50 ? "amber" : "red",
+            color:
+              allScores.overdueActionRate >= 70
+                ? "green"
+                : allScores.overdueActionRate >= 50
+                  ? "amber"
+                  : "red",
           },
           actionClosureSpeed: {
             score: allScores.actionClosureSpeed,
             weight: dynamicWeights.actionClosureSpeed,
-            color: allScores.actionClosureSpeed >= 70 ? "green" : allScores.actionClosureSpeed >= 50 ? "amber" : "red",
+            color:
+              allScores.actionClosureSpeed >= 70
+                ? "green"
+                : allScores.actionClosureSpeed >= 50
+                  ? "amber"
+                  : "red",
           },
           readinessTrendStability: {
             score: allScores.readinessTrendStability,
             weight: dynamicWeights.readinessTrendStability,
-            color: allScores.readinessTrendStability >= 70 ? "green" : allScores.readinessTrendStability >= 50 ? "amber" : "red",
+            color:
+              allScores.readinessTrendStability >= 70
+                ? "green"
+                : allScores.readinessTrendStability >= 50
+                  ? "amber"
+                  : "red",
           },
           pmOverrideFrequency: {
             score: allScores.pmOverrideFrequency,
             weight: dynamicWeights.pmOverrideFrequency,
-            color: allScores.pmOverrideFrequency >= 70 ? "green" : allScores.pmOverrideFrequency >= 50 ? "amber" : "red",
+            color:
+              allScores.pmOverrideFrequency >= 70
+                ? "green"
+                : allScores.pmOverrideFrequency >= 50
+                  ? "amber"
+                  : "red",
           },
         },
         stats: {
@@ -1199,9 +1258,17 @@ router.get("/governance", protect, async (req, res) => {
         weeklyReadinessData,
         actionsData,
         ragTrendData,
-        constraintData: constraintData.length > 0 ? constraintData : [
-          { type: "No blockers", frequency: 0, trend: "stable", lastSeen: "-" },
-        ],
+        constraintData:
+          constraintData.length > 0
+            ? constraintData
+            : [
+                {
+                  type: "No blockers",
+                  frequency: 0,
+                  trend: "stable",
+                  lastSeen: "-",
+                },
+              ],
         historicalWeeks,
       },
     });
@@ -1224,8 +1291,9 @@ router.get("/weekly", protect, async (req, res) => {
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
     } else if (req.admin.role === "planner") {
-      // Planners see projects they have access to
-      const accessibleProjectIds = await getPlannerAccessibleProjects(req.admin);
+      const accessibleProjectIds = await getPlannerAccessibleProjects(
+        req.admin,
+      );
       projects = await Project.find({
         _id: { $in: accessibleProjectIds },
         status: { $ne: "Cancelled" },
@@ -1266,8 +1334,6 @@ router.get("/weekly", protect, async (req, res) => {
       .populate("project", "name")
       .populate("uploadedBy", "name");
 
-    // Auto-refresh: recompute + persist assignment/action-driven RAG so the
-    // weekly dashboard reflects the current cycle state on load.
     await syncProgrammesGovernance(programmes, Action);
 
     const sortedProgrammes = programmes.sort(
@@ -1285,13 +1351,16 @@ router.get("/weekly", protect, async (req, res) => {
     let currentWeekStart = null;
     let currentWeekEnd = null;
 
-    // Find the earliest activity start date from the programme
-    const programmeActivities = activeProgramme?.extractedData?.activities || [];
+    const programmeActivities =
+      activeProgramme?.extractedData?.activities || [];
     let earliestStartDate = null;
 
     for (const activity of programmeActivities) {
       const actStartDate = parseDate(activity.startDate);
-      if (actStartDate && (!earliestStartDate || actStartDate < earliestStartDate)) {
+      if (
+        actStartDate &&
+        (!earliestStartDate || actStartDate < earliestStartDate)
+      ) {
         earliestStartDate = actStartDate;
       }
     }
@@ -1301,8 +1370,6 @@ router.get("/weekly", protect, async (req, res) => {
       today.setHours(0, 0, 0, 0);
       earliestStartDate.setHours(0, 0, 0, 0);
 
-      // Anchor the week schedule to the PROJECT start date (falls back to the
-      // earliest activity). Weeks are single 7-day weeks counted from there.
       const anchorDate = projects[0]?.startDate
         ? new Date(projects[0].startDate)
         : new Date(earliestStartDate);
@@ -1310,18 +1377,16 @@ router.get("/weekly", protect, async (req, res) => {
 
       const msPerDay = 1000 * 60 * 60 * 24;
       const daysSinceStart = Math.floor((today - anchorDate) / msPerDay);
-      // Use requested week number if provided, otherwise the current week.
       const weekNum = requestedWeekNumber
         ? parseInt(requestedWeekNumber)
         : Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
 
       weekNumber = `Week ${weekNum}`;
 
-      // Single 7-day week window, schedule-anchored to the project start.
       currentWeekStart = new Date(anchorDate);
       currentWeekStart.setDate(anchorDate.getDate() + (weekNum - 1) * 7);
       currentWeekEnd = new Date(currentWeekStart);
-      currentWeekEnd.setDate(currentWeekStart.getDate() + 6); // 7-day window
+      currentWeekEnd.setDate(currentWeekStart.getDate() + 6);
 
       const formatDate = (d) => {
         const day = d.getDate();
@@ -1350,16 +1415,13 @@ router.get("/weekly", protect, async (req, res) => {
 
     const rawActivities = activeProgramme?.extractedData?.activities || [];
     const today = new Date();
-    // Start of today (midnight) - actions are only overdue after due date has fully passed
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
 
-    // Helper function to check if activity STARTS within the date range
     const activityStartsInWeek = (activity) => {
-      if (!currentWeekStart || !currentWeekEnd) return true; // No week filter, include all
+      if (!currentWeekStart || !currentWeekEnd) return true;
       const actStart = parseDate(activity.startDate);
       if (!actStart) return false;
-      // Only include activities that START within the date range
       return actStart >= currentWeekStart && actStart <= currentWeekEnd;
     };
 
@@ -1370,14 +1432,10 @@ router.get("/weekly", protect, async (req, res) => {
 
     const activities = [];
     for (const activity of rawActivities) {
-      // Convert Mongoose document to plain object if needed
       const activityObj = activity.toObject ? activity.toObject() : activity;
 
-      // Filter activities by week dates (only those that START within range)
       if (!activityStartsInWeek(activityObj)) continue;
 
-      // Colour by the stored assignment/action-driven RAG (single source of truth);
-      // the week window above is only a date FILTER for which activities to include.
       const rag = storedRag(activityObj);
       if (rag !== "Grey") {
         activities.push({ ...activityObj, ragStatus: rag });
@@ -1385,8 +1443,6 @@ router.get("/weekly", protect, async (req, res) => {
         else if (rag === "Amber") amberCount++;
         else if (rag === "Red") redCount++;
 
-        // Blocked = Red in the assignment/action-driven model (overdue or an
-        // action open past cycle end), not the stale persisted isBlocked flag.
         if (rag === "Red") blockedCount++;
       }
     }
@@ -1400,9 +1456,8 @@ router.get("/weekly", protect, async (req, res) => {
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
-    // Filter actions by week dates (based on due date)
     const actions = allActions.filter((a) => {
-      if (!currentWeekStart || !currentWeekEnd) return true; // No week filter, include all
+      if (!currentWeekStart || !currentWeekEnd) return true;
       const dueDate = new Date(a.dueDate);
       return dueDate >= currentWeekStart && dueDate <= currentWeekEnd;
     });
@@ -1418,25 +1473,26 @@ router.get("/weekly", protect, async (req, res) => {
         new Date(a.dueDate) < startOfToday,
     );
 
-    // Open REQUIRED actions for Ready to Close logic (Optional actions don't block closing)
-    // Use allActions (not week-filtered) because required actions block closing regardless of due date
     const openRequiredActions = allActions.filter(
       (a) =>
         a.type === "Required" &&
         (a.status === "Open" || a.status === "In Progress"),
     );
 
-    // readyForClose logic based on cycle status:
-    // - Draft / Uploaded / Meeting Open: Always false (not ready to close)
-    // - Execution / Close-Out Eligible: true if all REQUIRED actions complete
     let readyForClose = false;
-    if (cycleStatus === "Draft" || cycleStatus === "Uploaded" || cycleStatus === "Meeting Open") {
+    if (
+      cycleStatus === "Draft" ||
+      cycleStatus === "Uploaded" ||
+      cycleStatus === "Meeting Open"
+    ) {
       readyForClose = false;
-    } else if (cycleStatus === "Execution" || cycleStatus === "Close-Out Eligible") {
+    } else if (
+      cycleStatus === "Execution" ||
+      cycleStatus === "Close-Out Eligible"
+    ) {
       readyForClose = openRequiredActions.length === 0;
     }
 
-    // Build action map for quick lookup (activity ID -> actions)
     const actionMap = {};
     allActions.forEach((action) => {
       const actId = action.linkedActivity?.activityId;
@@ -1444,7 +1500,8 @@ router.get("/weekly", protect, async (req, res) => {
         if (!actionMap[actId]) {
           actionMap[actId] = [];
         }
-        const isOverdue = action.dueDate && new Date(action.dueDate) < startOfToday;
+        const isOverdue =
+          action.dueDate && new Date(action.dueDate) < startOfToday;
         actionMap[actId].push({
           _id: action._id,
           actionId: `ACN-${String(action._id).slice(-4).toUpperCase()}`,
@@ -1454,20 +1511,26 @@ router.get("/weekly", protect, async (req, res) => {
           assignee: action.assignee?.name || "-",
           assigneeId: action.assignee?._id?.toString() || null,
           dueDate: action.dueDate,
-          isOverdue: isOverdue && action.status !== "Completed" && action.status !== "Cancelled",
+          isOverdue:
+            isOverdue &&
+            action.status !== "Completed" &&
+            action.status !== "Cancelled",
         });
       }
     });
 
-    // Blocked/Risk Activities - same structure as Weekly Control
     const blockedActivities = activities
       .filter(
-        (a) => a.isBlocked || a.activityStatus === "Blocked" || a.activityStatus === "At Risk" || a.ragStatus === "Red" || a.ragStatus === "Amber",
+        (a) =>
+          a.isBlocked ||
+          a.activityStatus === "Blocked" ||
+          a.activityStatus === "At Risk" ||
+          a.ragStatus === "Red" ||
+          a.ragStatus === "Amber",
       )
       .slice(0, 20)
       .map((a) => {
         const linkedActions = actionMap[a.activityId] || [];
-        // Get the first open/overdue action for this activity
         const openAction = linkedActions.find(
           (act) => act.status !== "Completed" && act.status !== "Cancelled",
         );
@@ -1478,15 +1541,21 @@ router.get("/weekly", protect, async (req, res) => {
           activityId: a.activityId,
           activityName: a.activityName,
           ragStatus: a.ragStatus,
-          activityStatus: a.isBlocked ? "Blocked" : (a.activityStatus || "At Risk"),
+          activityStatus: a.isBlocked
+            ? "Blocked"
+            : a.activityStatus || "At Risk",
           isBlocked: a.isBlocked || a.activityStatus === "Blocked",
           owner: linkedAction?.assignee || a.ownerName || "-",
-          blocker: a.isBlocked ? (a.blocker || "Activity blocked") : (linkedAction?.title || "Requires attention"),
+          blocker: a.isBlocked
+            ? a.blocker || "Activity blocked"
+            : linkedAction?.title || "Requires attention",
           linkedAction: linkedAction
             ? {
                 actionId: linkedAction.actionId,
                 title: linkedAction.title,
-                status: linkedAction.isOverdue ? "Overdue" : linkedAction.status,
+                status: linkedAction.isOverdue
+                  ? "Overdue"
+                  : linkedAction.status,
               }
             : null,
         };
@@ -1497,7 +1566,6 @@ router.get("/weekly", protect, async (req, res) => {
       return (ragOrder[a.ragStatus] || 4) - (ragOrder[b.ragStatus] || 4);
     });
 
-    // Weekly Plan Preview - only show activities WITH actions (same as Weekly Control)
     const weeklyPlanPreview = sortedActivities
       .filter((a) => {
         const linkedActions = actionMap[a.activityId] || [];
@@ -1506,8 +1574,6 @@ router.get("/weekly", protect, async (req, res) => {
       .slice(0, 20)
       .map((a) => {
         const linkedActions = actionMap[a.activityId] || [];
-        // For Weekly Plan Preview, use activity status to determine RAG:
-        // - Blocked = Red, At Risk = Amber, Ready/other = Green
         let displayRag = a.ragStatus;
         if (displayRag === "Grey") {
           if (a.activityStatus === "Blocked" || a.isBlocked) {
@@ -1551,20 +1617,29 @@ router.get("/weekly", protect, async (req, res) => {
         };
       });
 
-    // Planner To-Do - open actions with proper status (same structure as Weekly Control)
     const formatActionDate = (d) => {
       if (!d) return "-";
       const date = new Date(d);
       const months = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
       ];
       return `${date.getDate()} ${months[date.getMonth()]}`;
     };
 
     const plannerToDo = openActions.slice(0, 20).map((action) => {
-      const isOverdue = action.dueDate && new Date(action.dueDate) < startOfToday;
-      // Find RAG status from activity
+      const isOverdue =
+        action.dueDate && new Date(action.dueDate) < startOfToday;
       const linkedActivity = activities.find(
         (a) => a.activityId === action.linkedActivity?.activityId,
       );
@@ -1581,42 +1656,35 @@ router.get("/weekly", protect, async (req, res) => {
       };
     });
 
-    // Calculate activities by week for the chart (6 weeks from TODAY)
     const activitiesByWeek = [];
     const todayForChart = new Date();
     todayForChart.setHours(0, 0, 0, 0);
 
-    // Show 6 weeks from today
     for (let w = 1; w <= 6; w++) {
       const weekStart = new Date(todayForChart);
       weekStart.setDate(todayForChart.getDate() + (w - 1) * 7);
       const weekEnd = new Date(weekStart);
       weekEnd.setDate(weekStart.getDate() + 6);
 
-        let weekGreen = 0;
-        let weekAmber = 0;
-        let weekRed = 0;
+      let weekGreen = 0;
+      let weekAmber = 0;
+      let weekRed = 0;
 
-        for (const activity of rawActivities) {
-          const actStart = parseDate(activity.startDate);
-          if (!actStart) continue;
+      for (const activity of rawActivities) {
+        const actStart = parseDate(activity.startDate);
+        if (!actStart) continue;
 
-          // Check if activity STARTS within this week
-          if (actStart >= weekStart && actStart <= weekEnd) {
-            // Assignment/action-driven RAG (same engine as the rest of the
-            // dashboard): Blue (Completed) counts as Green; Grey (Unassigned /
-            // untriaged) is NOT counted — so untriaged activities no longer show
-            // as spurious green bars.
-            const rag = storedRag(activity);
-            if (rag === "Red") {
-              weekRed++;
-            } else if (rag === "Amber") {
-              weekAmber++;
-            } else if (rag === "Green") {
-              weekGreen++;
-            }
+        if (actStart >= weekStart && actStart <= weekEnd) {
+          const rag = storedRag(activity);
+          if (rag === "Red") {
+            weekRed++;
+          } else if (rag === "Amber") {
+            weekAmber++;
+          } else if (rag === "Green") {
+            weekGreen++;
           }
         }
+      }
 
       activitiesByWeek.push({
         week: `Week ${w}`,
@@ -1668,7 +1736,7 @@ router.get("/weekly", protect, async (req, res) => {
         weeklyPlanPreview,
         plannerToDo,
         activitiesByWeek,
-        isProjectEnded: false, // Temporary override - same as Weekly Control
+        isProjectEnded: false,
       },
     });
   } catch (error) {

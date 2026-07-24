@@ -6,13 +6,6 @@ const connectDB = require("./config/db");
 
 dotenv.config();
 
-console.log("[BOOT]", {
-  hasResendKey: !!process.env.RESEND_API_KEY,
-  resendKeyLen: (process.env.RESEND_API_KEY || "").length,
-  resendKeyPrefix: (process.env.RESEND_API_KEY || "").slice(0, 3),
-  issmtp: process.env.ISSMTP,
-});
-
 connectDB();
 
 const app = express();
@@ -57,13 +50,6 @@ app.get("/api/debug-env", (req, res) => {
 app.get("/api/test-email", async (req, res) => {
   const nodemailer = require("nodemailer");
 
-  console.log("SMTP Settings:", {
-    host: process.env.SMTP_HOST,
-    port: process.env.SMTP_PORT,
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS ? "****" : "NOT SET",
-  });
-
   try {
     const transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
@@ -75,8 +61,6 @@ app.get("/api/test-email", async (req, res) => {
     });
 
     await transporter.verify();
-    console.log("SMTP connection verified!");
-
     await transporter.sendMail({
       from: "Plansure <noreply@plansure.io>",
       to: "test@example.com",
@@ -156,14 +140,4 @@ const PORT = process.env.PORT || 5000;
 const { initializeFirebase } = require("./config/firebase");
 initializeFirebase();
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log("Environment check:", {
-    ISSMTP: process.env.ISSMTP || "NOT SET",
-    RESEND_API_KEY: process.env.RESEND_API_KEY ? "SET" : "NOT SET",
-    SMTP_HOST: process.env.SMTP_HOST || "NOT SET",
-    SMTP_PORT: process.env.SMTP_PORT || "NOT SET",
-    SMTP_USER: process.env.SMTP_USER ? "SET" : "NOT SET",
-    SMTP_PASS: process.env.SMTP_PASS ? "SET" : "NOT SET",
-  });
-});
+app.listen(PORT, "0.0.0.0", () => {});

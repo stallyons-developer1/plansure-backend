@@ -19,7 +19,8 @@ const programmeSchema = new mongoose.Schema(
       required: true,
     },
     fileData: {
-      type: Buffer,  // Store PDF binary data directly in MongoDB
+      type: Buffer,
+      select: false,
     },
     fileMimeType: {
       type: String,
@@ -57,25 +58,27 @@ const programmeSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
-    closedWeeks: [{
-      weekNumber: Number,
-      closedAt: Date,
-      closedBy: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "Admin",
+    closedWeeks: [
+      {
+        weekNumber: Number,
+        closedAt: Date,
+        closedBy: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Admin",
+        },
+        closeType: {
+          type: String,
+          enum: ["Normal Close", "PM Override"],
+          default: "Normal Close",
+        },
+        stats: {
+          totalActivities: Number,
+          green: Number,
+          amber: Number,
+          red: Number,
+        },
       },
-      closeType: {
-        type: String,
-        enum: ["Normal Close", "PM Override"],
-        default: "Normal Close",
-      },
-      stats: {
-        totalActivities: Number,
-        green: Number,
-        amber: Number,
-        red: Number,
-      },
-    }],
+    ],
     totalWeeks: {
       type: Number,
       default: 0,
@@ -142,18 +145,11 @@ const programmeSchema = new mongoose.Schema(
             enum: ["Red", "Amber", "Green", "Grey", "Blue"],
             default: "Grey",
           },
-          // Assignment/action-driven governance state (not date-driven).
-          // Unassigned (Grey) -> NoAction (Green) or ActionAssigned (Amber).
-          // ActionAssigned resolves to Blue (all actions complete) or
-          // Red (open action past the 6-week cycle end).
           assignmentState: {
             type: String,
             enum: ["Unassigned", "NoAction", "ActionAssigned"],
             default: "Unassigned",
           },
-          // Planner "unblocked" an overdue activity: it stops auto-flagging as
-          // Blocked (drops to At Risk) so it stays in the blocked/risk list and
-          // can be assigned an action. Cleared once an action is assigned.
           overdueAcknowledged: {
             type: Boolean,
             default: false,
@@ -211,5 +207,9 @@ const programmeSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+programmeSchema.index({ project: 1, cycleStatus: 1 });
+programmeSchema.index({ project: 1, status: 1 });
+programmeSchema.index({ project: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Programme", programmeSchema);

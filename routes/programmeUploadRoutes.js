@@ -58,16 +58,14 @@ const parseDate = (dateStr) => {
   if (!dateStr) return null;
   const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
 
-  // Try YYYY-MM-DD format first (e.g., 2026-06-08)
   const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (isoMatch) {
     const year = parseInt(isoMatch[1]);
-    const month = parseInt(isoMatch[2]) - 1; // Month is 0-indexed
+    const month = parseInt(isoMatch[2]) - 1;
     const day = parseInt(isoMatch[3]);
     return new Date(year, month, day);
   }
 
-  // Try DD-MMM-YY format (e.g., 08-Jun-26)
   const months = {
     Jan: 0,
     Feb: 1,
@@ -91,7 +89,6 @@ const parseDate = (dateStr) => {
   return new Date(year, month, day);
 };
 
-// Check if project/programme has ended (last activity finish date has passed)
 const checkProjectEnded = (activities) => {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -113,16 +110,12 @@ const checkProjectEnded = (activities) => {
   };
 };
 
-// Assignment / action-driven governance engine — single source of truth,
-// shared with the dashboard read endpoints. See utils/governance.js.
 const {
   getCycleEndDate,
   computeGovernanceStatus,
   syncProgrammeGovernance,
 } = require("../utils/governance");
 
-// Backwards-compatible wrappers so existing call sites keep working.
-// Optional trailing args (linkedActions, cycleEndDate) enable the full engine.
 const calculateRAG = (activity, today, linkedActions, cycleEndDate) => {
   return computeGovernanceStatus(activity, linkedActions, cycleEndDate, today)
     .ragStatus;
@@ -130,7 +123,6 @@ const calculateRAG = (activity, today, linkedActions, cycleEndDate) => {
 
 const generateWeekZones = (startDate, numWeeks = 6) => {
   const zones = [];
-  // Start from today (not Monday of current week)
   const start = new Date(startDate);
   start.setHours(0, 0, 0, 0);
 
@@ -194,8 +186,6 @@ const calculateActivityStatus = (
     .activityStatus;
 };
 
-// Build the Program Upload Summary counts from the assignment/action-driven
-// statuses already resolved onto each activity.
 const buildActivitySummary = (activities, lookaheadActivities = null) => {
   const inLookahead = Array.isArray(lookaheadActivities)
     ? lookaheadActivities
@@ -210,14 +200,11 @@ const buildActivitySummary = (activities, lookaheadActivities = null) => {
   return {
     total: activities.length,
     inLookahead: inLookahead.length,
-    // RAG buckets (Grey = unassigned, Green = ready, Amber = at risk,
-    // Blue = completed, Red = blocked)
     grey: countRag("Grey"),
     green: countRag("Green"),
     amber: countRag("Amber"),
     blue: countRag("Blue"),
     red: countRag("Red"),
-    // Status buckets used by the Program Upload Summary
     unassigned: activities.filter(
       (a) => (a.assignmentState || "Unassigned") === "Unassigned",
     ).length,
@@ -228,7 +215,6 @@ const buildActivitySummary = (activities, lookaheadActivities = null) => {
   };
 };
 
-// Serve PDF from MongoDB (persistent storage)
 router.get("/:id/pdf", async (req, res) => {
   try {
     const programme = await Programme.findById(req.params.id).select(
@@ -245,7 +231,6 @@ router.get("/:id/pdf", async (req, res) => {
         .json({ message: "PDF file not found in database" });
     }
 
-    // Set headers for PDF display
     res.setHeader("Content-Type", programme.fileMimeType || "application/pdf");
     res.setHeader(
       "Content-Disposition",
@@ -253,7 +238,6 @@ router.get("/:id/pdf", async (req, res) => {
     );
     res.setHeader("Content-Length", programme.fileData.length);
 
-    // Send the PDF buffer
     res.send(programme.fileData);
   } catch (error) {
     console.error("Error serving PDF:", error);
@@ -474,7 +458,6 @@ router.post(
             activity.startDateParsed = parseDate(activity.startDate);
             activity.finishDateParsed = parseDate(activity.finishDate);
 
-            // Check for B suffix (Blocked) - must check before A
             if (
               activity.finishDate.includes(" B") ||
               activity.startDate.includes(" B")
@@ -498,8 +481,6 @@ router.post(
               activity.status = "Planned";
             }
 
-            // All activities start unassigned (Grey). Status is driven by
-            // assignment/action state from here on, never by dates.
             activity.assignmentState = "Unassigned";
             activity.ragStatus = "Grey";
             activity.activityStatus = "Unassigned";
@@ -513,10 +494,6 @@ router.post(
       }
 
       const today = new Date();
-      // Anchor the week schedule:
-      //  - FIRST programme for a project -> the project's start date (week 1).
-      //  - RE-UPLOAD (weeks 2+) -> today (the meeting-open / upload date), so
-      //    each new week's lookahead rolls forward from when it was uploaded.
       let anchorDate = new Date(today);
       if (project) {
         const priorCount = await Programme.countDocuments({ project });
@@ -527,7 +504,6 @@ router.post(
             anchorDate = new Date(anchorProject.startDate);
           }
         }
-        // else: re-upload -> keep anchorDate = today.
       }
       anchorDate.setHours(0, 0, 0, 0);
       const weekZones = generateWeekZones(anchorDate, 6);
@@ -544,47 +520,10 @@ router.post(
 
       const summary = buildActivitySummary(activities, lookaheadActivities);
 
-      // TODO: Uncomment when ready to use date validation
-      // Validate activity dates against project dates
-      // if (project) {
-      //   const projectData = await Project.findById(project).select("startDate endDate name");
-      //   if (projectData && projectData.startDate) {
-      //     const projectStartDate = new Date(projectData.startDate);
-      //     projectStartDate.setHours(0, 0, 0, 0);
-
-      //     // Find activities with dates before project start date
-      //     const invalidActivities = activities.filter((activity) => {
-      //       if (activity.startDateParsed) {
-      //         const activityStart = new Date(activity.startDateParsed);
-      //         activityStart.setHours(0, 0, 0, 0);
-      //         return activityStart < projectStartDate;
-      //       }
-      //       return false;
-      //     });
-
-      //     if (invalidActivities.length > 0) {
-      //       // Clean up uploaded file
-      //       if (req.file && req.file.path && fs.existsSync(req.file.path)) {
-      //         fs.unlinkSync(req.file.path);
-      //       }
-
-      //       const projectStartFormatted = projectStartDate.toISOString().split('T')[0];
-      //       const sampleActivities = invalidActivities.slice(0, 3).map(a => a.activityId).join(", ");
-      //       const moreCount = invalidActivities.length > 3 ? ` and ${invalidActivities.length - 3} more` : "";
-
-      //       return sendValidationError(res, [{
-      //         field: "programme",
-      //         message: `Programme contains ${invalidActivities.length} activities with dates before the project start date (${projectStartFormatted}). Activities: ${sampleActivities}${moreCount}. Please upload a programme with dates matching the project timeline.`
-      //       }]);
-      //     }
-      //   }
-      // }
-
       const startOfYear = new Date(today.getFullYear(), 0, 1);
       const days = Math.floor((today - startOfYear) / (24 * 60 * 60 * 1000));
       const weekNumber = Math.ceil((days + 1) / 7);
 
-      // Read PDF file content to store in MongoDB
       const fileData = fs.readFileSync(req.file.path);
 
       const programme = await Programme.create({
@@ -592,7 +531,7 @@ router.post(
         project: project || null,
         originalFileName: req.file.originalname,
         filePath: req.file.path,
-        fileData: fileData, // Store PDF binary in MongoDB
+        fileData: fileData,
         fileMimeType: req.file.mimetype || "application/pdf",
         cycleStatus: "Uploaded",
         weekNumber,
@@ -607,13 +546,9 @@ router.post(
         },
         uploadedBy: req.admin._id,
         status: "processed",
-        closedWeeks: [], // Reset closed weeks for new upload
+        closedWeeks: [],
       });
 
-      // Recompute assignment/action-driven RAG immediately so the upload
-      // response (and the workspace card) show Blocked/Completed straight away,
-      // without the user having to reload. A brand-new programme has no actions,
-      // so this just applies the overdue / Actual-complete / date rules.
       await syncProgrammeGovernance(programme, Action);
       const refreshedActivities = programme.extractedData.activities;
       const refreshedLookahead = refreshedActivities.filter(
@@ -629,7 +564,6 @@ router.post(
       programme.markModified("extractedData.summary");
       await programme.save();
 
-      // Audit log: Programme uploaded
       const projectDoc = project
         ? await Project.findById(project).select("name")
         : null;
@@ -740,7 +674,6 @@ router.get("/", protect, async (req, res) => {
 
     const baseUrl = process.env.BACKEND_URL || "http://localhost:5000";
     const programmesWithUrl = programmes.map((prog) => {
-      // Use API endpoint to serve PDF from MongoDB (persistent storage)
       const fileUrl = `${baseUrl}/api/programmes/${prog._id}/pdf`;
       return {
         ...prog.toObject(),
@@ -783,11 +716,9 @@ router.get("/by-project/:projectId", protect, async (req, res) => {
       return sendSuccess(res, { programme: null });
     }
 
-    // Fetch actions to calculate activity status
     const Action = require("../models/Action");
     const actions = await Action.find({ programme: programme._id });
 
-    // Build map of actions by activity
     const actionsByActivity = {};
     actions.forEach((action) => {
       const actId = action.linkedActivity?.activityId;
@@ -799,7 +730,6 @@ router.get("/by-project/:projectId", protect, async (req, res) => {
       }
     });
 
-    // Calculate activity status for each activity
     const today = new Date();
     const programmeObj = programme.toObject();
     if (programmeObj.extractedData?.activities) {
@@ -814,13 +744,6 @@ router.get("/by-project/:projectId", protect, async (req, res) => {
             linkedActions,
           );
 
-          // Log for debugging
-          if (linkedActions.length > 0) {
-            console.log(
-              `[by-project] ${activity.activityId}: ${linkedActions.length} actions, statuses: ${linkedActions.map((a) => a.status).join(", ")}, calculated: ${activityStatus}`,
-            );
-          }
-
           return {
             ...activity,
             ragStatus,
@@ -830,7 +753,6 @@ router.get("/by-project/:projectId", protect, async (req, res) => {
     }
 
     const baseUrl = process.env.BACKEND_URL || "http://localhost:5000";
-    // Use API endpoint to serve PDF from MongoDB (persistent storage)
     const fileUrl = `${baseUrl}/api/programmes/${programme._id}/pdf`;
     const programmeWithUrl = {
       ...programmeObj,
@@ -861,7 +783,6 @@ router.get("/project/:projectId/history", protect, async (req, res) => {
 
     const baseUrl = process.env.BACKEND_URL || "http://localhost:5000";
     const addFileUrl = (prog) => {
-      // Use API endpoint to serve PDF from MongoDB (persistent storage)
       const fileUrl = `${baseUrl}/api/programmes/${prog._id}/pdf`;
       return {
         ...prog.toObject(),
@@ -989,7 +910,6 @@ router.get("/:id", protect, async (req, res) => {
     }
 
     const baseUrl = process.env.BACKEND_URL || "http://localhost:5000";
-    // Use API endpoint to serve PDF from MongoDB (persistent storage)
     const fileUrl = `${baseUrl}/api/programmes/${programme._id}/pdf`;
     const programmeWithUrl = {
       ...programme.toObject(),
@@ -1022,8 +942,6 @@ router.get("/:id/lookahead", protect, async (req, res) => {
       return sendError(res, "Access denied", 403);
     }
 
-    // Auto-refresh: recompute + persist assignment/action-driven RAG so a
-    // cycle-window crossing (e.g. untriaged -> Blocked) is reflected on load.
     await syncProgrammeGovernance(programme, Action);
 
     const actions = await Action.find({ programme: req.params.id })
@@ -1031,13 +949,9 @@ router.get("/:id/lookahead", protect, async (req, res) => {
       .populate("createdBy", "name email");
 
     const actionCountMap = {};
-    const actionsByActivity = {}; // Map of activityId -> array of actions
-    console.log(`[lookahead] Total actions found: ${actions.length}`);
+    const actionsByActivity = {};
     actions.forEach((action) => {
       const actId = action.linkedActivity.activityId;
-      console.log(
-        `[lookahead] Action "${action.title}" -> Activity ${actId}, Status: ${action.status}, Type: ${action.type}`,
-      );
       if (!actionCountMap[actId]) {
         actionCountMap[actId] = { total: 0, open: 0 };
       }
@@ -1050,13 +964,8 @@ router.get("/:id/lookahead", protect, async (req, res) => {
         actionCountMap[actId].open++;
       }
     });
-    console.log(
-      `[lookahead] actionsByActivity keys:`,
-      Object.keys(actionsByActivity),
-    );
 
     const today = new Date();
-    // Start of today (midnight) - actions are only overdue after due date has fully passed
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
     const weekZones = generateWeekZones(today, programme.lookaheadWeeks || 6);
@@ -1064,7 +973,6 @@ router.get("/:id/lookahead", protect, async (req, res) => {
 
     const activities = programme.extractedData.activities.map((activity) => {
       const activityObj = activity.toObject ? activity.toObject() : activity;
-      // Pass linked actions to calculate if all actions are completed
       const linkedActions = actionsByActivity[activityObj.activityId] || [];
       const ragStatus = calculateRAG(
         activityObj,
@@ -1079,12 +987,6 @@ router.get("/:id/lookahead", protect, async (req, res) => {
         linkedActions,
         cycleEndDate,
       );
-      // Debug log for activities with linked actions
-      if (linkedActions.length > 0) {
-        console.log(
-          `[lookahead] ${activityObj.activityId}: ${linkedActions.length} actions, statuses: ${linkedActions.map((a) => a.status).join(", ")}, calculated activityStatus: ${activityStatus}`,
-        );
-      }
       return {
         ...activityObj,
         ragStatus,
@@ -1132,9 +1034,6 @@ router.get("/:id/lookahead", protect, async (req, res) => {
 
     const summary = buildActivitySummary(activities, lookaheadActivities);
 
-    // readyToClose logic based on cycle status:
-    // - Draft / Uploaded / Meeting Open: Always No (not ready to close)
-    // - Execution / Close-Out Eligible: Yes if all actions complete, No if any pending
     let readyToClose = false;
     const openActions = actionStats.open + actionStats.inProgress;
 
@@ -1237,8 +1136,6 @@ router.patch("/:id/activity/:activityId", protect, async (req, res) => {
     if (notes !== undefined) activity.notes = notes;
     if (isBlocked !== undefined) activity.isBlocked = isBlocked;
     if (blocker !== undefined) activity.blocker = blocker;
-    // "Unblock" an overdue activity: acknowledged overdue drops from Blocked to
-    // At Risk (see computeGovernanceStatus) so it stays listed and assignable.
     if (overdueAcknowledged !== undefined) {
       activity.overdueAcknowledged = overdueAcknowledged;
     }
@@ -1251,9 +1148,6 @@ router.patch("/:id/activity/:activityId", protect, async (req, res) => {
       activity.assignmentState = assignmentState;
     }
 
-    // Assignment-driven governance transition. Re-derive RAG/status from the
-    // current state whenever the assignment state or the overdue acknowledgement
-    // changed. ("No Action" -> Green/Ready; actions are handled in actionRoutes.)
     if (assignmentState !== undefined || overdueAcknowledged !== undefined) {
       const Action = require("../models/Action");
       const linkedActions = await Action.find({
@@ -1269,7 +1163,6 @@ router.patch("/:id/activity/:activityId", protect, async (req, res) => {
       activity.ragStatus = derived.ragStatus;
       activity.activityStatus = derived.activityStatus;
     } else if (activityStatus !== undefined) {
-      // Explicit status override still supported.
       activity.activityStatus = activityStatus;
     } else if (isBlocked !== undefined) {
       const today = new Date();
@@ -1280,7 +1173,6 @@ router.patch("/:id/activity/:activityId", protect, async (req, res) => {
       );
     }
 
-    // Mark the nested array as modified to ensure Mongoose saves the changes
     programme.markModified("extractedData.activities");
     await programme.save();
 
@@ -1315,15 +1207,12 @@ router.get("/:id/overview", protect, async (req, res) => {
       return sendError(res, "Access denied", 403);
     }
 
-    // Auto-refresh: recompute + persist assignment/action-driven RAG so a
-    // cycle-window crossing (e.g. untriaged -> Blocked) is reflected on load.
     await syncProgrammeGovernance(programme, Action);
 
     const CycleHistory = require("../models/CycleHistory");
 
     const actions = await Action.find({ programme: req.params.id });
     const today = new Date();
-    // Start of today (midnight) - actions are only overdue after due date has fully passed
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
 
@@ -1370,8 +1259,6 @@ router.get("/:id/overview", protect, async (req, res) => {
         a.status !== "Cancelled",
     ).length;
 
-    // RAG Distribution based on activity status (not RAG status)
-    // Green = Ready activities, Amber = At Risk activities, Red = Blocked activities
     const ragDistribution = {
       green: lookaheadActivities.filter(
         (a) => a.activityStatus === "Ready" && !a.isBlocked,
@@ -1468,31 +1355,25 @@ router.post("/:id/close-cycle", protect, async (req, res) => {
     }).sort({ weekNumber: -1 });
     const newWeekNumber = lastCycle ? lastCycle.weekNumber + 1 : 1;
 
-    // Calculate Monday of current week (week starts on Monday)
-    const dayOfWeek = today.getDay(); // 0 = Sunday, 1 = Monday, etc.
-    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // Sunday = 6 days from Monday
+    const dayOfWeek = today.getDay();
+    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
     const mondayOfCurrentWeek = new Date(today);
     mondayOfCurrentWeek.setDate(today.getDate() - daysFromMonday);
     mondayOfCurrentWeek.setHours(0, 0, 0, 0);
 
-    // Determine the start date for the current 2-week cycle
     let cycleStartDate;
     if (lastCycle) {
-      // Next cycle starts the day after the last cycle ended
       cycleStartDate = new Date(lastCycle.dateRange.endDate);
       cycleStartDate.setDate(cycleStartDate.getDate() + 1);
     } else {
-      // First cycle - use Monday of current week
       cycleStartDate = new Date(mondayOfCurrentWeek);
     }
     cycleStartDate.setHours(0, 0, 0, 0);
 
-    // Calculate the end of the 2-week period (14 days from cycle start)
     const twoWeekEndDate = new Date(cycleStartDate);
-    twoWeekEndDate.setDate(cycleStartDate.getDate() + 13); // Days 0-13 = 14 days
+    twoWeekEndDate.setDate(cycleStartDate.getDate() + 13);
     twoWeekEndDate.setHours(23, 59, 59, 999);
 
-    // Check if today is still within the 2-week period
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
@@ -1514,7 +1395,6 @@ router.post("/:id/close-cycle", protect, async (req, res) => {
       };
     });
 
-    // Get only activities that START within the current week being closed
     const weekStartDate = new Date(currentWeek.startDate);
     const weekEndDate = new Date(currentWeek.endDate);
     weekStartDate.setHours(0, 0, 0, 0);
@@ -1525,9 +1405,6 @@ router.post("/:id/close-cycle", protect, async (req, res) => {
       const actFinish = parseDate(a.finishDate);
       if (!actStart) return false;
 
-      // Activity is in this week if:
-      // 1. It starts within this week, OR
-      // 2. It spans this week (started before and finishes during/after)
       const startsThisWeek =
         actStart >= weekStartDate && actStart <= weekEndDate;
       const spansThisWeek =
@@ -1536,7 +1413,6 @@ router.post("/:id/close-cycle", protect, async (req, res) => {
       return startsThisWeek || spansThisWeek;
     });
 
-    // Fallback to lookahead activities if no week-specific activities found
     const lookaheadActivities =
       weekActivities.length > 0
         ? weekActivities
@@ -1575,7 +1451,6 @@ router.post("/:id/close-cycle", protect, async (req, res) => {
         totalActivities: lookaheadActivities.length,
         completed: lookaheadActivities.filter((a) => a.status === "Completed")
           .length,
-        // Exclude blocked activities from green count
         green: lookaheadActivities.filter(
           (a) =>
             a.ragStatus === "Green" &&
@@ -1637,7 +1512,6 @@ router.get("/:id/cycle-history", protect, async (req, res) => {
 });
 
 router.get("/:id/weekly-control", protect, async (req, res) => {
-  console.log("\n\n=== WEEKLY CONTROL ENDPOINT CALLED (UPDATED CODE) ===\n\n");
   try {
     const programme = await Programme.findById(req.params.id).populate(
       "uploadedBy",
@@ -1657,11 +1531,8 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return sendError(res, "Access denied", 403);
     }
 
-    // Auto-refresh: recompute + persist assignment/action-driven RAG so a
-    // cycle-window crossing (e.g. untriaged -> Blocked) is reflected on load.
     await syncProgrammeGovernance(programme, Action);
 
-    // Get weekNumber from query params (optional)
     const requestedWeekNumber = req.query.weekNumber
       ? parseInt(req.query.weekNumber)
       : null;
@@ -1671,25 +1542,21 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       .populate("createdBy", "name email");
 
     const today = new Date();
-    // Start of today (midnight) - actions are only overdue after due date has fully passed
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
 
-    // Parse date helper - supports both DD-MMM-YY and YYYY-MM-DD formats
     const parseActivityDate = (dateStr) => {
       if (!dateStr) return null;
       const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
 
-      // Try YYYY-MM-DD format first (e.g., 2026-06-08)
       const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
       if (isoMatch) {
         const year = parseInt(isoMatch[1]);
-        const month = parseInt(isoMatch[2]) - 1; // Month is 0-indexed
+        const month = parseInt(isoMatch[2]) - 1;
         const day = parseInt(isoMatch[3]);
         return new Date(year, month, day);
       }
 
-      // Try DD-MMM-YY format (e.g., 08-Jun-26)
       const months = {
         Jan: 0,
         Feb: 1,
@@ -1713,7 +1580,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return new Date(year, month, day);
     };
 
-    // Find programme start date for week calculations
     let earliestDate = null;
     for (const activity of programme.extractedData?.activities || []) {
       const startDate = parseActivityDate(activity.startDate);
@@ -1722,20 +1588,15 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       }
     }
 
-    // Calculate current week number and week date range
     let currentWeekNumber = 1;
 
-    // Calculate Monday of current week (week starts on Monday)
     const todayStart = new Date(today);
     todayStart.setHours(0, 0, 0, 0);
-    const dayOfWeek = todayStart.getDay(); // 0 = Sunday, 1 = Monday, etc.
-    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // Sunday = 6 days from Monday
+    const dayOfWeek = todayStart.getDay();
+    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
     const weekStart = new Date(todayStart);
-    weekStart.setDate(todayStart.getDate() - daysFromMonday); // Go back to Monday
+    weekStart.setDate(todayStart.getDate() - daysFromMonday);
 
-    // Anchor to the programme's own start (lookaheadStartDate) — set at upload
-    // to the project start for week 1, or the upload/meeting-open date for the
-    // re-uploaded weeks 2+. Each week's lookahead thus rolls forward.
     const referenceDate = programme.lookaheadStartDate
       ? new Date(programme.lookaheadStartDate)
       : earliestDate;
@@ -1749,12 +1610,8 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
     }
 
-    // Use requested week or current week
     const targetWeekNumber = requestedWeekNumber || currentWeekNumber;
 
-    // Anchor the single 7-day week to the programme's FIXED week schedule
-    // (referenceDate = upload date), not to "today", so each week shows its own
-    // date range (Week 1, Week 2, ...) instead of "today .. today+6".
     const scheduleAnchor = referenceDate
       ? new Date(referenceDate)
       : new Date(todayStart);
@@ -1764,12 +1621,10 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       scheduleAnchor.getDate() + (targetWeekNumber - 1) * 7,
     );
     const weekEndDate = new Date(weekStartDate);
-    weekEndDate.setDate(weekStartDate.getDate() + 6); // 1-week window (7 days)
+    weekEndDate.setDate(weekStartDate.getDate() + 6);
 
-    // Get closed weeks from programme
     const closedWeeks = programme.closedWeeks || [];
 
-    // Find the most recently closed week (by closedAt timestamp)
     const mostRecentClosure =
       closedWeeks.length > 0
         ? closedWeeks.reduce(
@@ -1781,12 +1636,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
           )
         : null;
 
-    console.log(
-      `[weekly-control] mostRecentClosure: week ${mostRecentClosure?.weekNumber} at ${mostRecentClosure?.closedAt}`,
-    );
-
-    // Helper to check if an action should be excluded because it's from a closed week cycle
-    // Logic: If action was created BEFORE the most recent week closure, and it's not completed, exclude it
     const isActionFromClosedWeek = (
       actionCreatedAt,
       actionStatus,
@@ -1794,20 +1643,14 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
     ) => {
       if (!actionCreatedAt || closedWeeks.length === 0) return false;
 
-      // Actions that are completed or cancelled should not be excluded
       if (actionStatus === "Completed" || actionStatus === "Cancelled")
         return false;
 
       const actionDate = new Date(actionCreatedAt);
 
-      // If the action was created BEFORE the most recent week was closed,
-      // it means this action was from a previous week cycle that has now been PM Override'd
       if (mostRecentClosure && mostRecentClosure.closedAt) {
         const closureDate = new Date(mostRecentClosure.closedAt);
         if (actionDate < closureDate) {
-          console.log(
-            `[weekly-control] Action "${actionTitle}" created ${actionDate.toISOString()} is BEFORE closure ${closureDate.toISOString()} - excluding`,
-          );
           return true;
         }
       }
@@ -1815,7 +1658,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return false;
     };
 
-    // Build action map first (needed for filtering)
     const actionMap = {};
     actions.forEach((action) => {
       const actId = action.linkedActivity.activityId;
@@ -1832,7 +1674,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         assignee: action.assignee?.name || "-",
         assigneeId: action.assignee?._id?.toString() || null,
         dueDate: action.dueDate,
-        createdAt: action.createdAt, // Include createdAt for closed week filtering
+        createdAt: action.createdAt,
         isOverdue:
           action.dueDate < startOfToday &&
           action.status !== "Completed" &&
@@ -1841,19 +1683,16 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
           action.createdAt,
           action.status,
           action.title,
-        ), // Flag if from closed week
+        ),
       });
     });
 
-    // Use today's date for RAG calculation to show current status (consistent with Activities & Lookahead)
     const ragReferenceDate = today;
 
     const cycleEndDate = getCycleEndDate(programme);
     const activities = programme.extractedData.activities.map((activity) => {
       const activityObj = activity.toObject ? activity.toObject() : activity;
       const linkedActions = actionMap[activityObj.activityId] || [];
-      // Compute RAG/status from assignment + action state (and cycle end for
-      // the auto-Blocked transition), consistent with Activities & Lookahead.
       const ragStatus = calculateRAG(
         activityObj,
         ragReferenceDate,
@@ -1867,35 +1706,23 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         linkedActions,
         cycleEndDate,
       );
-      // Derive isBlocked from the computed status so the Unblock button never
-      // disagrees with the displayed RAG (the persisted flag can go stale).
       const isBlocked = activityStatus === "Blocked";
-      // Debug log for activities that were or might be blocked
       if (
         activityObj.isBlocked === true ||
         activityObj.activityStatus === "Blocked" ||
         activityStatus === "Blocked"
       ) {
-        console.log(
-          `[weekly-control] Activity ${activityObj.activityId}: DB.isBlocked=${activityObj.isBlocked}, DB.activityStatus=${activityObj.activityStatus}, calculated=${activityStatus}`,
-        );
       }
       return {
         ...activityObj,
         ragStatus,
         activityStatus,
         isBlocked,
-        // Keep the STORED weekZone (what the Activities & Lookahead table shows
-        // via the by-project endpoint) rather than recomputing against today,
-        // so the current-week activity scope matches the table exactly.
         weekZone: activityObj.weekZone,
         linkedActions,
       };
     });
 
-    // Scope "this week" to the single 7-day week window (schedule-anchored,
-    // matching the date range shown in the header): activities that START
-    // within [weekStartDate, weekEndDate].
     const weekEndInclusive = new Date(weekEndDate);
     weekEndInclusive.setHours(23, 59, 59, 999);
     const isActivityInWeek = (activity) => {
@@ -1905,11 +1732,8 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
 
     const activitiesInWeek = activities.filter((a) => isActivityInWeek(a));
 
-    // Show ALL activities in the single-week window (including Grey).
     const allActivities = activitiesInWeek;
 
-    // Calculate action stats from ALL actions in database (for Actions by Status chart)
-    // This shows ALL actions for the programme, regardless of week
     const wasOverridden = (a) =>
       isActionFromClosedWeek(a.createdAt, a.status, a.title);
     const actionsByStatus = {
@@ -1933,12 +1757,10 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       ).length,
     };
 
-    // Get actions for activities in the current week only (for PM Override logic)
     const actionsInWeek = [];
     allActivities.forEach((a) => {
       if (a.linkedActions && a.linkedActions.length > 0) {
         a.linkedActions.forEach((action) => {
-          // Skip actions from closed weeks - they were already handled via PM Override
           if (!action.isFromClosedWeek) {
             actionsInWeek.push(action);
           }
@@ -1946,25 +1768,18 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       }
     });
 
-    // Filter actions to current 2-week period (matching export logic)
-    // This filters by due date OR linked activity date range
     const actionsInCurrentWeek = actions.filter((action) => {
-      // Exclude actions from a previous (closed / PM-overridden) week cycle —
-      // they were already resolved via the override and must not block or count
-      // toward the current week's close.
       if (
         isActionFromClosedWeek(action.createdAt, action.status, action.title)
       ) {
         return false;
       }
-      // Check if action's due date falls within the week range
       if (action.dueDate && weekStartDate && weekEndDate) {
         const dueDate = new Date(action.dueDate);
         if (dueDate >= weekStartDate && dueDate <= weekEndDate) {
           return true;
         }
       }
-      // Also include if linked activity is in this week
       if (action.linkedActivity?.activityId) {
         const linkedActivity = activities.find(
           (a) => a.activityId === action.linkedActivity.activityId,
@@ -1988,11 +1803,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return false;
     });
 
-    // Actions whose DUE DATE lands inside the current window. Both the display
-    // counts and the close gate are driven by this — an action belongs to the
-    // window its due date falls in, regardless of when its linked activity
-    // starts. (Narrower than actionsInCurrentWeek, which also pulls actions in
-    // via their linked activity's date range.)
     const actionsDueInCurrentWeek = actions.filter((action) => {
       if (
         isActionFromClosedWeek(action.createdAt, action.status, action.title)
@@ -2004,8 +1814,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return dueDate >= weekStartDate && dueDate <= weekEndDate;
     });
 
-    // Calculate weekly action stats for DISPLAY (includes both Required and Optional).
-    // Driven by DUE DATE, same as the gate below.
     const weeklyActionsByStatus = {
       open: actionsDueInCurrentWeek.filter(
         (a) =>
@@ -2023,8 +1831,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       overdue: 0,
     };
 
-    // Calculate REQUIRED-only action stats for Ready to Close logic
-    // Optional actions don't block closing
     const requiredActionsByStatus = {
       open: actionsDueInCurrentWeek.filter(
         (a) =>
@@ -2040,19 +1846,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       ).length,
     };
 
-    console.log(
-      `[weekly-control] actionsInWeek (legacy) count: ${actionsInWeek.length}`,
-    );
-    console.log(
-      `[weekly-control] actionsInCurrentWeek (new) count: ${actionsInCurrentWeek.length}`,
-    );
-    console.log(
-      `[weekly-control] weeklyActionsByStatus (week):`,
-      weeklyActionsByStatus,
-    );
-
-    // RAG Distribution based on activity status (not RAG status)
-    // Green = Ready activities, Amber = At Risk activities, Red = Blocked activities
     const ragDistribution = {
       green: allActivities.filter(
         (a) => a.activityStatus === "Ready" && !a.isBlocked,
@@ -2061,32 +1854,17 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       red: allActivities.filter(
         (a) => a.activityStatus === "Blocked" || a.isBlocked,
       ).length,
-      // Untriaged (no action assigned yet) — shown as a grey ring so the chart
-      // isn't empty before triage.
       grey: allActivities.filter(
         (a) => a.activityStatus === "Unassigned" || a.ragStatus === "Grey",
       ).length,
     };
 
-    // Separate counts for Ready and Complete activities
     const readyCount = allActivities.filter(
       (a) => a.activityStatus === "Ready" && !a.isBlocked,
     ).length;
     const completeCount = allActivities.filter(
       (a) => a.activityStatus === "Complete",
     ).length;
-
-    // Blocked/Risk Activities - show At Risk or Blocked activities from today onwards
-    // Exclude activities with start dates before today and actions from closed weeks
-    // Source from the FULL activity set (not just the current-week window) so
-    // overdue/Blocked and At Risk activities — whose scheduled dates may be in
-    // the past — always surface here for action. This includes an "unblocked"
-    // overdue activity, which drops from Blocked to At Risk but must stay listed
-    // so an action can be assigned to it.
-    // An activity is at risk *in this window* if it carries an open action due in
-    // it — the activity's own start date may sit in another pair. This mirrors
-    // requiredActionsByStatus, so the list agrees with the "N open required
-    // action(s)" warning rather than contradicting it.
     const hasOpenActionDueThisWindow = (activity) => {
       if (!weekStartDate || !weekEndDate) return false;
       return (activity.linkedActions || []).some((act) => {
@@ -2099,8 +1877,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       });
     };
 
-    // Scoped to the current 2-week window — this list read from the full
-    // programme, so it surfaced blocked/at-risk activities from other pairs.
     const blockedRiskActivities = activities
       .filter((a) => isActivityInWeek(a) || hasOpenActionDueThisWindow(a))
       .filter((a) => {
@@ -2118,11 +1894,9 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       })
       .slice(0, 20)
       .map((a) => {
-        // Filter out actions from closed weeks first
         const activeActions = a.linkedActions.filter(
           (act) => !act.isFromClosedWeek,
         );
-        // Get the first open/overdue action for this activity
         const openAction = activeActions.find(
           (act) => act.status !== "Completed" && act.status !== "Cancelled",
         );
@@ -2154,14 +1928,11 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         };
       });
 
-    // Blocked count spans ALL activities (overdue/blocked past-dated items are
-    // outside the current-week window but must still be counted).
     const blockedActivitiesList = activities.filter(
       (a) => a.isBlocked || a.activityStatus === "Blocked",
     );
     const blocked = blockedActivitiesList.length;
 
-    // Count completed activities (has " A" suffix or status === "Complete/Completed") - from ALL activities
     const completedActivitiesCount = activities.filter(
       (a) =>
         a.status === "Completed" ||
@@ -2172,23 +1943,17 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         (a.finishDate && a.finishDate.includes(" A")),
     ).length;
 
-    // Count activities the planner marked as needing no action. These ship in the
-    // Weekly Plan's "Completed with No Actions" sheet, so the export count must
-    // include them or the UI card disagrees with the file.
     const noActionActivitiesCount = activities.filter(
       (a) => a.assignmentState === "NoAction",
     ).length;
 
-    // Count blocked activities - from ALL activities
     const blockedActivitiesCount = activities.filter(
       (a) => a.isBlocked === true || a.activityStatus === "Blocked",
     ).length;
 
-    // Count at risk (overdue) activities - finish date passed but not completed - from ALL activities
     const todayForAtRisk = new Date();
     todayForAtRisk.setHours(0, 0, 0, 0);
     const atRiskActivitiesCount = activities.filter((a) => {
-      // Skip if completed
       if (
         a.status === "Completed" ||
         a.status === "Complete" ||
@@ -2199,16 +1964,13 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       ) {
         return false;
       }
-      // Skip if blocked
       if (a.isBlocked === true || a.activityStatus === "Blocked") {
         return false;
       }
-      // Check if finish date has passed
       if (a.finishDate) {
         const cleanDate = a.finishDate.replace(/\s*[AB\*]$/, "").trim();
         let finishDate = null;
 
-        // Try YYYY-MM-DD format first
         const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
         if (isoMatch) {
           finishDate = new Date(
@@ -2217,7 +1979,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
             parseInt(isoMatch[3]),
           );
         } else {
-          // Try DD-MMM-YY format
           const months = {
             Jan: 0,
             Feb: 1,
@@ -2249,23 +2010,17 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return false;
     }).length;
 
-    // Open actions for DISPLAY (includes both Required and Optional)
     const openActions =
       weeklyActionsByStatus.open + weeklyActionsByStatus.inProgress;
 
-    // Open REQUIRED actions for Ready to Close logic (Optional actions don't block closing)
     const openRequiredActions =
       requiredActionsByStatus.open + requiredActionsByStatus.inProgress;
 
-    // Check if this is the last week (for Close-Out Eligible status)
     const totalWeeks = programme.totalWeeks || 0;
     const closedWeeksCount = closedWeeks.length;
     const remainingWeeks = totalWeeks - closedWeeksCount;
-    const isLastWeek = remainingWeeks <= 2; // Since we close 2 weeks at a time
+    const isLastWeek = remainingWeeks <= 2;
 
-    // readyToClose logic based on cycle status:
-    // - Draft / Uploaded / Meeting Open: Always No (not ready to close)
-    // - Execution / Close-Out Eligible: Yes if all REQUIRED actions complete (Optional don't block)
     let readyToClose = false;
     const cycleStatus = programme.cycleStatus;
 
@@ -2274,21 +2029,16 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       cycleStatus === "Uploaded" ||
       cycleStatus === "Meeting Open"
     ) {
-      // At Draft, Uploaded or Meeting Open state, never ready to close
       readyToClose = false;
     } else if (
       cycleStatus === "Execution" ||
       cycleStatus === "Close-Out Eligible"
     ) {
-      // At Execution or Close-Out Eligible state, check if all REQUIRED actions are complete
       readyToClose = openRequiredActions === 0;
     }
 
-    // Weekly Plan Preview - show activities with actions for these 2 weeks
-    // Exclude actions from closed weeks
     const weeklyPlanPreview = allActivities
       .filter((a) => {
-        // Only include if there are actions not from closed weeks
         const activeActions =
           a.linkedActions?.filter((act) => !act.isFromClosedWeek) || [];
         return activeActions.length > 0;
@@ -2298,19 +2048,14 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         const activeActions = a.linkedActions.filter(
           (act) => !act.isFromClosedWeek,
         );
-        // For Weekly Plan Preview, use activity status to determine RAG:
-        // - Blocked = Red
-        // - At Risk = Amber
-        // - Ready/Complete/Not Started = Green (scheduled activities are "ready")
         let displayRag = a.ragStatus;
         if (displayRag === "Grey") {
-          // Activities that haven't started yet but are scheduled should show as Green (ready)
           if (a.activityStatus === "Blocked" || a.isBlocked) {
             displayRag = "Red";
           } else if (a.activityStatus === "At Risk") {
             displayRag = "Amber";
           } else {
-            displayRag = "Green"; // Ready, Complete, or scheduled to start
+            displayRag = "Green";
           }
         }
         return {
@@ -2341,7 +2086,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         };
       });
 
-    // Planner To-Do - show open actions for these 2 weeks
     const formatActionDate = (d) => {
       if (!d) return "-";
       const date = new Date(d);
@@ -2362,23 +2106,15 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return `${date.getDate()} ${months[date.getMonth()]}`;
     };
 
-    // Iterates ALL activities, not just those starting in this window: an action
-    // is scoped by its own DUE DATE (below), and an action due this window can
-    // belong to an activity that starts in another one. Using allActivities here
-    // silently dropped those.
     const plannerToDo = [];
     activities.forEach((a) => {
       if (a.linkedActions && a.linkedActions.length > 0) {
-        // Add each open action as a separate to-do item
-        // Exclude actions from closed weeks (PM Override'd weeks)
         a.linkedActions
           .filter(
             (action) =>
               action.status !== "Completed" &&
               action.status !== "Cancelled" &&
-              !action.isFromClosedWeek && // Exclude actions from closed weeks
-              // Scoped by DUE DATE, matching the planner-todo export. An action
-              // due in a later window is that window's to-do, not this one's.
+              !action.isFromClosedWeek &&
               (!weekStartDate ||
                 !weekEndDate ||
                 (action.dueDate &&
@@ -2400,10 +2136,8 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
           });
       }
     });
-    // Limit to 20 items
     const plannerToDoLimited = plannerToDo.slice(0, 20);
 
-    // Format dates for display
     const formatDate = (d) => {
       if (!d) return "";
       const months = [
@@ -2423,10 +2157,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return `${d.getDate()} ${months[d.getMonth()]}`;
     };
 
-    // TEMPORARILY COMMENTED OUT FOR TESTING
-    // Check if project has ended (last activity date passed)
-    // const projectEndedInfo = checkProjectEnded(programme.extractedData?.activities);
-    const projectEndedInfo = { isEnded: false, endDate: null }; // Temporary override
+    const projectEndedInfo = { isEnded: false, endDate: null };
 
     res.json({
       stats: {
@@ -2460,13 +2191,10 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
         closed: weeklyActionsByStatus.closed,
         overdue: weeklyActionsByStatus.overdue,
       },
-      // Required-only action stats (excludes Optional) - for "before closing" warning
       requiredActionsByStatus: {
         open: requiredActionsByStatus.open,
         inProgress: requiredActionsByStatus.inProgress,
       },
-      // Closure condition: EVERY activity in the 6-week lookahead (all zones in
-      // Activities & Lookahead) must be assigned, not just the current week's.
       unassignedInWeek: (() => {
         const lookaheadGateEnd = new Date(scheduleAnchor);
         lookaheadGateEnd.setDate(lookaheadGateEnd.getDate() + 41);
@@ -2498,7 +2226,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       },
       weekInfo: {
         weekNumber: targetWeekNumber,
-        weekNumberEnd: targetWeekNumber, // single 7-day week (no 2-week pairing)
+        weekNumberEnd: targetWeekNumber,
         currentWeekNumber: currentWeekNumber,
         dateRange:
           weekStartDate && weekEndDate
@@ -2533,11 +2261,7 @@ const checkCloseOutEligible = async (programmeId) => {
 
   if (!programme) return { eligible: false, reason: "Programme not found" };
 
-  // Single-week model: a week becomes Close-Out Eligible based on its OWN
-  // readiness (no open required actions on Green activities, no overdue, no
-  // blocked) — not on being the last 2 weeks of the programme.
   const today = new Date();
-  // Start of today (midnight) - actions are only overdue after due date has fully passed
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const activities = programme.extractedData?.activities || [];
@@ -2640,13 +2364,6 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
       );
     }
 
-    // TEMPORARILY COMMENTED OUT FOR TESTING
-    // Check if project has ended - no more actions allowed
-    // const projectEndedInfo = checkProjectEnded(programme.extractedData?.activities);
-    // if (projectEndedInfo.isEnded) {
-    //   return sendError(res, "Project has ended. No further actions can be performed.", 400);
-    // }
-
     const currentStatus = programme.cycleStatus;
     const allowedTransitions = CYCLE_TRANSITIONS[currentStatus] || [];
 
@@ -2661,14 +2378,11 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
           ]);
         }
 
-        // Don't lock the entire programme - just close these 2 weeks
-        // Will check if all weeks are done after creating cycle history
         programme.closeType = "PM Override";
         programme.overrideReason = overrideReason;
         programme.closedAt = new Date();
         programme.closedBy = req.admin._id;
 
-        // Create CycleHistory record for PM Override
         const CycleHistory = require("../models/CycleHistory");
         const Action = require("../models/Action");
 
@@ -2680,7 +2394,6 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
         }).sort({ weekNumber: -1 });
         const newWeekNumber = lastCycle ? lastCycle.weekNumber + 1 : 1;
 
-        // Find programme start date
         const activities = programme.extractedData?.activities || [];
         let earliestStartDate = null;
         for (const act of activities) {
@@ -2698,11 +2411,9 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
           (a) => a.status === "Completed",
         ).length;
 
-        // Close 2 weeks at once (similar to normal close)
         for (let weekOffset = 0; weekOffset < 2; weekOffset++) {
           const currentWeekNumber = newWeekNumber + weekOffset;
 
-          // Calculate week boundaries for each week
           let weekStartDate = new Date(today);
           let weekEndDate = new Date(today);
 
@@ -2728,7 +2439,6 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
           }
           weekEndDate.setHours(23, 59, 59, 999);
 
-          // Get activities for this specific week
           const weekActivities = activities
             .filter((a) => {
               const actStart = parseDate(a.startDate);
@@ -2791,7 +2501,6 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
           });
         }
 
-        // Check if all weeks are done
         const CycleHistoryCheck = require("../models/CycleHistory");
         const closedWeeksCount = await CycleHistoryCheck.countDocuments({
           programme: req.params.id,
@@ -2799,11 +2508,9 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
         const totalWeeks = programme.totalWeeks || 0;
 
         if (totalWeeks > 0 && closedWeeksCount >= totalWeeks) {
-          // All weeks done - set to Close-Out Eligible (user must acknowledge to fully close)
           programme.cycleStatus = "Close-Out Eligible";
           programme.isLocked = false;
         } else {
-          // More weeks remaining - reset for next weeks
           programme.cycleStatus = "Draft";
           programme.isLocked = false;
         }
@@ -2816,7 +2523,7 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
           {
             cycleStatus: programme.cycleStatus,
             closeType: programme.closeType,
-            isFullyClosed: false, // Not fully closed until user acknowledges Close-Out Eligible
+            isFullyClosed: false,
             isLastWeek: isLastWeek,
             message: isLastWeek
               ? "All weeks completed - Ready for Close-Out"
@@ -2852,23 +2559,19 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
       programme.closedBy = req.admin._id;
       programme.isLocked = true;
 
-      // Create CycleHistory record for governance tracking
       const CycleHistory = require("../models/CycleHistory");
       const Action = require("../models/Action");
 
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
-      // Get last cycle to determine week number
       const lastCycle = await CycleHistory.findOne({
         programme: req.params.id,
       }).sort({ weekNumber: -1 });
       const newWeekNumber = lastCycle ? lastCycle.weekNumber + 1 : 1;
 
-      // Calculate stats from activities - ONLY for current week
       const activities = programme.extractedData?.activities || [];
 
-      // Find programme start date
       let earliestStartDate = null;
       for (const act of activities) {
         const actStart = parseDate(act.startDate);
@@ -2877,7 +2580,6 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
         }
       }
 
-      // Calculate current week boundaries
       let weekStartDate = today;
       let weekEndDate = new Date(today);
       weekEndDate.setDate(today.getDate() + 6);
@@ -2897,7 +2599,6 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
       }
       weekEndDate.setHours(23, 59, 59, 999);
 
-      // Get only activities for this specific week
       const weekActivities = activities
         .filter((a) => {
           const actStart = parseDate(a.startDate);
@@ -3069,7 +2770,6 @@ router.post("/recalculate-rag", protect, adminOnly, async (req, res) => {
 
       programme.markModified("extractedData.activities");
       programme.weekZones = weekZones;
-      // Don't reset lookaheadStartDate - it should stay as the original upload date
 
       await programme.save();
       totalUpdated++;
@@ -3105,7 +2805,6 @@ router.post("/:id/recalculate-rag", protect, adminOnly, async (req, res) => {
     const weekZones = generateWeekZones(today, programme.lookaheadWeeks || 6);
     const cycleEndDate = getCycleEndDate(programme);
 
-    // Fetch all actions for this programme to check linked actions completion
     const Action = require("../models/Action");
     const allActions = await Action.find({ programme: programme._id });
     const actionMap = {};
@@ -3151,7 +2850,6 @@ router.post("/:id/recalculate-rag", protect, adminOnly, async (req, res) => {
 
     programme.markModified("extractedData.activities");
     programme.weekZones = weekZones;
-    // Don't reset lookaheadStartDate - it should stay as the original upload date
 
     await programme.save();
 
@@ -3234,7 +2932,6 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-// Clear all CycleHistory records (for fixing incorrect data)
 router.delete(
   "/clear-cycle-history/all",
   protect,
@@ -3245,7 +2942,6 @@ router.delete(
 
       const result = await CycleHistory.deleteMany({});
 
-      // Also unlock all programmes so they can be closed again
       await Programme.updateMany(
         { isLocked: true },
         {
@@ -3273,7 +2969,6 @@ router.delete(
   },
 );
 
-// Get programme weeks status (which weeks are closed, current week, etc.)
 router.get("/:id/weeks-status", protect, async (req, res) => {
   try {
     const programme = await Programme.findById(req.params.id);
@@ -3286,12 +2981,10 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       return sendError(res, "Access denied", 403);
     }
 
-    // Parse dates helper - supports both DD-MMM-YY and YYYY-MM-DD formats
     const parseDateLocal = (dateStr) => {
       if (!dateStr) return null;
       const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
 
-      // Try YYYY-MM-DD format first
       const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
       if (isoMatch) {
         return new Date(
@@ -3301,7 +2994,6 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
         );
       }
 
-      // Try DD-MMM-YY format
       const months = {
         Jan: 0,
         Feb: 1,
@@ -3325,7 +3017,6 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       return new Date(year, month, day);
     };
 
-    // Calculate total weeks from activities
     const activities = programme.extractedData?.activities || [];
     let earliestDate = null;
     let latestDate = null;
@@ -3346,18 +3037,14 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       const msPerDay = 1000 * 60 * 60 * 24;
       const totalDays = Math.ceil((latestDate - earliestDate) / msPerDay);
       totalWeeks = Math.ceil(totalDays / 7);
-      // Save totalWeeks to programme
       programme.totalWeeks = totalWeeks;
       await programme.save();
     }
 
-    // Determine current week using lookaheadStartDate (upload date)
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     let currentWeekNumber = 1;
 
-    // Anchor to the programme's own start (lookaheadStartDate) — project start
-    // for week 1, upload/meeting-open date for the re-uploaded weeks 2+.
     const referenceDate = programme.lookaheadStartDate
       ? new Date(programme.lookaheadStartDate)
       : earliestDate;
@@ -3369,55 +3056,40 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
     }
 
-    // Get closed weeks
     const closedWeeks = programme.closedWeeks || [];
     const closedWeekNumbers = closedWeeks.map((w) => w.weekNumber);
 
-    // Get the last closed cycle to calculate current cycle's start date
     const CycleHistory = require("../models/CycleHistory");
     const lastCycle = await CycleHistory.findOne({
       programme: req.params.id,
     }).sort({ weekNumber: -1 });
 
-    // Calculate Monday of current week (week starts on Monday)
-    const dayOfWeek = today.getDay(); // 0 = Sunday, 1 = Monday, etc.
-    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // Sunday = 6 days from Monday
+    const dayOfWeek = today.getDay();
+    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
     const mondayOfCurrentWeek = new Date(today);
     mondayOfCurrentWeek.setDate(today.getDate() - daysFromMonday);
     mondayOfCurrentWeek.setHours(0, 0, 0, 0);
 
-    // Calculate the current 2-week cycle's end date
     let currentCycleStartDate;
     if (lastCycle && lastCycle.dateRange?.endDate) {
-      // Next cycle starts the day after the last cycle ended
       currentCycleStartDate = new Date(lastCycle.dateRange.endDate);
       currentCycleStartDate.setDate(currentCycleStartDate.getDate() + 1);
     } else if (referenceDate) {
-      // First cycle - anchor to the programme's week schedule (upload date),
-      // matching the lookahead and weekly-control views so Week 1-2 ends on the
-      // same date everywhere (e.g. 7 Jul -> 20 Jul, not Monday-of-week 6 Jul).
       currentCycleStartDate = new Date(referenceDate);
     } else {
       currentCycleStartDate = new Date(mondayOfCurrentWeek);
     }
     currentCycleStartDate.setHours(0, 0, 0, 0);
 
-    // Calculate the end of the current 2-week period (14 days from cycle start)
     const currentTwoWeekEndDate = new Date(currentCycleStartDate);
-    currentTwoWeekEndDate.setDate(currentCycleStartDate.getDate() + 13); // Days 0-13 = 14 days
+    currentTwoWeekEndDate.setDate(currentCycleStartDate.getDate() + 13);
     currentTwoWeekEndDate.setHours(23, 59, 59, 999);
 
-    // Check if today is still within the current 2-week period
     const canCloseCurrentCycle = today > currentTwoWeekEndDate;
-
-    // ---- Completion-based close gate (replaces the date gate) ---------------
-    // A week may be closed once every activity in the current single 7-day week
-    // is triaged (No Action -> Ready, or an action assigned) AND every assigned
-    // action is completed. Scope matches the weekly-control single-week window
-    // (schedule-anchored to the upload date) so the gate matches what the
-    // planner sees, instead of waiting for the calendar.
     const GateAction = require("../models/Action");
-    const gateActions = await GateAction.find({ programme: req.params.id });
+    const gateActions = await GateAction.find({
+      programme: req.params.id,
+    }).lean();
     const gateOpenByActivity = {};
     const gateHasActionByActivity = {};
     for (const action of gateActions) {
@@ -3431,8 +3103,6 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       gateOpenByActivity[actId] =
         (gateOpenByActivity[actId] || 0) + (isOpen ? 1 : 0);
     }
-    // "Settled" = genuinely done, so it no longer needs triage/action to close:
-    // an Actual finish, a completed status, or an assigned action fully done.
     const gateIsSettled = (activity) => {
       if (activity.finishDate && activity.finishDate.includes(" A"))
         return true;
@@ -3450,11 +3120,8 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
     };
     const gateAnchor = new Date(referenceDate || earliestDate);
     gateAnchor.setHours(0, 0, 0, 0);
-    // Close gate: EVERY activity in the 6-week lookahead (everything shown in
-    // Activities & Lookahead — all zones) must be assigned and have no open
-    // actions, not just the current week's.
     const lookaheadEnd = new Date(gateAnchor);
-    lookaheadEnd.setDate(lookaheadEnd.getDate() + 41); // 6 weeks (days 0-41)
+    lookaheadEnd.setDate(lookaheadEnd.getDate() + 41);
     lookaheadEnd.setHours(23, 59, 59, 999);
     const lookaheadOpen = activities.filter((a) => {
       const s = parseDate(a.startDate);
@@ -3661,8 +3328,6 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       return sendError(res, "Cannot determine programme start date", 400);
     }
 
-    // Anchor to the programme's own start (lookaheadStartDate) — project start
-    // for week 1, upload/meeting-open date for the re-uploaded weeks 2+.
     const weekAnchorDate = programme.lookaheadStartDate
       ? new Date(programme.lookaheadStartDate)
       : new Date(earliestDate);
@@ -3688,9 +3353,11 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
     const isOverride = closeType === "PM Override";
 
     if (!isOverride && !isSecondOfPair) {
-      const gateActions = await require("../models/Action").find({
-        programme: req.params.id,
-      });
+      const gateActions = await require("../models/Action")
+        .find({
+          programme: req.params.id,
+        })
+        .lean();
       const openByActivity = {};
       const hasActionByActivity = {};
       for (const action of gateActions) {
@@ -3718,16 +3385,12 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
           return true;
         return false;
       };
-      // Gate on the ENTIRE 6-week lookahead (all zones in Activities &
-      // Lookahead), not just the week being closed.
       const lookaheadEnd = new Date(weekAnchorDate);
-      lookaheadEnd.setDate(lookaheadEnd.getDate() + 41); // 6 weeks (days 0-41)
+      lookaheadEnd.setDate(lookaheadEnd.getDate() + 41);
       lookaheadEnd.setHours(23, 59, 59, 999);
       const openActivities = activities.filter((a) => {
         const s = parseDate(a.startDate);
-        return (
-          s && s >= weekAnchorDate && s <= lookaheadEnd && !isSettled(a)
-        );
+        return s && s >= weekAnchorDate && s <= lookaheadEnd && !isSettled(a);
       });
       const unassignedActivities = openActivities.filter(
         (a) => (a.assignmentState || "Unassigned") === "Unassigned",
@@ -3814,10 +3477,6 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       (a) => a.status === "Completed",
     ).length;
 
-    console.log(
-      `[close-week] Week ${weekNumber}: Found ${weekActions.length} actions (${weekStats.actionsCompleted} completed) since last closure`,
-    );
-
     let calculatedTotalWeeks = programme.totalWeeks;
     if (!calculatedTotalWeeks && earliestDate && latestDate) {
       const msPerDay = 1000 * 60 * 60 * 24;
@@ -3828,9 +3487,6 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
     const currentClosedCount = (programme.closedWeeks || []).length;
     const isLastWeek = currentClosedCount + 1 >= calculatedTotalWeeks;
 
-    // Non-last week: the next week starts a fresh cycle (Open Meeting -> re-
-    // upload -> ...), so reset to Draft. The last week goes to Close-Out
-    // Eligible.
     let nextCycleStatus = "Draft";
     if (isLastWeek) {
       nextCycleStatus = "Close-Out Eligible";
@@ -3861,10 +3517,6 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
     if (!updatedProgramme) {
       return sendError(res, "Failed to update programme", 500);
     }
-
-    console.log(
-      `[close-week] Week ${weekNumber} closed. Total closed weeks: ${updatedProgramme.closedWeeks.length}`,
-    );
 
     const formatDateShort = (d) => {
       const months = [
@@ -4050,10 +3702,6 @@ router.patch("/:id/link-project", protect, async (req, res) => {
   }
 });
 
-// ============================================================================
-// GOVERNANCE PROOF API - Demo endpoint for client verification
-// GET /api/programmes/governance-proof/:programmeId
-// ============================================================================
 router.get("/governance-proof/:programmeId", protect, async (req, res) => {
   try {
     const CycleHistory = require("../models/CycleHistory");
@@ -4068,12 +3716,10 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Helper function to calculate RAG
     const calculateRAGDemo = (activity, referenceDate) => {
       const parseDateLocal = (dateStr) => {
         if (!dateStr) return null;
         const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
-        // Try YYYY-MM-DD format first
         const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
         if (isoMatch) {
           return new Date(
@@ -4082,7 +3728,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
             parseInt(isoMatch[3]),
           );
         }
-        // Try DD-MMM-YY format
         const months = {
           Jan: 0,
           Feb: 1,
@@ -4154,9 +3799,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       };
     };
 
-    // =========================================================================
-    // PROOF 1: State Machine
-    // =========================================================================
     const cycleTransitions = {
       Draft: ["Meeting Open"],
       Uploaded: ["Meeting Open"],
@@ -4224,9 +3866,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       },
     };
 
-    // =========================================================================
-    // PROOF 2: RAG Classification - Dynamic Calculation
-    // =========================================================================
     const sampleActivities = activities.slice(0, 5).map((activity) => {
       const currentRAG = calculateRAGDemo(activity, today);
       const futureDate = new Date(today);
@@ -4274,9 +3913,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       },
     };
 
-    // =========================================================================
-    // PROOF 3: Backend Governance Rules
-    // =========================================================================
     const requiredActions = actions.filter((a) => a.type === "Required");
     const optionalActions = actions.filter((a) => a.type === "Optional");
     const openRequiredActions = requiredActions.filter(
@@ -4296,9 +3932,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
     const closedWeeksCount = (programme.closedWeeks || []).length;
     const remainingWeeks = totalWeeks - closedWeeksCount;
 
-    // readyToClose logic based on cycle status:
-    // - Draft / Uploaded / Meeting Open: Always No
-    // - Execution / Close-Out Eligible: Yes if all required actions complete
     let readyToClose = false;
     if (
       programme.cycleStatus === "Draft" ||
@@ -4313,22 +3946,15 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       readyToClose = openRequiredActions.length === 0;
     }
 
-    // =========================================================================
-    // GOVERNANCE DASHBOARD DATA - Score, Metrics, Stats, Charts
-    // =========================================================================
-
-    // Get cycle history for this programme
     const cycleHistory = await CycleHistory.find({
       programme: req.params.programmeId,
     })
       .populate("closedBy", "name")
       .sort({ createdAt: -1 });
 
-    // Parse date helper for dashboard calculations - supports both formats
     const parseDateDashboard = (dateStr) => {
       if (!dateStr) return null;
       const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
-      // Try YYYY-MM-DD format first
       const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
       if (isoMatch) {
         return new Date(
@@ -4337,7 +3963,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
           parseInt(isoMatch[3]),
         );
       }
-      // Try DD-MMM-YY format
       const months = {
         Jan: 0,
         Feb: 1,
@@ -4361,7 +3986,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       return new Date(year, month, day);
     };
 
-    // Calculate programme span
     let earliestStartDate = null;
     let latestEndDate = null;
     for (const activity of activities) {
@@ -4384,7 +4008,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       );
       totalWeeksFromProgramme = Math.ceil(totalDays / 7);
 
-      // Use lookaheadStartDate (upload date) for week calculation
       const referenceDate = programme.lookaheadStartDate
         ? new Date(programme.lookaheadStartDate)
         : earliestStartDate;
@@ -4393,7 +4016,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       currentWeekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
     }
 
-    // Calculate weeks closed on time (Normal Close vs PM Override)
     const weeksClosedOnTime = cycleHistory.filter(
       (c) => c.closeType === "Normal Close",
     ).length;
@@ -4401,7 +4023,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       (c) => c.closeType === "PM Override",
     ).length;
 
-    // Calculate Weeks Closed On Time Score
     let weeksClosedOnTimeScore = 0;
     if (totalWeeksFromProgramme > 0) {
       weeksClosedOnTimeScore = Math.round(
@@ -4409,7 +4030,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       );
     }
 
-    // Calculate metrics from closed weeks
     let totalActionsFromClosedWeeks = 0;
     let closedActionsFromClosedWeeks = 0;
     for (const cycle of cycleHistory) {
@@ -4417,7 +4037,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       closedActionsFromClosedWeeks += cycle.stats?.actionsCompleted || 0;
     }
 
-    // Overdue Action Rate Score
     const overdueFromClosedWeeks = Math.max(
       0,
       totalActionsFromClosedWeeks - closedActionsFromClosedWeeks,
@@ -4433,7 +4052,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         ? Math.max(0, 100 - overdueRate * 2)
         : 100;
 
-    // Action Closure Speed Score
     const closureRate =
       totalActionsFromClosedWeeks > 0
         ? Math.round(
@@ -4442,12 +4060,10 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         : 0;
     const actionClosureSpeedScore = closureRate;
 
-    // Build weekly data
     const weeklyReadinessData = [];
     const actionsData = [];
     const ragTrendData = [];
 
-    // Helper to calculate RAG for activities in a specific week
     const calculateWeekRAG = (weekStartDate, weekEndDate) => {
       let green = 0,
         amber = 0,
@@ -4469,7 +4085,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       return { green, amber, red, total: green + amber + red };
     };
 
-    // Generate weekly data
     if (earliestStartDate) {
       const weeksToGenerate = totalWeeksFromProgramme;
       for (let weekNum = 1; weekNum <= weeksToGenerate; weekNum++) {
@@ -4511,7 +4126,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       }
     }
 
-    // Calculate average readiness
     const currentWeekIndex = Math.min(
       currentWeekNumber,
       weeklyReadinessData.length,
@@ -4525,7 +4139,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
           )
         : 0;
 
-    // Calculate Readiness Trend Stability Score
     let readinessTrendScore = 65;
     if (pastAndCurrentWeeks.length >= 2) {
       const readinessValues = pastAndCurrentWeeks.map((w) => w.value);
@@ -4542,7 +4155,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       readinessTrendScore = 100;
     }
 
-    // PM Override Frequency Score
     const totalCyclesForProgramme = cycleHistory.length;
     const pmOverridesForProgramme = cycleHistory.filter(
       (c) => c.closeType === "PM Override",
@@ -4553,7 +4165,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         ? Math.round((normalWeeks / totalCyclesForProgramme) * 100)
         : 100;
 
-    // Calculate dynamic weights
     const allScores = {
       weeksClosedOnTime: weeksClosedOnTimeScore,
       overdueActionRate: overdueActionRateScore,
@@ -4577,7 +4188,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       }
     }
 
-    // Calculate overall governance score
     const governanceScore = Math.round(
       (allScores.weeksClosedOnTime * dynamicWeights.weeksClosedOnTime +
         allScores.overdueActionRate * dynamicWeights.overdueActionRate +
@@ -4588,12 +4198,10 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         100,
     );
 
-    // Determine governance status
     let governanceStatus = "GREEN";
     if (governanceScore < 50) governanceStatus = "RED";
     else if (governanceScore < 70) governanceStatus = "AMBER";
 
-    // Get recurring blockers count
     let blockerTypes = new Set();
     activities.forEach((a) => {
       if (a.isBlocked && a.blocker) {
@@ -4601,7 +4209,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       }
     });
 
-    // Governance Dashboard Data Object
     const governanceDashboard = {
       title: "Governance Dashboard - Score & Metrics",
       description:
@@ -4774,9 +4381,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       },
     };
 
-    // =========================================================================
-    // SAVE TO DATABASE (so client can see in MongoDB Compass)
-    // =========================================================================
     const GovernanceProof = require("../models/GovernanceProof");
 
     const proofDocument = {
@@ -4793,15 +4397,8 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
       },
     };
 
-    // Save to database - creates "governanceproofs" collection
     const savedProof = await GovernanceProof.create(proofDocument);
-    console.log(
-      `[Governance Proof] Saved to database with ID: ${savedProof._id}`,
-    );
 
-    // =========================================================================
-    // RETURN RESPONSE - PROOF 2 & PROOF 3 ONLY
-    // =========================================================================
     return sendSuccess(
       res,
       {
@@ -4812,7 +4409,6 @@ router.get("/governance-proof/:programmeId", protect, async (req, res) => {
         programmeId: req.params.programmeId,
         programmeName: programme.name,
 
-        // Governance Dashboard - Score, Metrics, Stats, Charts
         GovernanceDashboard: governanceDashboard,
       },
       "Governance Proof",

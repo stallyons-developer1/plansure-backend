@@ -48,12 +48,6 @@ async function analyzePdf() {
       /^([A-Z]{1,4}[-_]?[A-Z]{0,3}[-_]?\d+[\.\d]*|[A-Z]{2,}[-_][A-Z]{0,3}[-_]?\d+|VI_+[A-Z0-9]+)/;
     const datePattern = /\d{2}-[A-Za-z]{3}-\d{2}/;
 
-    console.log(
-      "\n📍 X Position Analysis (first 30 rows with potential activity IDs):\n",
-    );
-    console.log("Format: [X position] text content");
-    console.log("-".repeat(80));
-
     let rowsWithActivityIds = 0;
     let rowsAnalyzed = 0;
 
@@ -72,7 +66,6 @@ async function analyzePdf() {
       if (hasActivityId || hasDate) {
         rowsWithActivityIds++;
         if (rowsWithActivityIds <= 30) {
-          console.log(`\n📌 Row Y=${y}:`);
           row.forEach((item) => {
             const marker = activityIdPattern.test(item.text)
               ? "🆔"
@@ -81,9 +74,6 @@ async function analyzePdf() {
                 : /^\d+$/.test(item.text)
                   ? "⏱️"
                   : "  ";
-            console.log(
-              `   ${marker} [X: ${item.x.toString().padStart(4)}] "${item.text}"`,
-            );
           });
         }
       }
@@ -111,7 +101,6 @@ async function analyzePdf() {
 
     const analyzePositions = (positions, name) => {
       if (positions.length === 0) {
-        console.log(`\n${name}: No items found!`);
         return;
       }
       positions.sort((a, b) => a - b);
@@ -121,14 +110,6 @@ async function analyzePdf() {
         positions.reduce((a, b) => a + b, 0) / positions.length,
       );
       const median = positions[Math.floor(positions.length / 2)];
-
-      console.log(`\n${name}:`);
-      console.log(`   Count: ${positions.length}`);
-      console.log(`   Min X: ${min}`);
-      console.log(`   Max X: ${max}`);
-      console.log(`   Avg X: ${avg}`);
-      console.log(`   Median X: ${median}`);
-      console.log(`   Sample positions: ${positions.slice(0, 10).join(", ")}`);
     };
 
     analyzePositions(activityIdPositions, "🆔 Activity IDs");

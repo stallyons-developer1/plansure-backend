@@ -2,11 +2,6 @@ const PDFDocument = require("pdfkit");
 const fs = require("fs");
 const path = require("path");
 
-// Test programme: 6 weeks starting 20 June 2026 (20-Jun-26 -> 31-Jul-26).
-// Today is 8 July 2026, so this straddles the current 2-week window:
-//   " A" = Actual/Completed -> Blue    " B" = Baseline/Blocked -> Red (past finish)
-//   no suffix, finish < today  -> Red/Blocked (overdue)
-//   no suffix, finish >= today -> Grey/Unassigned (upcoming / in lookahead)
 const generatePDF = () => {
   const doc = new PDFDocument({ size: "A4", layout: "landscape" });
   const outputPath =
@@ -19,7 +14,20 @@ const generatePDF = () => {
   doc.pipe(writeStream);
 
   const formatDate = (date, status = null) => {
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const months = [
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
+    ];
     const day = String(date.getDate()).padStart(2, "0");
     const month = months[date.getMonth()];
     const year = String(date.getFullYear()).slice(-2);
@@ -29,43 +37,150 @@ const generatePDF = () => {
     return `${day}-${month}-${year}${suffix}`;
   };
 
-  // Month indices are 0-based: Jun=5, Jul=6.
   const activities = [
-    { id: "J20-PROG", name: "June-July 6-Week Construction Programme", duration: 42, start: new Date(2026, 5, 20), finish: new Date(2026, 6, 31), isHeader: true },
+    {
+      id: "J20-PROG",
+      name: "June-July 6-Week Construction Programme",
+      duration: 42,
+      start: new Date(2026, 5, 20),
+      finish: new Date(2026, 6, 31),
+      isHeader: true,
+    },
 
-    // Week 1 (Jun 20-26) - completed + overdue
-    { id: "J20-001", name: "Site Mobilisation", duration: 3, start: new Date(2026, 5, 20), finish: new Date(2026, 5, 22), status: "completed" },
-    { id: "J20-002", name: "Survey & Setting Out", duration: 3, start: new Date(2026, 5, 21), finish: new Date(2026, 5, 23), status: "completed" },
-    { id: "J20-003", name: "Site Clearance", duration: 3, start: new Date(2026, 5, 24), finish: new Date(2026, 5, 26), status: null }, // overdue
+    {
+      id: "J20-001",
+      name: "Site Mobilisation",
+      duration: 3,
+      start: new Date(2026, 5, 20),
+      finish: new Date(2026, 5, 22),
+      status: "completed",
+    },
+    {
+      id: "J20-002",
+      name: "Survey & Setting Out",
+      duration: 3,
+      start: new Date(2026, 5, 21),
+      finish: new Date(2026, 5, 23),
+      status: "completed",
+    },
+    {
+      id: "J20-003",
+      name: "Site Clearance",
+      duration: 3,
+      start: new Date(2026, 5, 24),
+      finish: new Date(2026, 5, 26),
+      status: null,
+    },
 
-    // Week 2 (Jun 27 - Jul 3) - overdue + blocked
-    { id: "J20-004", name: "Bulk Excavation", duration: 4, start: new Date(2026, 5, 27), finish: new Date(2026, 5, 30), status: null }, // overdue
-    { id: "J20-005", name: "Foundation Preparation", duration: 4, start: new Date(2026, 5, 29), finish: new Date(2026, 6, 2), status: "blocked" }, // blocked
-    { id: "J20-006", name: "Rebar Fixing", duration: 3, start: new Date(2026, 6, 1), finish: new Date(2026, 6, 3), status: null }, // overdue
+    {
+      id: "J20-004",
+      name: "Bulk Excavation",
+      duration: 4,
+      start: new Date(2026, 5, 27),
+      finish: new Date(2026, 5, 30),
+      status: null,
+    },
+    {
+      id: "J20-005",
+      name: "Foundation Preparation",
+      duration: 4,
+      start: new Date(2026, 5, 29),
+      finish: new Date(2026, 6, 2),
+      status: "blocked",
+    },
+    {
+      id: "J20-006",
+      name: "Rebar Fixing",
+      duration: 3,
+      start: new Date(2026, 6, 1),
+      finish: new Date(2026, 6, 3),
+      status: null,
+    },
 
-    // Week 3 (Jul 4-10) - straddles today (8 Jul)
-    { id: "J20-007", name: "Concrete Pour - Foundations", duration: 4, start: new Date(2026, 6, 4), finish: new Date(2026, 6, 7), status: null }, // overdue (finish 7 Jul)
-    { id: "J20-008", name: "Curing & Formwork Strip", duration: 4, start: new Date(2026, 6, 6), finish: new Date(2026, 6, 9), status: null }, // upcoming (finish 9 Jul)
-    { id: "J20-009", name: "Ground Floor Slab", duration: 3, start: new Date(2026, 6, 8), finish: new Date(2026, 6, 10), status: null }, // upcoming (starts today)
+    {
+      id: "J20-007",
+      name: "Concrete Pour - Foundations",
+      duration: 4,
+      start: new Date(2026, 6, 4),
+      finish: new Date(2026, 6, 7),
+      status: null,
+    },
+    {
+      id: "J20-008",
+      name: "Curing & Formwork Strip",
+      duration: 4,
+      start: new Date(2026, 6, 6),
+      finish: new Date(2026, 6, 9),
+      status: null,
+    },
+    {
+      id: "J20-009",
+      name: "Ground Floor Slab",
+      duration: 3,
+      start: new Date(2026, 6, 8),
+      finish: new Date(2026, 6, 10),
+      status: null,
+    },
 
-    // Week 4 (Jul 11-17) - upcoming (in the current 2-week lookahead)
-    { id: "J20-010", name: "Steel Erection", duration: 5, start: new Date(2026, 6, 11), finish: new Date(2026, 6, 15), status: null },
-    { id: "J20-011", name: "Metal Decking", duration: 5, start: new Date(2026, 6, 13), finish: new Date(2026, 6, 17), status: null },
+    {
+      id: "J20-010",
+      name: "Steel Erection",
+      duration: 5,
+      start: new Date(2026, 6, 11),
+      finish: new Date(2026, 6, 15),
+      status: null,
+    },
+    {
+      id: "J20-011",
+      name: "Metal Decking",
+      duration: 5,
+      start: new Date(2026, 6, 13),
+      finish: new Date(2026, 6, 17),
+      status: null,
+    },
 
-    // Week 5 (Jul 18-24) - upcoming
-    { id: "J20-012", name: "MEP Rough-In", duration: 5, start: new Date(2026, 6, 18), finish: new Date(2026, 6, 22), status: null },
+    {
+      id: "J20-012",
+      name: "MEP Rough-In",
+      duration: 5,
+      start: new Date(2026, 6, 18),
+      finish: new Date(2026, 6, 22),
+      status: null,
+    },
 
-    // Week 6 (Jul 25-31) - upcoming
-    { id: "J20-013", name: "Facade Installation", duration: 5, start: new Date(2026, 6, 25), finish: new Date(2026, 6, 29), status: null },
-    { id: "J20-014", name: "Final Inspection", duration: 3, start: new Date(2026, 6, 29), finish: new Date(2026, 6, 31), status: null },
+    {
+      id: "J20-013",
+      name: "Facade Installation",
+      duration: 5,
+      start: new Date(2026, 6, 25),
+      finish: new Date(2026, 6, 29),
+      status: null,
+    },
+    {
+      id: "J20-014",
+      name: "Final Inspection",
+      duration: 3,
+      start: new Date(2026, 6, 29),
+      finish: new Date(2026, 6, 31),
+      status: null,
+    },
   ];
 
-  doc.fontSize(14).font("Helvetica-Bold").text("June-July Construction Project / 2026 (6-Week Cycle)", 50, 30);
+  doc
+    .fontSize(14)
+    .font("Helvetica-Bold")
+    .text("June-July Construction Project / 2026 (6-Week Cycle)", 50, 30);
   doc.fontSize(10).font("Helvetica").text("20/06/2026", 700, 30);
 
   const tableTop = 60;
   const colWidths = [80, 220, 60, 80, 80];
-  const headers = ["Activity ID", "Activity Name", "Duration", "Start", "Finish"];
+  const headers = [
+    "Activity ID",
+    "Activity Name",
+    "Duration",
+    "Start",
+    "Finish",
+  ];
   const rowHeight = 22;
   const tableWidth = colWidths.reduce((a, b) => a + b, 0);
 
@@ -84,7 +199,10 @@ const generatePDF = () => {
       doc.fillColor("#D35400").rect(50, y, tableWidth, rowHeight).fill();
       doc.fillColor("#ffffff");
     } else {
-      doc.fillColor(index % 2 === 0 ? "#f5f5f5" : "#ffffff").rect(50, y, tableWidth, rowHeight).fill();
+      doc
+        .fillColor(index % 2 === 0 ? "#f5f5f5" : "#ffffff")
+        .rect(50, y, tableWidth, rowHeight)
+        .fill();
       doc.fillColor("#333333");
     }
     doc.font(isHeader ? "Helvetica-Bold" : "Helvetica").fontSize(8);
@@ -112,17 +230,24 @@ const generatePDF = () => {
   });
   for (let i = 0; i <= activities.length + 1; i++) {
     const lineY = tableTop + i * rowHeight;
-    doc.moveTo(50, lineY).lineTo(50 + tableWidth, lineY).stroke();
+    doc
+      .moveTo(50, lineY)
+      .lineTo(50 + tableWidth, lineY)
+      .stroke();
   }
 
-  doc.fontSize(8).fillColor("#888888").font("Helvetica")
-    .text("Generated by PlanSure | Test Programme (6-week cycle from 20-Jun-2026)", 50, tableBottom + 15);
+  doc
+    .fontSize(8)
+    .fillColor("#888888")
+    .font("Helvetica")
+    .text(
+      "Generated by PlanSure | Test Programme (6-week cycle from 20-Jun-2026)",
+      50,
+      tableBottom + 15,
+    );
 
   doc.end();
-  writeStream.on("finish", () => {
-    console.log(`PDF generated at: ${outputPath}`);
-    console.log(`${activities.length} rows (1 header + ${activities.length - 1} activities), 20-Jun-26 -> 31-Jul-26`);
-  });
+  writeStream.on("finish", () => {});
 };
 
 generatePDF();
