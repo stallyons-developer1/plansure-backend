@@ -114,6 +114,8 @@ const {
   getCycleEndDate,
   computeGovernanceStatus,
   syncProgrammeGovernance,
+  refreshProgrammeGovernance,
+  groupActionsByActivity,
 } = require("../utils/governance");
 
 const calculateRAG = (activity, today, linkedActions, cycleEndDate) => {
@@ -3418,6 +3420,24 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       }
     }
 
+    const Action = require("../models/Action");
+
+    const allProgActions = await Action.find({
+      programme: req.params.id,
+    }).lean();
+    refreshProgrammeGovernance(
+      programme,
+      groupActionsByActivity(allProgActions),
+      new Date(),
+    );
+
+    const ragBucket = (activity) => {
+      const rag = activity.ragStatus || "Grey";
+      if (rag === "Blue" || rag === "Green") return "green";
+      if (rag === "Red") return "red";
+      return "amber";
+    };
+
     let weekStats = {
       totalActivities: 0,
       green: 0,
@@ -3427,32 +3447,22 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       actionsCompleted: 0,
     };
 
+    const statLookaheadEnd = new Date(weekAnchorDate);
+    statLookaheadEnd.setDate(statLookaheadEnd.getDate() + 41);
+    statLookaheadEnd.setHours(23, 59, 59, 999);
+
     for (const activity of activities) {
       const actStart = parseDate(activity.startDate);
-      const actFinish = parseDate(activity.finishDate);
       if (!actStart) continue;
 
-      const startsThisWeek =
-        actStart >= weekStartDate && actStart <= weekEndDate;
-      const spansThisWeek =
-        actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
+      const inLookahead =
+        actStart >= weekAnchorDate && actStart <= statLookaheadEnd;
 
-      if (startsThisWeek || spansThisWeek) {
+      if (inLookahead) {
         weekStats.totalActivities++;
-        const isCompleted =
-          activity.status === "Completed" ||
-          (activity.finishDate && activity.finishDate.includes(" A"));
-        if (isCompleted) {
-          weekStats.green++;
-        } else if (actFinish && actFinish < today) {
-          weekStats.red++;
-        } else {
-          weekStats.amber++;
-        }
+        weekStats[ragBucket(activity)]++;
       }
     }
-
-    const Action = require("../models/Action");
 
     const previousClosedWeeks = closedWeeks.filter(
       (w) => w.weekNumber < weekNumber,

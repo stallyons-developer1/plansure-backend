@@ -699,162 +699,89 @@ router.get("/governance", protect, async (req, res) => {
       return { green, amber, red, total: green + amber + red };
     };
 
-    if (earliestStartDate) {
-      const weeksToGenerate = totalWeeksFromProgramme;
-
-      for (let weekNum = 1; weekNum <= weeksToGenerate; weekNum++) {
-        const weekStartDate = new Date(earliestStartDate);
-        weekStartDate.setDate(weekStartDate.getDate() + (weekNum - 1) * 7);
-        weekStartDate.setHours(0, 0, 0, 0);
-
-        const weekEndDate = new Date(weekStartDate);
-        weekEndDate.setDate(weekStartDate.getDate() + 6);
-        weekEndDate.setHours(23, 59, 59, 999);
-
-        const rag = calculateWeekRAG(weekStartDate, weekEndDate, allActivities);
-        const readinessPercent =
-          rag.total > 0 ? Math.round((rag.green / rag.total) * 100) : 0;
-
-        const matchingCycle = cycleHistory.find(
-          (c) => c.weekNumber === weekNum,
-        );
-
-        weeklyReadinessData.push({
-          week: `W${weekNum}`,
-          value: matchingCycle
-            ? Math.round(
-                ((matchingCycle.stats?.green || 0) /
-                  (matchingCycle.stats?.totalActivities || 1)) *
-                  100,
-              )
-            : 0,
-        });
-
-        actionsData.push({
-          week: `W${weekNum}`,
-          raised: matchingCycle ? matchingCycle.stats?.actionsTotal || 0 : 0,
-          closed: matchingCycle
-            ? matchingCycle.stats?.actionsCompleted || 0
-            : 0,
-        });
-
-        ragTrendData.push({
-          week: `W${weekNum}`,
-          green: matchingCycle ? matchingCycle.stats?.green || 0 : 0,
-          amber: matchingCycle ? matchingCycle.stats?.amber || 0 : 0,
-          red: matchingCycle ? matchingCycle.stats?.red || 0 : 0,
-        });
-
-        const formatDate = (d) => {
-          const months = [
-            "Jan",
-            "Feb",
-            "Mar",
-            "Apr",
-            "May",
-            "Jun",
-            "Jul",
-            "Aug",
-            "Sep",
-            "Oct",
-            "Nov",
-            "Dec",
-          ];
-          return `${String(d.getDate()).padStart(2, "0")} ${months[d.getMonth()]} ${d.getFullYear()}`;
-        };
-
-        let weekStatus;
-        let weekIcon;
-        let closeType;
-
-        if (matchingCycle) {
-          weekStatus =
-            matchingCycle.closeType === "Normal Close" ? "Green" : "Amber";
-          weekIcon =
-            matchingCycle.closeType === "Normal Close" ? "check" : "warning";
-          closeType = matchingCycle.closeType;
-        } else if (weekEndDate < today) {
-          weekStatus = rag.red > rag.green ? "Amber" : "Green";
-          weekIcon = weekStatus === "Green" ? "check" : "warning";
-          closeType = "Auto-calculated";
-        } else if (weekStartDate <= today && weekEndDate >= today) {
-          weekStatus = "Current";
-          weekIcon = "current";
-          closeType = "In Progress";
-        } else {
-          weekStatus = "Upcoming";
-          weekIcon = "upcoming";
-          closeType = "Upcoming";
-        }
-
-        const weekActivities = [];
-        for (const activity of allActivities) {
-          const actStart = parseDate(activity.startDate);
-          const actFinish = parseDate(activity.finishDate);
-
-          if (!actStart) continue;
-
-          const startsThisWeek =
-            actStart >= weekStartDate && actStart <= weekEndDate;
-          const spansThisWeek =
-            actStart < weekStartDate && actFinish && actFinish >= weekStartDate;
-
-          if (!startsThisWeek && !spansThisWeek) continue;
-
-          const isCompleted =
-            activity.status === "Completed" ||
-            (activity.startDate && activity.startDate.includes(" A")) ||
-            (activity.finishDate && activity.finishDate.includes(" A"));
-
-          const activityRAG = activity.ragStatus || "Grey";
-
-          weekActivities.push({
-            activityId: activity.activityId,
-            activityName: activity.activityName,
-            startDate: activity.startDate,
-            finishDate: activity.finishDate,
-            duration: activity.duration,
-            ragStatus: activityRAG,
-            activityStatus: activity.activityStatus || "Ready",
-            ownerName: activity.ownerName || "-",
-            isCompleted: isCompleted,
-            projectName: activity.projectName || "Unknown",
-          });
-        }
-
-        weekActivities.sort((a, b) => {
-          const ragOrder = { Red: 1, Amber: 2, Green: 3 };
-          return (ragOrder[a.ragStatus] || 4) - (ragOrder[b.ragStatus] || 4);
-        });
-
-        historicalWeeks.push({
-          week: weekNum,
-          date: `${formatDate(weekStartDate)} - ${formatDate(weekEndDate)}`,
-          startDate: formatDate(weekStartDate),
-          endDate: formatDate(weekEndDate),
-          status: weekStatus,
-          icon: weekIcon,
-          score: matchingCycle?.score || readinessPercent,
-          stats: matchingCycle?.stats || {
-            totalActivities: rag.total,
-            green: rag.green,
-            amber: rag.amber,
-            red: rag.red,
-            actionsTotal: 0,
-            actionsCompleted: 0,
-          },
-          closeType: closeType,
-          notes: matchingCycle?.notes || "",
-          activities: weekActivities,
-        });
-      }
+    const progToProject = {};
+    for (const p of programmes) {
+      progToProject[String(p._id)] = String(p.project);
+    }
+    const cyclesByProject = {};
+    for (const c of cycleHistory) {
+      const projId = progToProject[String(c.programme)];
+      if (!projId) continue;
+      (cyclesByProject[projId] = cyclesByProject[projId] || []).push(c);
+    }
+    for (const projId of Object.keys(cyclesByProject)) {
+      cyclesByProject[projId].sort(
+        (a, b) =>
+          new Date(a.closedAt || a.createdAt) -
+          new Date(b.closedAt || b.createdAt),
+      );
+    }
+    let maxCycles = 0;
+    for (const projId of Object.keys(cyclesByProject)) {
+      maxCycles = Math.max(maxCycles, cyclesByProject[projId].length);
     }
 
-    const currentWeekIndex = Math.min(
-      currentWeekNumber,
-      weeklyReadinessData.length,
-    );
-    const pastAndCurrentWeeks = weeklyReadinessData.slice(0, currentWeekIndex);
+    for (let seq = 1; seq <= maxCycles; seq++) {
+      const cohort = [];
+      for (const projId of Object.keys(cyclesByProject)) {
+        const c = cyclesByProject[projId][seq - 1];
+        if (c) cohort.push(c);
+      }
+      if (cohort.length === 0) continue;
+      const n = cohort.length;
+      const sum = (fn) => cohort.reduce((s, c) => s + (fn(c) || 0), 0);
+      const totGreen = sum((c) => c.stats?.green);
+      const totAmber = sum((c) => c.stats?.amber);
+      const totRed = sum((c) => c.stats?.red);
+      const totActivities = sum((c) => c.stats?.totalActivities);
+      const totActionsRaised = sum((c) => c.stats?.actionsTotal);
+      const totActionsClosed = sum((c) => c.stats?.actionsCompleted);
+      const readiness =
+        totActivities > 0 ? Math.round((totGreen / totActivities) * 100) : 0;
+      const pmOverrides = cohort.filter(
+        (c) => c.closeType === "PM Override",
+      ).length;
+      const status = pmOverrides > 0 ? "Amber" : "Green";
+      const icon = pmOverrides > 0 ? "warning" : "check";
+      const closeType =
+        pmOverrides > 0 ? `${pmOverrides}/${n} PM Override` : "Normal Close";
+
+      weeklyReadinessData.push({ week: `W${seq}`, value: readiness });
+      actionsData.push({
+        week: `W${seq}`,
+        raised: totActionsRaised,
+        closed: totActionsClosed,
+      });
+      ragTrendData.push({
+        week: `W${seq}`,
+        green: totGreen,
+        amber: totAmber,
+        red: totRed,
+      });
+      historicalWeeks.push({
+        week: seq,
+        date: `Combined total · ${n} project${n === 1 ? "" : "s"}`,
+        startDate: "",
+        endDate: "",
+        status,
+        icon,
+        score: readiness,
+        stats: {
+          totalActivities: totActivities,
+          green: totGreen,
+          amber: totAmber,
+          red: totRed,
+          actionsTotal: totActionsRaised,
+          actionsCompleted: totActionsClosed,
+        },
+        closeType,
+        notes: `${n} project${n === 1 ? "" : "s"} completed Week ${seq}`,
+        activities: [],
+        projectCount: n,
+      });
+    }
+
+    const pastAndCurrentWeeks = weeklyReadinessData;
     const avgReadiness =
       pastAndCurrentWeeks.length > 0
         ? Math.round(
@@ -1351,6 +1278,36 @@ router.get("/weekly", protect, async (req, res) => {
     let currentWeekStart = null;
     let currentWeekEnd = null;
 
+    // The Weekly Dashboard shows the project's LATEST COMPLETED week, cumulative
+    // across all of its programmes/cycles, using the ACTUAL open -> close dates
+    // (week start -> the day it was actually closed), not a fixed 7-day window.
+    const CycleHistoryModel = require("../models/CycleHistory");
+    const completedCycles = await CycleHistoryModel.find({
+      programme: { $in: programmeIds },
+    })
+      .sort({ createdAt: 1 })
+      .lean();
+    const completedSnapshot =
+      completedCycles.length > 0
+        ? completedCycles[completedCycles.length - 1]
+        : null;
+    const MONTHS_SHORT = [
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
+    ];
+    const fmtWeekDate = (d) =>
+      `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]} ${d.getFullYear()}`;
+
     const programmeActivities =
       activeProgramme?.extractedData?.activities || [];
     let earliestStartDate = null;
@@ -1365,7 +1322,23 @@ router.get("/weekly", protect, async (req, res) => {
       }
     }
 
-    if (earliestStartDate) {
+    if (completedSnapshot) {
+      const openDate = completedSnapshot.dateRange?.startDate
+        ? new Date(completedSnapshot.dateRange.startDate)
+        : new Date(completedSnapshot.createdAt);
+      openDate.setHours(0, 0, 0, 0);
+      const closeDate = new Date(completedSnapshot.createdAt);
+
+      currentWeekStart = new Date(openDate);
+      currentWeekEnd = new Date(closeDate);
+      currentWeekEnd.setHours(23, 59, 59, 999);
+
+      weekNumber = `Week ${completedCycles.length}`;
+      weekOpened = fmtWeekDate(openDate);
+      closeDeadline = fmtWeekDate(closeDate);
+      weekDates = `(${openDate.getDate()} ${MONTHS_SHORT[openDate.getMonth()]} - ${closeDate.getDate()} ${MONTHS_SHORT[closeDate.getMonth()]} ${closeDate.getFullYear()})`;
+      cycleStatus = "Closed";
+    } else if (earliestStartDate) {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       earliestStartDate.setHours(0, 0, 0, 0);
@@ -1694,6 +1667,34 @@ router.get("/weekly", protect, async (req, res) => {
       });
     }
 
+    // When showing a completed week, report that cycle's close-time snapshot
+    // instead of live figures.
+    const snapStats = completedSnapshot?.stats || {};
+    const outActivities = completedSnapshot
+      ? snapStats.totalActivities || 0
+      : totalActivities;
+    const outGreen = completedSnapshot ? snapStats.green || 0 : greenCount;
+    const outAmber = completedSnapshot ? snapStats.amber || 0 : amberCount;
+    const outRed = completedSnapshot ? snapStats.red || 0 : redCount;
+    const outGreenPct = completedSnapshot
+      ? snapStats.totalActivities
+        ? Math.round((snapStats.green / snapStats.totalActivities) * 100)
+        : 0
+      : greenPercentage;
+    const outActionsClosed = completedSnapshot
+      ? snapStats.actionsCompleted || 0
+      : closedActions.length;
+    const outActionsTotal = completedSnapshot
+      ? snapStats.actionsTotal || 0
+      : openActions.length + closedActions.length;
+    const outOpenActions = completedSnapshot
+      ? Math.max(0, outActionsTotal - outActionsClosed)
+      : openActions.length;
+    const outBlocked = completedSnapshot ? 0 : blockedCount;
+    const outOverdue = completedSnapshot ? 0 : overdueActions.length;
+    const outOpenRequired = completedSnapshot ? 0 : openRequiredActions.length;
+    const outReadyForClose = completedSnapshot ? false : readyForClose;
+
     return sendSuccess(res, {
       weekly: {
         project: {
@@ -1710,27 +1711,28 @@ router.get("/weekly", protect, async (req, res) => {
           status: cycleStatus,
           weekOpened,
           closeDeadline,
+          completedCount: completedCycles.length,
           planner: activeProgramme?.uploadedBy?.name || "-",
         },
         stats: {
-          activitiesInLookahead: totalActivities,
-          greenActivities: greenCount,
-          greenPercentage,
-          blockedByActions: blockedCount,
-          openActions: openActions.length,
-          overdueActions: overdueActions.length,
-          openRequiredActions: openRequiredActions.length,
-          readyForClose,
+          activitiesInLookahead: outActivities,
+          greenActivities: outGreen,
+          greenPercentage: outGreenPct,
+          blockedByActions: outBlocked,
+          openActions: outOpenActions,
+          overdueActions: outOverdue,
+          openRequiredActions: outOpenRequired,
+          readyForClose: outReadyForClose,
         },
         ragDistribution: {
-          green: greenCount,
-          amber: amberCount,
-          red: redCount,
+          green: outGreen,
+          amber: outAmber,
+          red: outRed,
         },
         actionsByStatus: {
-          open: openActions.length,
-          closed: closedActions.length,
-          overdue: overdueActions.length,
+          open: outOpenActions,
+          closed: outActionsClosed,
+          overdue: outOverdue,
         },
         blockedActivities,
         weeklyPlanPreview,
