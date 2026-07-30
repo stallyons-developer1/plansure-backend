@@ -179,6 +179,8 @@ router.get("/stats", protect, async (req, res) => {
     let currentCycle = null;
     let cycleStatus = null;
     let activeProgramme = null;
+    let closedCycleCount = 0;
+    let cycleWeekStart = null;
 
     const sortedProgrammes = programmes.sort(
       (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
@@ -201,18 +203,31 @@ router.get("/stats", protect, async (req, res) => {
         }
       }
 
-      if (earliestStartDate) {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+      // Mirror the Weekly Dashboard: the week shown is the project's latest
+      // CLOSED week, counted cumulatively across all of its programmes. The
+      // old calendar-drift maths ignored closes entirely and clamped to W1
+      // whenever the programme's first activity was still in the future.
+      const CycleHistoryForWeek = require("../models/CycleHistory");
+      closedCycleCount = await CycleHistoryForWeek.countDocuments({
+        programme: { $in: programmeIds },
+      });
+
+      if (closedCycleCount > 0) {
+        currentCycle = `W${closedCycleCount}`;
+        const latestCycle = await CycleHistoryForWeek.findOne({
+          programme: { $in: programmeIds },
+        })
+          .sort({ createdAt: -1 })
+          .lean();
+        cycleWeekStart = latestCycle?.dateRange?.startDate
+          ? new Date(latestCycle.dateRange.startDate)
+          : new Date(latestCycle.createdAt);
+        cycleWeekStart.setHours(0, 0, 0, 0);
+      } else if (earliestStartDate) {
+        // Nothing closed yet: the first week is the one in progress.
         earliestStartDate.setHours(0, 0, 0, 0);
-
-        const msPerDay = 1000 * 60 * 60 * 24;
-        const daysSinceStart = Math.floor(
-          (today - earliestStartDate) / msPerDay,
-        );
-        const weekNumber = Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
-
-        currentCycle = `W${weekNumber}`;
+        currentCycle = "W1";
+        cycleWeekStart = new Date(earliestStartDate);
       }
     }
 
@@ -248,19 +263,24 @@ router.get("/stats", protect, async (req, res) => {
     );
     const pendingActions = openActions.length - overdueActions.length;
 
+    // Days elapsed within the week itself, not the day of the calendar week.
+    // The old version used today.getDay() against a hardcoded 14, so it read
+    // "Day 4 of 14" on any Thursday and reset every Monday.
     let cycleDayInfo = null;
-    if (activeProgramme?.lookaheadStartDate) {
-      const today = new Date();
-      const dayOfWeek = today.getDay();
-      const currentDay = dayOfWeek === 0 ? 7 : dayOfWeek;
+    if (cycleWeekStart) {
+      const CYCLE_DAYS = 7;
+      const msPerDay = 1000 * 60 * 60 * 24;
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
 
-      const cycleDuration = 14;
-      const daysRemaining = cycleDuration - currentDay;
+      const elapsed = Math.floor((todayStart - cycleWeekStart) / msPerDay) + 1;
+      const currentDay = Math.min(CYCLE_DAYS, Math.max(1, elapsed));
 
       cycleDayInfo = {
         currentDay,
-        totalDays: cycleDuration,
-        daysRemaining,
+        totalDays: CYCLE_DAYS,
+        daysRemaining: Math.max(0, CYCLE_DAYS - currentDay),
+        closedWeeks: closedCycleCount,
       };
     }
 
@@ -438,6 +458,19 @@ router.get("/recent-activity", protect, async (req, res) => {
           .limit(3)
           .populate("createdBy", "name email");
 
+    const CycleHistoryModel = require("../models/CycleHistory");
+    const recentCycles = await CycleHistoryModel.find({
+      programme: { $in: programmeIds },
+    })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .populate("closedBy", "name email")
+      .populate({
+        path: "programme",
+        select: "name project",
+        populate: { path: "project", select: "name" },
+      });
+
     const activities = [];
 
     for (const prog of recentProgrammes) {
@@ -463,6 +496,35 @@ router.get("/recent-activity", protect, async (req, res) => {
         timestamp: isCompleted ? action.completedAt : action.createdAt,
         author: action.createdBy?.name || "System",
         color: isCompleted ? "green" : "red",
+      });
+    }
+
+    // Week closes live in CycleHistory, not in Programme/Action/Project, so
+    // they need their own pass or they never reach the feed at all.
+    for (const cycle of recentCycles) {
+      const isOverride = cycle.closeType === "PM Override";
+      const weekLabel = cycle.weekLabel || `Week ${cycle.weekNumber}`;
+      const progName = cycle.programme?.name;
+      const parts = [weekLabel];
+      if (progName) parts.push(progName);
+      if (isOverride) {
+        if (cycle.notes) parts.push(`reason: ${cycle.notes}`);
+      } else if (cycle.stats?.totalActivities) {
+        parts.push(
+          `${cycle.stats.green || 0}/${cycle.stats.totalActivities} activities on track`,
+        );
+      }
+
+      activities.push({
+        id: cycle._id,
+        type: isOverride ? "cycle_override" : "cycle_closed",
+        title: isOverride ? "Week closed via PM Override" : "Week closed",
+        description: parts.join(" — "),
+        // CycleHistory has no closedAt field; createdAt IS the close time.
+        timestamp: cycle.createdAt,
+        author: cycle.closedBy?.name || "System",
+        projectName: cycle.programme?.project?.name,
+        color: isOverride ? "amber" : "green",
       });
     }
 
@@ -743,8 +805,10 @@ router.get("/governance", protect, async (req, res) => {
       ).length;
       const status = pmOverrides > 0 ? "Amber" : "Green";
       const icon = pmOverrides > 0 ? "warning" : "check";
-      const closeType =
-        pmOverrides > 0 ? `${pmOverrides}/${n} PM Override` : "Normal Close";
+      // Emit the bare close type. The old `${pmOverrides}/${n} PM Override`
+      // form never matched the UI's `closeType === "PM Override"` checks, and
+      // the per-project count is already carried by projectCount below.
+      const closeType = pmOverrides > 0 ? "PM Override" : "Normal Close";
 
       weeklyReadinessData.push({ week: `W${seq}`, value: readiness });
       actionsData.push({
