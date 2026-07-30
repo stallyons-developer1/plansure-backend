@@ -1865,7 +1865,8 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       (a) => a.activityStatus === "Ready" && !a.isBlocked,
     ).length;
     const completeCount = allActivities.filter(
-      (a) => a.activityStatus === "Complete",
+      (a) =>
+        a.activityStatus === "Complete" || a.activityStatus === "Completed",
     ).length;
     const hasOpenActionDueThisWindow = (activity) => {
       if (!weekStartDate || !weekEndDate) return false;
@@ -2519,6 +2520,31 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
 
         await programme.save();
 
+        // AUDIT LOG — PM Override force-close
+        try {
+          await auditLogger.log({
+            action: "WEEK_CLOSED_PM_OVERRIDE",
+            req,
+            user: req.admin,
+            resourceType: "Programme",
+            resourceId: programme._id,
+            resourceName: programme.name,
+            project: programme.project,
+            description: `Force-closed week(s) via PM Override for programme "${programme.name}". Reason: ${overrideReason}`,
+            changes: {
+              before: { cycleStatus: currentStatus },
+              after: { cycleStatus: programme.cycleStatus },
+            },
+            metadata: {
+              overrideReason,
+              weeksClosedThisAction: 2,
+              resultingStatus: programme.cycleStatus,
+            },
+          });
+        } catch (auditError) {
+          console.error("Audit log failed (PM Override close):", auditError);
+        }
+
         const isLastWeek = totalWeeks > 0 && closedWeeksCount >= totalWeeks;
         return sendSuccess(
           res,
@@ -2666,6 +2692,28 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
 
     programme.cycleStatus = cycleStatus;
     await programme.save();
+
+    // AUDIT LOG — normal cycle status transition (covers "Closed" and all other statuses)
+    try {
+      await auditLogger.log({
+        action:
+          cycleStatus === "Closed" ? "WEEK_CLOSED" : "CYCLE_STATUS_CHANGED",
+        req,
+        user: req.admin,
+        resourceType: "Programme",
+        resourceId: programme._id,
+        resourceName: programme.name,
+        project: programme.project,
+        description: `Cycle status changed from "${currentStatus}" to "${cycleStatus}" for programme "${programme.name}"`,
+        changes: {
+          before: { cycleStatus: currentStatus },
+          after: { cycleStatus },
+        },
+        metadata: { closeType: programme.closeType || null },
+      });
+    } catch (auditError) {
+      console.error("Audit log failed (cycle-status):", auditError);
+    }
 
     return sendSuccess(
       res,
@@ -3528,6 +3576,45 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       return sendError(res, "Failed to update programme", 500);
     }
 
+    console.log(
+      "[AUDIT DEBUG] Reached close-week audit block. weekNumber:",
+      weekNumber,
+      "programmeId:",
+      updatedProgramme._id?.toString(),
+    );
+
+    // AUDIT LOG — week closed (normal close or PM override)
+    try {
+      const auditResult = await auditLogger.log({
+        action:
+          closeType === "PM Override"
+            ? "WEEK_CLOSED_PM_OVERRIDE"
+            : "WEEK_CLOSED",
+        category: "WEEK",
+        req,
+        user: req.admin,
+        resourceType: "Programme",
+        resourceId: updatedProgramme._id,
+        resourceName: updatedProgramme.name,
+        project: updatedProgramme.project,
+        description: `Closed Week ${weekNumber} for programme "${updatedProgramme.name}"${
+          closeType === "PM Override"
+            ? ` via PM Override. Reason: ${notes || "no reason given"}`
+            : ""
+        }`,
+        metadata: {
+          weekNumber,
+          closeType: closeType || "Normal Close",
+          stats: weekStats,
+          resultingCycleStatus: nextCycleStatus,
+        },
+      });
+      console.log("[AUDIT DEBUG] auditLogger.log resolved with:", auditResult);
+    } catch (auditError) {
+      console.error("[AUDIT DEBUG] auditLogger.log THREW:", auditError.message);
+      console.error(auditError.stack);
+    }
+
     const formatDateShort = (d) => {
       const months = [
         "Jan",
@@ -3639,6 +3726,17 @@ router.post(
 
       await programme.save();
 
+      await auditLogger.log({
+        action: "WEEK_REOPENED",
+        req,
+        user: req.admin,
+        resourceType: "Week",
+        resourceId: programme._id,
+        resourceName: `Week ${weekNumber}`,
+        project: programme.project,
+        description: `Reopened Week ${weekNumber} for programme "${programme.name}"`,
+      });
+
       await CycleHistory.deleteOne({
         programme: req.params.id,
         weekNumber,
@@ -3690,16 +3788,21 @@ router.patch("/:id/link-project", protect, async (req, res) => {
     programme.project = projectId;
     await programme.save();
 
-    await auditLogger.log({
-      action: "PROGRAMME_LINKED",
-      req,
-      user: req.admin,
-      resourceType: "Programme",
-      resourceId: programme._id,
-      resourceName: programme.name,
-      project,
-      description: `Linked programme "${programme.name}" to project "${project.name}"`,
-    });
+    try {
+      await auditLogger.log({
+        action: "PROGRAMME_LINKED",
+        category: "PROGRAMME",
+        req,
+        user: req.admin,
+        resourceType: "Programme",
+        resourceId: programme._id,
+        resourceName: programme.name,
+        project,
+        description: `Linked programme "${programme.name}" to project "${project.name}"`,
+      });
+    } catch (auditError) {
+      console.error("Audit log failed (link-project):", auditError.message);
+    }
 
     return sendSuccess(
       res,

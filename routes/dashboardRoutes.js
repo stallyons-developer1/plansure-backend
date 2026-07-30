@@ -1307,6 +1307,10 @@ router.get("/weekly", protect, async (req, res) => {
     ];
     const fmtWeekDate = (d) =>
       `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]} ${d.getFullYear()}`;
+    // Spells out both months so a week spanning a month boundary reads
+    // "(30 Jul - 5 Aug 2026)" rather than collapsing to a single month.
+    const fmtWeekRange = (start, end) =>
+      `(${start.getDate()} ${MONTHS_SHORT[start.getMonth()]} - ${end.getDate()} ${MONTHS_SHORT[end.getMonth()]} ${end.getFullYear()})`;
 
     const programmeActivities =
       activeProgramme?.extractedData?.activities || [];
@@ -1329,14 +1333,20 @@ router.get("/weekly", protect, async (req, res) => {
       openDate.setHours(0, 0, 0, 0);
       const closeDate = new Date(completedSnapshot.createdAt);
 
+      // The deadline is always the 7th day of the week (inclusive of the day it
+      // opened), independent of when the week was actually closed. Opened
+      // 30 Jul -> deadline 5 Aug.
+      const closeDeadlineDate = new Date(openDate);
+      closeDeadlineDate.setDate(openDate.getDate() + 6);
+
       currentWeekStart = new Date(openDate);
       currentWeekEnd = new Date(closeDate);
       currentWeekEnd.setHours(23, 59, 59, 999);
 
       weekNumber = `Week ${completedCycles.length}`;
       weekOpened = fmtWeekDate(openDate);
-      closeDeadline = fmtWeekDate(closeDate);
-      weekDates = `(${openDate.getDate()} ${MONTHS_SHORT[openDate.getMonth()]} - ${closeDate.getDate()} ${MONTHS_SHORT[closeDate.getMonth()]} ${closeDate.getFullYear()})`;
+      closeDeadline = fmtWeekDate(closeDeadlineDate);
+      weekDates = fmtWeekRange(openDate, closeDeadlineDate);
       cycleStatus = "Closed";
     } else if (earliestStartDate) {
       const today = new Date();
@@ -1380,7 +1390,7 @@ router.get("/weekly", protect, async (req, res) => {
         return `${day} ${months[d.getMonth()]} ${d.getFullYear()}`;
       };
 
-      weekDates = `(${currentWeekStart.getDate()}-${currentWeekEnd.getDate()} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][currentWeekStart.getMonth()]} ${currentWeekStart.getFullYear()})`;
+      weekDates = fmtWeekRange(currentWeekStart, currentWeekEnd);
       weekOpened = formatDate(currentWeekStart);
       closeDeadline = formatDate(currentWeekEnd);
       cycleStatus = activeProgramme?.cycleStatus || "Draft";
