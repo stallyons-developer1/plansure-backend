@@ -360,8 +360,8 @@ router.get("/rag-distribution", protect, async (req, res) => {
     let greenCount = 0;
     let amberCount = 0;
     let redCount = 0;
+    let greyCount = 0;
 
-    const today = new Date();
     for (const prog of programmes) {
       const activities = prog.extractedData?.activities || [];
 
@@ -372,6 +372,8 @@ router.get("/rag-distribution", protect, async (req, res) => {
           if (rag === "Green") greenCount++;
           else if (rag === "Amber") amberCount++;
           else if (rag === "Red") redCount++;
+        } else {
+          greyCount++;
         }
       }
     }
@@ -397,6 +399,9 @@ router.get("/rag-distribution", protect, async (req, res) => {
         green: { count: greenCount, percentage: greenPercentage },
         amber: { count: amberCount, percentage: amberPercentage },
         red: { count: redCount, percentage: redPercentage },
+        // Not part of the ring's denominator; reported so the UI can render a
+        // grey placeholder ring (and say how many) when nothing is assessed.
+        grey: { count: greyCount },
       },
     });
   } catch (error) {
