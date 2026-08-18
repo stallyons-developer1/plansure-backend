@@ -116,6 +116,7 @@ const {
   syncProgrammeGovernance,
   refreshProgrammeGovernance,
   groupActionsByActivity,
+  isActionOpen,
 } = require("../utils/governance");
 
 const calculateRAG = (activity, today, linkedActions, cycleEndDate) => {
@@ -2285,8 +2286,7 @@ const checkCloseOutEligible = async (programmeId) => {
       (a) =>
         a.linkedActivity?.activityId === activity.activityId &&
         a.type === "Required" &&
-        a.status !== "Completed" &&
-        a.status !== "Cancelled",
+        isActionOpen(a),
     );
 
     if (activityActions.length > 0) {
@@ -2299,10 +2299,7 @@ const checkCloseOutEligible = async (programmeId) => {
   }
 
   const overdueActions = actions.filter(
-    (a) =>
-      a.status !== "Completed" &&
-      a.status !== "Cancelled" &&
-      new Date(a.dueDate) < startOfToday,
+    (a) => isActionOpen(a) && new Date(a.dueDate) < startOfToday,
   );
 
   if (overdueActions.length > 0) {
@@ -3146,10 +3143,7 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
       const actId = action.linkedActivity?.activityId;
       if (!actId) continue;
       gateHasActionByActivity[actId] = true;
-      const isOpen =
-        action.status !== "Completed" &&
-        action.status !== "Complete" &&
-        action.status !== "Cancelled";
+      const isOpen = isActionOpen(action);
       gateOpenByActivity[actId] =
         (gateOpenByActivity[actId] || 0) + (isOpen ? 1 : 0);
     }
@@ -3414,10 +3408,7 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
         const actId = action.linkedActivity?.activityId;
         if (!actId) continue;
         hasActionByActivity[actId] = true;
-        const isOpen =
-          action.status !== "Completed" &&
-          action.status !== "Complete" &&
-          action.status !== "Cancelled";
+        const isOpen = isActionOpen(action);
         openByActivity[actId] = (openByActivity[actId] || 0) + (isOpen ? 1 : 0);
       }
       const isSettled = (activity) => {

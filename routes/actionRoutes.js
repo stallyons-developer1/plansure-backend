@@ -15,6 +15,7 @@ const auditLogger = require("../utils/auditLogger");
 const {
   computeGovernanceStatus,
   getCycleEndDate,
+  isActionOpen,
 } = require("../utils/governance");
 
 const checkProgrammeLocked = async (programmeId) => {
@@ -687,6 +688,129 @@ router.patch("/:id/complete", protect, async (req, res) => {
       res,
       { action: updatedAction },
       `Action marked as ${action.status}`,
+    );
+  } catch (error) {
+    console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
+/* Force-close ONE action. Deliberately scoped to a single action: the previous
+   behaviour closed every outstanding action in the week at once, which the
+   MS-05 review rejected (B4). Reason is mandatory and the actor is recorded. */
+router.patch("/:id/override", protect, async (req, res) => {
+  try {
+    const { reason } = req.body;
+
+    if (!reason || !reason.trim()) {
+      return sendValidationError(res, [
+        { field: "reason", message: "A reason is required for PM Override" },
+      ]);
+    }
+
+    if (reason.trim().length < 10) {
+      return sendValidationError(res, [
+        {
+          field: "reason",
+          message: "Please give a fuller reason (at least 10 characters)",
+        },
+      ]);
+    }
+
+    const action = await Action.findById(req.params.id);
+    if (!action) {
+      return sendError(res, "Action not found", 404);
+    }
+
+    const { locked, programme } = await checkProgrammeLocked(action.programme);
+    if (locked) {
+      return sendError(
+        res,
+        "This week is closed and read-only. Cannot override actions.",
+        403,
+      );
+    }
+
+    if (!isActionOpen(action)) {
+      return sendError(
+        res,
+        `This action is already "${action.status}" and cannot be overridden.`,
+        400,
+      );
+    }
+
+    const previousStatus = action.status;
+    action.status = "PM Override";
+    action.overrideReason = reason.trim();
+    action.overriddenBy = req.admin._id;
+    action.overriddenAt = new Date();
+    await action.save();
+
+    // An override closes the action, so the linked activity must re-derive.
+    if (action.linkedActivity?.activityId) {
+      await updateLinkedActivityStatus(
+        action.programme,
+        action.linkedActivity.activityId,
+      );
+    }
+
+    const updatedAction = await Action.findById(action._id)
+      .populate("assignee", "name email")
+      .populate("createdBy", "name email")
+      .populate("overriddenBy", "name email");
+
+    try {
+      await auditLogger.log({
+        action: "ACTION_PM_OVERRIDE",
+        category: "ACTION",
+        req,
+        user: req.admin,
+        resourceType: "Action",
+        resourceId: action._id,
+        resourceName: action.title,
+        project: programme?.project,
+        description: `PM Override force-closed action "${action.title}". Reason: ${action.overrideReason}`,
+        changes: {
+          before: { status: previousStatus },
+          after: { status: "PM Override" },
+        },
+        metadata: {
+          overrideReason: action.overrideReason,
+          overriddenAt: action.overriddenAt,
+          linkedActivity: action.linkedActivity?.activityName,
+          assignee: action.assigneeName,
+        },
+      });
+    } catch (auditError) {
+      console.error("Audit log failed (action PM override):", auditError);
+    }
+
+    // Tell the assignee their action was force-closed and why.
+    if (action.assignee?.toString() !== req.admin._id.toString()) {
+      await Notification.create({
+        recipient: action.assignee,
+        sender: req.admin._id,
+        type: "general",
+        title: "Action Closed by PM Override",
+        message: `${req.admin.name} force-closed "${action.title}". Reason: ${action.overrideReason}`,
+        action: action._id,
+        programme: action.programme,
+        project: programme?.project,
+      });
+
+      sendPushForNotification(action.assignee, "general", {
+        title: "Action Closed by PM Override",
+        message: `${req.admin.name} force-closed "${action.title}"`,
+        actionId: action._id,
+        programmeId: action.programme,
+        projectId: programme?.project,
+      });
+    }
+
+    return sendSuccess(
+      res,
+      { action: updatedAction },
+      "Action closed via PM Override",
     );
   } catch (error) {
     console.error(error);

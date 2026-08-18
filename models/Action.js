@@ -63,8 +63,21 @@ const actionSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["Open", "In Progress", "Completed", "Cancelled"],
+      enum: ["Open", "In Progress", "Completed", "Cancelled", "PM Override"],
       default: "Open",
+    },
+    // Set only when a PM force-closes this single action. Retained for audit:
+    // the review requires who overrode it, when, and why.
+    overrideReason: {
+      type: String,
+      trim: true,
+    },
+    overriddenBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Admin",
+    },
+    overriddenAt: {
+      type: Date,
     },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,

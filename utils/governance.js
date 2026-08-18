@@ -11,11 +11,17 @@ const getCycleEndDate = (programme) => {
   return latest;
 };
 
+// A PM Override force-closes a single action, so it is terminal like
+// Completed/Cancelled — otherwise an overridden action would keep blocking.
+const CLOSED_ACTION_STATUSES = [
+  "Completed",
+  "Complete",
+  "Cancelled",
+  "PM Override",
+];
+
 const isActionOpen = (action) =>
-  action &&
-  action.status !== "Completed" &&
-  action.status !== "Complete" &&
-  action.status !== "Cancelled";
+  !!action && !CLOSED_ACTION_STATUSES.includes(action.status);
 
 const MONTHS = {
   Jan: 0,
@@ -176,6 +182,7 @@ const syncProgrammesGovernance = async (
 
 module.exports = {
   CYCLE_LENGTH_DAYS,
+  CLOSED_ACTION_STATUSES,
   getCycleEndDate,
   isActionOpen,
   computeGovernanceStatus,

@@ -5,7 +5,10 @@ const Programme = require("../models/Programme");
 const Action = require("../models/Action");
 const { protect } = require("../middleware/authMiddleware");
 const { sendError, sendSuccess } = require("../utils/errorResponse");
-const { syncProgrammesGovernance } = require("../utils/governance");
+const {
+  syncProgrammesGovernance,
+  isActionOpen,
+} = require("../utils/governance");
 
 const getPlannerAccessibleProjects = async (admin) => {
   const userAssignedProjects = (admin.projects || []).map((p) => p.toString());
@@ -252,14 +255,9 @@ router.get("/stats", protect, async (req, res) => {
     const actions = await Action.find({
       programme: { $in: programmeIds },
     });
-    const openActions = actions.filter(
-      (a) => a.status !== "Completed" && a.status !== "Cancelled",
-    );
+    const openActions = actions.filter((a) => isActionOpen(a));
     const overdueActions = actions.filter(
-      (a) =>
-        a.status !== "Completed" &&
-        a.status !== "Cancelled" &&
-        new Date(a.dueDate) < startOfToday,
+      (a) => isActionOpen(a) && new Date(a.dueDate) < startOfToday,
     );
     const pendingActions = openActions.length - overdueActions.length;
 
@@ -1514,15 +1512,14 @@ router.get("/weekly", protect, async (req, res) => {
       return dueDate >= currentWeekStart && dueDate <= currentWeekEnd;
     });
 
-    const openActions = actions.filter(
-      (a) => a.status !== "Completed" && a.status !== "Cancelled",
+    // A PM-overridden action is force-closed, so it counts as closed here and
+    // must not linger in Open or Overdue.
+    const openActions = actions.filter((a) => isActionOpen(a));
+    const closedActions = actions.filter(
+      (a) => a.status === "Completed" || a.status === "PM Override",
     );
-    const closedActions = actions.filter((a) => a.status === "Completed");
     const overdueActions = actions.filter(
-      (a) =>
-        a.status !== "Completed" &&
-        a.status !== "Cancelled" &&
-        new Date(a.dueDate) < startOfToday,
+      (a) => isActionOpen(a) && new Date(a.dueDate) < startOfToday,
     );
 
     const openRequiredActions = allActions.filter(
@@ -1563,10 +1560,7 @@ router.get("/weekly", protect, async (req, res) => {
           assignee: action.assignee?.name || "-",
           assigneeId: action.assignee?._id?.toString() || null,
           dueDate: action.dueDate,
-          isOverdue:
-            isOverdue &&
-            action.status !== "Completed" &&
-            action.status !== "Cancelled",
+          isOverdue: isOverdue && isActionOpen(action),
         });
       }
     });
@@ -1583,9 +1577,7 @@ router.get("/weekly", protect, async (req, res) => {
       .slice(0, 20)
       .map((a) => {
         const linkedActions = actionMap[a.activityId] || [];
-        const openAction = linkedActions.find(
-          (act) => act.status !== "Completed" && act.status !== "Cancelled",
-        );
+        const openAction = linkedActions.find((act) => isActionOpen(act));
         const overdueAction = linkedActions.find((act) => act.isOverdue);
         const linkedAction = overdueAction || openAction || linkedActions[0];
 
@@ -1652,9 +1644,8 @@ router.get("/weekly", protect, async (req, res) => {
           owner: a.ownerName || "-",
           activityStatus: a.activityStatus || "Ready",
           actionsCount: linkedActions.length,
-          openActionsCount: linkedActions.filter(
-            (act) => act.status !== "Completed" && act.status !== "Cancelled",
-          ).length,
+          openActionsCount: linkedActions.filter((act) => isActionOpen(act))
+            .length,
           linkedActions: linkedActions.map((act) => ({
             _id: act._id?.toString(),
             actionId: act.actionId,

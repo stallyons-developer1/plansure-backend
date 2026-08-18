@@ -42,6 +42,7 @@ const auditLogSchema = new mongoose.Schema(
         "ACTION_DELETED",
         "ACTION_COMPLETED",
         "ACTION_CANCELLED",
+        "ACTION_PM_OVERRIDE",
 
         "WEEK_CLOSED",
         "WEEK_CLOSED_PM_OVERRIDE",
