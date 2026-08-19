@@ -138,6 +138,12 @@ const getNotificationContent = (type, data) => {
         data.message ||
         `You have been assigned to project: "${data.projectName}"`,
     },
+    planner_todo_generated: {
+      title: "Planner To-Do Issued",
+      body:
+        data.message ||
+        "A new Planner To-Do list is ready for you to action.",
+    },
     general: {
       title: data.title || "Notification",
       body: data.message || "You have a new notification",

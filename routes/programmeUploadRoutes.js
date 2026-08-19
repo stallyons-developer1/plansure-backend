@@ -117,6 +117,7 @@ const {
   refreshProgrammeGovernance,
   groupActionsByActivity,
   isActionOpen,
+  autoOverrideOverdueActions,
 } = require("../utils/governance");
 
 const calculateRAG = (activity, today, linkedActions, cycleEndDate) => {
@@ -1534,6 +1535,8 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       return sendError(res, "Access denied", 403);
     }
 
+    // Sweep first so the governance refresh below sees the closures.
+    await autoOverrideOverdueActions(Action, req.params.id);
     await syncProgrammeGovernance(programme, Action);
 
     const requestedWeekNumber = req.query.weekNumber
@@ -2270,32 +2273,26 @@ const checkCloseOutEligible = async (programmeId) => {
   startOfToday.setHours(0, 0, 0, 0);
   const activities = programme.extractedData?.activities || [];
 
-  const greenActivities = activities.filter((a) => {
-    const rag = calculateRAG(a, today);
-    return rag === "Green";
-  });
-
-  if (greenActivities.length === 0) {
-    return { eligible: true, reason: "No GREEN activities to check" };
-  }
-
   const actions = await Action.find({ programme: programmeId });
 
-  for (const activity of greenActivities) {
-    const activityActions = actions.filter(
-      (a) =>
-        a.linkedActivity?.activityId === activity.activityId &&
-        a.type === "Required" &&
-        isActionOpen(a),
-    );
+  /*
+   * Any open Required action blocks close-out.
+   *
+   * This previously filtered to "GREEN" activities using calculateRAG(a, today)
+   * — a four-argument function called with two — so linkedActions and
+   * cycleEndDate arrived undefined, nothing ever scored Green, and the empty
+   * list short-circuited to `eligible: true`. The gate passed unconditionally.
+   */
+  const openRequired = actions.filter(
+    (a) => a.type === "Required" && isActionOpen(a),
+  );
 
-    if (activityActions.length > 0) {
-      return {
-        eligible: false,
-        reason: `Activity "${activity.activityName}" has ${activityActions.length} open required action(s)`,
-        openActions: activityActions.length,
-      };
-    }
+  if (openRequired.length > 0) {
+    return {
+      eligible: false,
+      reason: `${openRequired.length} required action(s) still open. Complete or override them before close-out.`,
+      openActions: openRequired.length,
+    };
   }
 
   const overdueActions = actions.filter(
@@ -2310,7 +2307,7 @@ const checkCloseOutEligible = async (programmeId) => {
     };
   }
 
-  const blockedActivities = greenActivities.filter((a) => a.isBlocked);
+  const blockedActivities = activities.filter((a) => a.isBlocked);
   if (blockedActivities.length > 0) {
     return {
       eligible: false,

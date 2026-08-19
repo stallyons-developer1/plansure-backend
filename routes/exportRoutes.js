@@ -822,7 +822,8 @@ router.post("/planner-todo", protect, async (req, res) => {
       programme: programmeId,
     })
       .populate("assignee", "name email")
-      .populate("createdBy", "name email");
+      .populate("createdBy", "name email")
+      .populate("overriddenBy", "name email");
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -845,6 +846,10 @@ router.post("/planner-todo", protect, async (req, res) => {
     );
 
     const inProgressActions = actions.filter((a) => a.status === "In Progress");
+
+    // Force-closed actions still belong on the Planner To-Do: the work was not
+    // done, so the Planner has to reflect that in the programme update.
+    const overriddenActions = actions.filter((a) => a.status === "PM Override");
 
     const currentWeek = `W${currentWeekNumber}`;
 
@@ -907,6 +912,39 @@ router.post("/planner-todo", protect, async (req, res) => {
     };
     addActionRows(inProgressSheet, inProgressActions);
 
+    // Always created, like the sheets above, so an empty tab still tells the
+    // Planner that nothing was force-closed this week.
+    const overrideSheet = workbook.addWorksheet("PM Override Actions");
+    overrideSheet.columns = [
+      ...baseColumns,
+      { header: "Override Reason", key: "overrideReason", width: 50 },
+      { header: "Overridden By", key: "overriddenBy", width: 20 },
+      { header: "Overridden At", key: "overriddenAt", width: 22 },
+    ];
+    overrideSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    overrideSheet.getRow(1).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFD97706" },
+    };
+    overriddenActions.forEach((action) => {
+      overrideSheet.addRow({
+        actionId: `ACT-${String(action._id).slice(-4).toUpperCase()}`,
+        title: action.title || "-",
+        linkedActivity: action.linkedActivity?.activityName || "-",
+        assignee: action.assignee?.name || "-",
+        dueDate: action.dueDate
+          ? new Date(action.dueDate).toLocaleDateString()
+          : "-",
+        priority: action.priority || "-",
+        overrideReason: action.overrideReason || "-",
+        overriddenBy: action.overriddenBy?.name || "-",
+        overriddenAt: action.overriddenAt
+          ? new Date(action.overriddenAt).toLocaleString()
+          : "-",
+      });
+    });
+
     const summarySheet = workbook.addWorksheet("Summary");
     summarySheet.columns = [
       { header: "Metric", key: "metric", width: 30 },
@@ -939,7 +977,10 @@ router.post("/planner-todo", protect, async (req, res) => {
     summarySheet.addRow({ metric: "", value: "" });
     summarySheet.addRow({
       metric: "Total Actions (Current 2 Weeks)",
-      value: openActions.length + inProgressActions.length,
+      value:
+        openActions.length +
+        inProgressActions.length +
+        overriddenActions.length,
     });
     summarySheet.addRow({ metric: "", value: "" });
     summarySheet.addRow({ metric: "Open Actions", value: openActions.length });
@@ -952,7 +993,8 @@ router.post("/planner-todo", protect, async (req, res) => {
     const filePath = path.join(exportsDir, fileName);
     await workbook.xlsx.writeFile(filePath);
 
-    const totalActions = openActions.length + inProgressActions.length;
+    const totalActions =
+      openActions.length + inProgressActions.length + overriddenActions.length;
     const exportRecord = await Export.create({
       type: "Planner To-Do",
       week: currentWeek,

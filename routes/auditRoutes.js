@@ -13,12 +13,22 @@ router.get("/", protect, adminOnly, async (req, res) => {
       action,
       userId,
       projectId,
+      weekNumber,
       startDate,
       endDate,
       search,
     } = req.query;
 
     const filter = {};
+
+    // Week lives in metadata, written by the close-week, PM-override and
+    // export events. Entries without one simply drop out of a week filter.
+    if (weekNumber !== undefined && weekNumber !== "") {
+      const parsedWeek = parseInt(weekNumber);
+      if (!Number.isNaN(parsedWeek)) {
+        filter["metadata.weekNumber"] = parsedWeek;
+      }
+    }
 
     if (category) {
       filter.category = category;
@@ -110,6 +120,56 @@ router.get("/actions", protect, adminOnly, async (req, res) => {
     return sendSuccess(res, { actions });
   } catch (error) {
     console.error("Get actions error:", error);
+    return sendError(res, "Server error");
+  }
+});
+
+/* Week numbers that actually appear in the log, for the filter dropdown.
+   Must stay above "/:id" or Express treats "weeks" as an id. */
+router.get("/weeks", protect, adminOnly, async (req, res) => {
+  try {
+    const { projectId } = req.query;
+    const scope = projectId ? { project: projectId } : {};
+
+    const values = await AuditLog.distinct("metadata.weekNumber", scope);
+    const weeks = values
+      .map((v) => parseInt(v))
+      .filter((v) => Number.isInteger(v))
+      .sort((a, b) => a - b);
+
+    return sendSuccess(res, { weeks: [...new Set(weeks)] });
+  } catch (error) {
+    console.error("Get audit weeks error:", error);
+    return sendError(res, "Server error");
+  }
+});
+
+/* Projects that actually appear in the log, so the dropdown only offers
+   options that can return rows. Names are read from the Project collection
+   rather than the denormalised projectName: most call sites pass a bare
+   ObjectId as `project`, so projectName is usually null on the entry. */
+router.get("/projects", protect, adminOnly, async (req, res) => {
+  try {
+    const Project = require("../models/Project");
+
+    const ids = await AuditLog.distinct("project", { project: { $ne: null } });
+    if (ids.length === 0) {
+      return sendSuccess(res, { projects: [] });
+    }
+
+    const projects = await Project.find({ _id: { $in: ids } })
+      .select("name")
+      .sort({ name: 1 })
+      .lean();
+
+    return sendSuccess(res, {
+      projects: projects.map((p) => ({
+        _id: p._id,
+        name: p.name || "Unnamed project",
+      })),
+    });
+  } catch (error) {
+    console.error("Get audit projects error:", error);
     return sendError(res, "Server error");
   }
 });

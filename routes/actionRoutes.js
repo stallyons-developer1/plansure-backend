@@ -16,7 +16,48 @@ const {
   computeGovernanceStatus,
   getCycleEndDate,
   isActionOpen,
+  autoOverrideOverdueActions,
 } = require("../utils/governance");
+const {
+  notifyPlannersIfAllActionsClosed,
+} = require("../utils/plannerNotifications");
+
+/* Editable fields on an action, captured before and after a PUT so the audit
+   entry carries a precise diff. Status and assignee are deliberately excluded:
+   they already have their own ACTION_STATUS_CHANGED / ACTION_REASSIGNED events. */
+const snapshotEditableFields = (action) => ({
+  title: action.title,
+  description: action.description,
+  type: action.type,
+  priority: action.priority,
+  dueDate: action.dueDate,
+  linkedActivityId: action.linkedActivity?.activityId,
+  linkedActivityName: action.linkedActivity?.activityName,
+  programme: action.programme,
+});
+
+/* Normalise for comparison: Dates by instant, ObjectIds by string, and
+   null/undefined/"" all as empty so an untouched blank field is not a change. */
+const auditValue = (value) => {
+  if (value === null || value === undefined) return "";
+  if (value instanceof Date) return value.toISOString();
+  return value.toString();
+};
+
+/* Returns only the fields that actually changed, ready for changes.before/after. */
+const diffEditableFields = (before, after) => {
+  const changedBefore = {};
+  const changedAfter = {};
+  for (const key of Object.keys(before)) {
+    const from = auditValue(before[key]);
+    const to = auditValue(after[key]);
+    if (from !== to) {
+      changedBefore[key] = from;
+      changedAfter[key] = to;
+    }
+  }
+  return { changedBefore, changedAfter, changedKeys: Object.keys(changedAfter) };
+};
 
 const checkProgrammeLocked = async (programmeId) => {
   const programme = await Programme.findById(programmeId);
@@ -118,6 +159,7 @@ router.post("/", protect, async (req, res) => {
       priority,
       assignee,
       dueDate,
+      status,
     } = req.body;
 
     const errors = validateRequired({ programmeId, title, assignee, dueDate });
@@ -172,6 +214,9 @@ router.post("/", protect, async (req, res) => {
       description,
       type: type || "Required",
       priority: priority || "Medium",
+      // A new action can only start Open or In Progress; the terminal states
+      // are reached by completing, cancelling or overriding it.
+      status: ["Open", "In Progress"].includes(status) ? status : "Open",
       assignee,
       assigneeName,
       dueDate,
@@ -263,6 +308,11 @@ router.get("/", protect, async (req, res) => {
     if (priority) filter.priority = priority;
     if (assignee) filter.assignee = assignee;
 
+    // Close out anything that ran past its due date before listing.
+    if (programmeId) {
+      await autoOverrideOverdueActions(Action, programmeId);
+    }
+
     if (req.admin.role !== "admin") {
       filter.$or = [
         { assignee: req.admin._id },
@@ -348,7 +398,8 @@ router.get("/:id", protect, async (req, res) => {
       .populate("createdBy", "name email")
       .populate("programme", "name project")
       .populate("comments.createdBy", "name email")
-      .populate("previousAssignees.user", "name email");
+      .populate("previousAssignees.user", "name email")
+      .populate("overriddenBy", "name email");
 
     if (!action) {
       return sendError(res, "Action not found", 404);
@@ -366,9 +417,67 @@ router.get("/:id", protect, async (req, res) => {
       }
     }
 
-    return sendSuccess(res, { action });
+    // The activity's owner lives on the programme, not the action. Resolve it
+    // here so callers without programme data (e.g. the Audit Logs detail view)
+    // can show the same Owner field the workspace dialogs do.
+    let linkedActivityOwnerName = "";
+    if (action.linkedActivity?.activityId) {
+      const programme = await Programme.findById(
+        action.programme?._id || action.programme,
+      ).select(
+        "extractedData.activities",
+      );
+      linkedActivityOwnerName =
+        programme?.extractedData?.activities?.find(
+          (a) => a.activityId === action.linkedActivity.activityId,
+        )?.ownerName || "";
+    }
+
+    return sendSuccess(res, {
+      action: { ...action.toObject(), linkedActivityOwnerName },
+    });
   } catch (error) {
     console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
+/* Update history for one action, drawn from the audit log. Deliberately not
+   adminOnly: the audit routes are admin-gated, but a planner viewing an action
+   record needs to see how it changed. Access mirrors GET /:id. */
+router.get("/:id/history", protect, async (req, res) => {
+  try {
+    const AuditLog = require("../models/AuditLog");
+
+    const action = await Action.findById(req.params.id).select(
+      "assignee previousAssignees",
+    );
+    if (!action) {
+      return sendError(res, "Action not found", 404);
+    }
+
+    if (req.admin.role !== "admin") {
+      const isCurrentAssignee =
+        action.assignee?.toString() === req.admin._id.toString();
+      const wasPreviouslyAssigned = action.previousAssignees?.some(
+        (pa) => pa.user?.toString() === req.admin._id.toString(),
+      );
+      if (!isCurrentAssignee && !wasPreviouslyAssigned) {
+        return sendError(res, "Access denied", 403);
+      }
+    }
+
+    const entries = await AuditLog.find({
+      resourceType: "Action",
+      resourceId: req.params.id,
+    })
+      .sort({ createdAt: -1 })
+      .select("action description changes metadata createdAt performedByName")
+      .lean();
+
+    return sendSuccess(res, { history: entries });
+  } catch (error) {
+    console.error("Get action history error:", error);
     return sendError(res, "Server error");
   }
 });
@@ -383,6 +492,7 @@ router.put("/:id", protect, async (req, res) => {
       assignee,
       dueDate,
       status,
+      overrideReason,
       programmeId,
       linkedActivity,
     } = req.body;
@@ -394,6 +504,7 @@ router.put("/:id", protect, async (req, res) => {
 
     const oldStatus = action.status;
     const oldAssignee = action.assignee?.toString();
+    const beforeEdit = snapshotEditableFields(action);
 
     const { locked, programme } = await checkProgrammeLocked(action.programme);
     if (locked) {
@@ -453,6 +564,42 @@ router.put("/:id", protect, async (req, res) => {
     }
 
     if (dueDate) action.dueDate = dueDate;
+
+    // A PM Override reached through the edit form must record the same
+    // evidence and attribution as the dedicated override endpoint, or the
+    // audit trail would show a force-close with no reason and no actor.
+    const isNewOverride =
+      status === "PM Override" && oldStatus !== "PM Override";
+    if (isNewOverride) {
+      const reason = (overrideReason || "").trim();
+      if (reason.length < 10) {
+        return sendValidationError(res, [
+          {
+            field: "overrideReason",
+            message:
+              "A reason of at least 10 characters is required to PM Override an action",
+          },
+        ]);
+      }
+      action.overrideReason = reason;
+      action.overriddenBy = req.admin._id;
+      action.overriddenAt = new Date();
+    } else if (status === "PM Override" && overrideReason !== undefined) {
+      // Already overridden: allow the evidence to be corrected.
+      action.overrideReason = (overrideReason || "").trim();
+    } else if (status && status !== "PM Override" && oldStatus === "PM Override") {
+      // Reverted off an override: drop the evidence and attribution so a stale
+      // reason cannot resurface. The ACTION_PM_OVERRIDE audit entry still holds
+      // the original record.
+      action.overrideReason = undefined;
+      action.overriddenBy = undefined;
+      action.overriddenAt = undefined;
+      // A person has decided this action is live again, so exempt it from the
+      // automatic overdue sweep — otherwise the next page load would re-close
+      // it and the change would appear not to have saved.
+      action.autoOverrideExempt = true;
+    }
+
     if (status) {
       action.status = status;
       if (status === "Completed") {
@@ -471,10 +618,102 @@ router.put("/:id", protect, async (req, res) => {
 
     await action.save();
 
+    // Announce to planners once nothing is left open on this programme.
+    try {
+      await notifyPlannersIfAllActionsClosed({
+        programmeId: action.programme,
+        sender: req.admin,
+      });
+    } catch (notifyError) {
+      console.error("All-actions-closed notification failed:", notifyError);
+    }
+
+    /*
+     * Reopening a required action revokes close-out eligibility. Without this a
+     * week that qualified while everything was closed stays "Close-Out
+     * Eligible" — still offering "Close & Lock Week" — even though work is
+     * outstanding again.
+     */
+    if (
+      isActionOpen(action) &&
+      action.type === "Required" &&
+      programme?.cycleStatus === "Close-Out Eligible"
+    ) {
+      programme.cycleStatus = "Execution";
+      await programme.save();
+
+      try {
+        await auditLogger.log({
+          action: "CYCLE_STATUS_CHANGED",
+          req,
+          user: req.admin,
+          resourceType: "Programme",
+          resourceId: programme._id,
+          resourceName: programme.name,
+          project: programme.project,
+          description: `Close-out eligibility revoked for "${programme.name}": required action "${action.title}" was reopened.`,
+          changes: {
+            before: { cycleStatus: "Close-Out Eligible" },
+            after: { cycleStatus: "Execution" },
+          },
+          metadata: { actionId: action._id, actionTitle: action.title },
+        });
+      } catch (auditError) {
+        console.error("Audit log failed (eligibility revoked):", auditError);
+      }
+    }
+
     const updatedAction = await Action.findById(action._id)
       .populate("assignee", "name email")
       .populate("createdBy", "name email")
       .populate("programme", "name");
+
+    // Record the edit itself. Without this a corrected due date, retitle or
+    // priority change left no trace at all — only status and assignee did.
+    const { changedBefore, changedAfter, changedKeys } = diffEditableFields(
+      beforeEdit,
+      snapshotEditableFields(action),
+    );
+    if (changedKeys.length > 0) {
+      await auditLogger.log({
+        action: "ACTION_UPDATED",
+        req,
+        user: req.admin,
+        resourceType: "Action",
+        resourceId: updatedAction._id,
+        resourceName: updatedAction.title,
+        project: programme?.project,
+        description: `Updated action "${updatedAction.title}" — changed ${changedKeys.join(", ")}`,
+        changes: { before: changedBefore, after: changedAfter },
+        metadata: {
+          fieldsChanged: changedKeys,
+          linkedActivity: updatedAction.linkedActivity?.activityName,
+        },
+      });
+    }
+
+    if (isNewOverride) {
+      await auditLogger.log({
+        action: "ACTION_PM_OVERRIDE",
+        category: "ACTION",
+        req,
+        user: req.admin,
+        resourceType: "Action",
+        resourceId: updatedAction._id,
+        resourceName: updatedAction.title,
+        project: programme?.project,
+        description: `PM Override force-closed action "${updatedAction.title}". Reason: ${action.overrideReason}`,
+        changes: {
+          before: { status: oldStatus },
+          after: { status: "PM Override" },
+        },
+        metadata: {
+          overrideReason: action.overrideReason,
+          overriddenAt: action.overriddenAt,
+          linkedActivity: updatedAction.linkedActivity?.activityName,
+        },
+      });
+    }
 
     if (status && status !== oldStatus) {
       await auditLogger.actionStatusChanged(
@@ -637,6 +876,16 @@ router.patch("/:id/complete", protect, async (req, res) => {
 
     await action.save();
 
+    // Announce to planners once nothing is left open on this programme.
+    try {
+      await notifyPlannersIfAllActionsClosed({
+        programmeId: action.programme,
+        sender: req.admin,
+      });
+    } catch (notifyError) {
+      console.error("All-actions-closed notification failed:", notifyError);
+    }
+
     const updatedAction = await Action.findById(action._id)
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
@@ -745,6 +994,16 @@ router.patch("/:id/override", protect, async (req, res) => {
     action.overriddenBy = req.admin._id;
     action.overriddenAt = new Date();
     await action.save();
+
+    // Announce to planners once nothing is left open on this programme.
+    try {
+      await notifyPlannersIfAllActionsClosed({
+        programmeId: action.programme,
+        sender: req.admin,
+      });
+    } catch (notifyError) {
+      console.error("All-actions-closed notification failed:", notifyError);
+    }
 
     // An override closes the action, so the linked activity must re-derive.
     if (action.linkedActivity?.activityId) {

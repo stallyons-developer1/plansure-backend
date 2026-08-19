@@ -23,6 +23,116 @@ const CLOSED_ACTION_STATUSES = [
 const isActionOpen = (action) =>
   !!action && !CLOSED_ACTION_STATUSES.includes(action.status);
 
+const AUTO_OVERRIDE_REASON =
+  "Automatically force-closed by the system: the governance week ended without completion.";
+
+/* End of the governance week (anchor + 7n .. +6 days) that a date falls into. */
+const weekEndFor = (date, anchor) => {
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const index = Math.floor((date - anchor) / (7 * msPerDay));
+  const end = new Date(anchor);
+  end.setDate(anchor.getDate() + index * 7 + 6);
+  end.setHours(23, 59, 59, 999);
+  return end;
+};
+
+/*
+ * Force-closes any still-open action whose GOVERNANCE WEEK has ended.
+ *
+ * The trigger is the week window closing, not the action slipping: an action
+ * due 18 Aug in the 18–24 Aug week stays open and simply overdue until 24 Aug
+ * passes, then it is force-closed.
+ *
+ * NOTE: unlike a PM Override raised by a person, this has no human
+ * justification and no accountable actor, so `overriddenBy` is deliberately
+ * left unset and the audit entry is tagged `automatic: true`. That keeps the
+ * two kinds of override distinguishable in the record.
+ *
+ * Returns the actions it closed, so callers can report on them.
+ */
+const autoOverrideOverdueActions = async (ActionModel, programmeId) => {
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+
+  const Programme = require("../models/Programme");
+  const programme = await Programme.findById(programmeId).select(
+    "lookaheadStartDate extractedData.activities",
+  );
+  if (!programme) return [];
+
+  // Week windows are measured from the same anchor the lookahead uses.
+  let anchor = programme.lookaheadStartDate
+    ? new Date(programme.lookaheadStartDate)
+    : null;
+  if (!anchor) {
+    for (const activity of programme.extractedData?.activities || []) {
+      const start = parseActivityDate(activity.startDate);
+      if (start && (!anchor || start < anchor)) anchor = start;
+    }
+  }
+  if (!anchor) return [];
+  anchor.setHours(0, 0, 0, 0);
+
+  const candidates = await ActionModel.find({
+    programme: programmeId,
+    status: { $in: ["Open", "In Progress"] },
+    dueDate: { $ne: null },
+    // Never undo a person's deliberate decision to reopen an action.
+    autoOverrideExempt: { $ne: true },
+  });
+
+  const overdue = candidates.filter(
+    (action) => weekEndFor(new Date(action.dueDate), anchor) < startOfToday,
+  );
+
+  if (overdue.length === 0) return [];
+
+  const auditLogger = require("./auditLogger");
+
+  for (const action of overdue) {
+    const previousStatus = action.status;
+    action.status = "PM Override";
+    action.overrideReason = AUTO_OVERRIDE_REASON;
+    action.overriddenAt = new Date();
+    action.overriddenBy = undefined;
+    await action.save();
+
+    try {
+      await auditLogger.log({
+        action: "ACTION_PM_OVERRIDE",
+        category: "ACTION",
+        resourceType: "Action",
+        resourceId: action._id,
+        resourceName: action.title,
+        description: `System auto-override: action "${action.title}" was still open when its governance week ended.`,
+        changes: {
+          before: { status: previousStatus },
+          after: { status: "PM Override" },
+        },
+        metadata: {
+          overrideReason: AUTO_OVERRIDE_REASON,
+          automatic: true,
+          dueDate: action.dueDate,
+        },
+      });
+    } catch (auditError) {
+      console.error("Audit log failed (auto override):", auditError);
+    }
+  }
+
+  // The sweep can be what closes the last open action, so it announces too.
+  try {
+    const {
+      notifyPlannersIfAllActionsClosed,
+    } = require("./plannerNotifications");
+    await notifyPlannersIfAllActionsClosed({ programmeId });
+  } catch (notifyError) {
+    console.error("All-actions-closed notification failed:", notifyError);
+  }
+
+  return overdue;
+};
+
 const MONTHS = {
   Jan: 0,
   Feb: 1,
@@ -183,6 +293,8 @@ const syncProgrammesGovernance = async (
 module.exports = {
   CYCLE_LENGTH_DAYS,
   CLOSED_ACTION_STATUSES,
+  AUTO_OVERRIDE_REASON,
+  autoOverrideOverdueActions,
   getCycleEndDate,
   isActionOpen,
   computeGovernanceStatus,

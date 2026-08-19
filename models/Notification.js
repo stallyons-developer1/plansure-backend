@@ -18,6 +18,7 @@ const notificationSchema = new mongoose.Schema(
         "action_reassigned",
         "action_completed",
         "project_assigned",
+        "planner_todo_generated",
         "general",
       ],
       required: true,

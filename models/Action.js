@@ -79,6 +79,13 @@ const actionSchema = new mongoose.Schema(
     overriddenAt: {
       type: Date,
     },
+    // Set when a person deliberately moves an action off PM Override. The
+    // automatic overdue sweep skips these, so a human decision is not undone
+    // by the system on the next page load.
+    autoOverrideExempt: {
+      type: Boolean,
+      default: false,
+    },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Admin",
