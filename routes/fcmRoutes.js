@@ -34,24 +34,38 @@ router.post("/register-token", protect, async (req, res) => {
       { $pull: { fcmTokens: { token } } },
     );
 
-    const existingTokenIndex = user.fcmTokens.findIndex(
-      (t) => t.token === token,
+    /*
+     * Both steps below are conditional on the token's absence/presence inside
+     * the update filter itself. Read-modify-write here (findById, scan the
+     * array, push, save) loses the race when a browser registers twice at
+     * once — both reads see no token, both push a row, and every later push
+     * reaches that browser once per row as duplicate OS notifications.
+     */
+    const touched = await Admin.updateOne(
+      { _id: user._id, "fcmTokens.token": token },
+      { $set: { "fcmTokens.$.lastUsed": new Date() } },
     );
 
-    if (existingTokenIndex !== -1) {
-      user.fcmTokens[existingTokenIndex].lastUsed = new Date();
-      await user.save();
+    if (touched.matchedCount > 0) {
       return sendSuccess(res, {}, "Token already registered, updated lastUsed");
     }
 
-    user.fcmTokens.push({
-      token,
-      deviceInfo: deviceInfo || "Unknown device",
-      createdAt: new Date(),
-      lastUsed: new Date(),
-    });
+    // Matches only while the token is still absent, so a concurrent insert
+    // makes this a no-op rather than a second row.
+    await Admin.updateOne(
+      { _id: user._id, "fcmTokens.token": { $ne: token } },
+      {
+        $push: {
+          fcmTokens: {
+            token,
+            deviceInfo: deviceInfo || "Unknown device",
+            createdAt: new Date(),
+            lastUsed: new Date(),
+          },
+        },
+      },
+    );
 
-    await user.save();
     return sendSuccess(res, {}, "FCM token registered successfully");
   } catch (error) {
     console.error("FCM token registration error:", error);

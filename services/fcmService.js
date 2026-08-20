@@ -15,7 +15,12 @@ const sendToUser = async (userId, notification) => {
       return { success: false, reason: "No valid FCM tokens or push disabled" };
     }
 
-    const tokens = user.fcmTokens.map((t) => t.token);
+    /*
+     * One token is one browser. Addressing the same token twice makes that
+     * browser raise two OS notifications, so collapse repeats before the
+     * multicast regardless of how the rows got there.
+     */
+    const tokens = [...new Set(user.fcmTokens.map((t) => t.token))];
     return await sendToTokens(tokens, notification, userId);
   } catch (error) {
     console.error("[Push] sendToUser ERROR:", error);
