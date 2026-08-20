@@ -592,6 +592,14 @@ router.post(
             summary: refreshedSummary,
             status: programme.status,
             activities: refreshedActivities,
+            // Included so the workspace can show the uploader straight after
+            // upload; without it the Owner column fell back to "Unknown"
+            // until the page was reloaded.
+            uploadedBy: {
+              _id: req.admin._id,
+              name: req.admin.name,
+              email: req.admin.email,
+            },
             createdAt: programme.createdAt,
             lastUpdated: programme.updatedAt,
           },

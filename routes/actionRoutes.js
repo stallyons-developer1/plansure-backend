@@ -424,13 +424,19 @@ router.get("/:id", protect, async (req, res) => {
     if (action.linkedActivity?.activityId) {
       const programme = await Programme.findById(
         action.programme?._id || action.programme,
-      ).select(
-        "extractedData.activities",
-      );
+      )
+        .select("extractedData.activities uploadedBy")
+        .populate("uploadedBy", "name");
+
+      // Nothing writes activity.ownerName yet, so fall back to whoever
+      // uploaded the programme — the same value the workspace shows in its
+      // Owner column. Without this the two views disagreed.
       linkedActivityOwnerName =
         programme?.extractedData?.activities?.find(
           (a) => a.activityId === action.linkedActivity.activityId,
-        )?.ownerName || "";
+        )?.ownerName ||
+        programme?.uploadedBy?.name ||
+        "";
     }
 
     return sendSuccess(res, {

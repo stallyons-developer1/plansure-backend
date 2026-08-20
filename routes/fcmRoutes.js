@@ -22,6 +22,18 @@ router.post("/register-token", protect, async (req, res) => {
       user.fcmTokens = [];
     }
 
+    /*
+     * A token identifies a browser, not a person, so it must belong to exactly
+     * one account — the one currently signed in. Without this, logging in as a
+     * second user on the same browser leaves the token on both accounts and
+     * every push to either one lands on the same device, which looks like
+     * duplicate notifications.
+     */
+    await Admin.updateMany(
+      { _id: { $ne: user._id }, "fcmTokens.token": token },
+      { $pull: { fcmTokens: { token } } },
+    );
+
     const existingTokenIndex = user.fcmTokens.findIndex(
       (t) => t.token === token,
     );

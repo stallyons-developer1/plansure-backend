@@ -21,12 +21,101 @@ router.get("/", protect, adminOnly, async (req, res) => {
 
     const filter = {};
 
-    // Week lives in metadata, written by the close-week, PM-override and
-    // export events. Entries without one simply drop out of a week filter.
+    /*
+     * "Week 1" means everything that happened during that governance week, not
+     * only the handful of events that record a week number in metadata.
+     *
+     * Matching on metadata.weekNumber alone returned just the export and
+     * week-close entries — an action created in the same week was invisible.
+     * So the week is resolved to its date window per programme (anchor +
+     * 7n .. +6 days) and events are matched on when they occurred, with
+     * metadata-tagged entries still included so nothing is lost.
+     */
     if (weekNumber !== undefined && weekNumber !== "") {
       const parsedWeek = parseInt(weekNumber);
       if (!Number.isNaN(parsedWeek)) {
-        filter["metadata.weekNumber"] = parsedWeek;
+        const Programme = require("../models/Programme");
+        const programmes = await Programme.find(
+          projectId ? { project: projectId } : {},
+        ).select("project closedWeeks");
+
+        /*
+         * A governance week is a cycle, not a calendar span. Deriving windows
+         * from lookaheadStartDate + 7n put every cycle uploaded on the same day
+         * inside Week 1 and left Week 2 pointing at future dates with nothing
+         * in it.
+         *
+         * So the boundaries come from the closures themselves: week N runs from
+         * the close of week N-1 up to the close of week N, and the week in
+         * progress runs from the last close to now. Week 1 starts at the
+         * beginning of time so the project-creation events land in it.
+         */
+        const closuresByProject = {};
+        for (const programme of programmes) {
+          if (!programme.project) continue;
+          const key = String(programme.project);
+          for (const closed of programme.closedWeeks || []) {
+            if (!closed.closedAt) continue;
+            (closuresByProject[key] = closuresByProject[key] || []).push({
+              project: programme.project,
+              at: new Date(closed.closedAt),
+            });
+          }
+          closuresByProject[key] = closuresByProject[key] || [];
+        }
+
+        const now = new Date();
+        const clauses = [];
+
+        /*
+         * The WEEK_CLOSED audit row is written a few milliseconds after the
+         * closedAt it records, so an exact boundary pushes a week's own
+         * closing event into the following week. A small tolerance keeps it
+         * where it belongs without reaching the next closure.
+         */
+        const BOUNDARY_TOLERANCE_MS = 5000;
+
+        for (const key of Object.keys(closuresByProject)) {
+          const closures = closuresByProject[key].sort((a, b) => a.at - b.at);
+          // Only the week in progress may exceed the closed count.
+          if (parsedWeek > closures.length + 1) continue;
+
+          const project =
+            closures[0]?.project ||
+            programmes.find((p) => String(p.project) === key)?.project;
+          if (!project) continue;
+
+          const start =
+            parsedWeek === 1
+              ? new Date(0)
+              : new Date(
+                  closures[parsedWeek - 2].at.getTime() +
+                    BOUNDARY_TOLERANCE_MS,
+                );
+          const end = closures[parsedWeek - 1]
+            ? new Date(
+                closures[parsedWeek - 1].at.getTime() + BOUNDARY_TOLERANCE_MS,
+              )
+            : now;
+
+          clauses.push({ project, createdAt: { $gt: start, $lte: end } });
+        }
+
+        /*
+         * Deliberately NOT falling back to metadata.weekNumber. That field is
+         * the PROGRAMME's week number, and every programme closes its own
+         * "Week 1" — so a project on its second cycle has two events tagged
+         * week 1, and matching on it dragged the second cycle's closure into
+         * the project's Week 1. The cycle windows above are complete on their
+         * own: per-week counts sum to the project total.
+         *
+         * No clauses means no project has reached this week, so match nothing
+         * rather than falling through to every row.
+         */
+        filter.$and = [
+          ...(filter.$and || []),
+          { $or: clauses.length > 0 ? clauses : [{ _id: null }] },
+        ];
       }
     }
 
@@ -124,20 +213,53 @@ router.get("/actions", protect, adminOnly, async (req, res) => {
   }
 });
 
-/* Week numbers that actually appear in the log, for the filter dropdown.
+/* Week numbers available to the filter dropdown.
    Must stay above "/:id" or Express treats "weeks" as an id. */
 router.get("/weeks", protect, adminOnly, async (req, res) => {
   try {
     const { projectId } = req.query;
-    const scope = projectId ? { project: projectId } : {};
+    const Programme = require("../models/Programme");
 
-    const values = await AuditLog.distinct("metadata.weekNumber", scope);
-    const weeks = values
-      .map((v) => parseInt(v))
-      .filter((v) => Number.isInteger(v))
-      .sort((a, b) => a - b);
+    /*
+     * Offer weeks up to the most any PROJECT has actually closed — not the
+     * programme's full span, which would list every week of a 12-week job on
+     * day one.
+     *
+     * Weeks accumulate per project, not per programme: each programme is one
+     * cycle and closes its own "Week 1", so a project two cycles in has closed
+     * two weeks. Counting per programme capped the list at 1 forever. This
+     * matches the workspace header ("Week 3 (2 closed)").
+     *
+     * Across projects the furthest-ahead one sets the ceiling, so projects
+     * closing 1, 3 and 2 weeks offer Weeks 1-3.
+     */
+    const programmes = await Programme.find(
+      projectId ? { project: projectId } : {},
+    ).select("project closedWeeks");
 
-    return sendSuccess(res, { weeks: [...new Set(weeks)] });
+    const closedByProject = {};
+    for (const programme of programmes) {
+      const key = String(programme.project || "unassigned");
+      closedByProject[key] =
+        (closedByProject[key] || 0) + (programme.closedWeeks || []).length;
+    }
+
+    let highest = Math.max(0, ...Object.values(closedByProject));
+
+    // metadata.weekNumber is deliberately not consulted here: it is the
+    // programme's own week number, so a 6-week programme would offer six weeks
+    // for a project that has only closed one cycle.
+
+    // Nothing closed yet, but events still belong to week 1.
+    if (highest === 0) {
+      const hasEvents = await AuditLog.countDocuments(
+        projectId ? { project: projectId } : {},
+      );
+      if (hasEvents > 0) highest = 1;
+    }
+
+    const weeks = Array.from({ length: highest }, (_, i) => i + 1);
+    return sendSuccess(res, { weeks });
   } catch (error) {
     console.error("Get audit weeks error:", error);
     return sendError(res, "Server error");

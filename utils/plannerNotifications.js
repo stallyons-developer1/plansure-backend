@@ -1,6 +1,93 @@
 const { CLOSED_ACTION_STATUSES } = require("./governance");
 
 /*
+ * Who counts as "the planners" for a programme.
+ *
+ * Every active planner is included, not only those assigned to the project:
+ * planners are not reliably linked to projects in this data, so scoping by
+ * assignment silently reached nobody. Project team members carrying the
+ * Planner role are included too, since that is recorded separately. The person
+ * who triggered the event is excluded — they do not need telling.
+ */
+const resolvePlannerRecipients = async ({ project, sender }) => {
+  const Admin = require("../models/Admin");
+
+  const planners = await Admin.find({
+    role: "planner",
+    status: "active",
+  }).select("_id");
+
+  const teamPlanners = (project?.team || [])
+    .filter((member) => member.role === "Planner" && member.user)
+    .map((member) => member.user);
+
+  return [
+    ...new Set(
+      [...planners.map((p) => p._id), ...teamPlanners]
+        .filter(Boolean)
+        .map(String),
+    ),
+  ].filter((id) => id !== String(sender?._id));
+};
+
+/* Creates the in-app notification and fires the matching push. */
+const dispatch = async ({ recipients, sender, title, message, programme }) => {
+  const Notification = require("../models/Notification");
+  const { sendPushForNotification } = require("../services/fcmService");
+
+  for (const recipient of recipients) {
+    await Notification.create({
+      recipient,
+      sender: sender?._id,
+      type: "planner_todo_generated",
+      title,
+      message,
+      programme: programme._id,
+      project: programme.project,
+    });
+
+    sendPushForNotification(recipient, "planner_todo_generated", {
+      title,
+      message,
+      programmeId: programme._id,
+      projectId: programme.project,
+    });
+  }
+
+  return recipients;
+};
+
+/*
+ * Notifies planners that a Planner To-Do has been issued for them to work
+ * through. Fires when the list is generated.
+ */
+const notifyPlannersOfTodoGenerated = async ({
+  programme,
+  weekNumber,
+  totalActions,
+  sender,
+}) => {
+  if (!programme) return [];
+
+  const Project = require("../models/Project");
+  const project = programme.project
+    ? await Project.findById(programme.project).select("team name")
+    : null;
+
+  const recipients = await resolvePlannerRecipients({ project, sender });
+  if (recipients.length === 0) return [];
+
+  const title = "Planner To-Do Issued";
+  const message = `The Planner To-Do for Week ${weekNumber} on "${
+    project?.name || programme.name
+  }" is ready — ${totalActions} item${
+    totalActions === 1 ? "" : "s"
+  } to action.`;
+
+  return dispatch({ recipients, sender, title, message, programme });
+};
+
+/*
  * Notifies planners once a programme has no open actions left — every action
  * is either Completed or force-closed by PM Override.
  *
@@ -13,9 +100,6 @@ const notifyPlannersIfAllActionsClosed = async ({ programmeId, sender }) => {
   const Action = require("../models/Action");
   const Programme = require("../models/Programme");
   const Project = require("../models/Project");
-  const Admin = require("../models/Admin");
-  const Notification = require("../models/Notification");
-  const { sendPushForNotification } = require("../services/fcmService");
 
   const [total, stillOpen] = await Promise.all([
     Action.countDocuments({ programme: programmeId }),
@@ -41,53 +125,19 @@ const notifyPlannersIfAllActionsClosed = async ({ programmeId, sender }) => {
     ? await Project.findById(programme.project).select("team name")
     : null;
 
-  const planners = await Admin.find({
-    role: "planner",
-    status: "active",
-  }).select("_id");
-
-  const teamPlanners = (project?.team || [])
-    .filter((member) => member.role === "Planner" && member.user)
-    .map((member) => member.user);
-
-  const recipients = [
-    ...new Set(
-      [...planners.map((p) => p._id), ...teamPlanners]
-        .filter(Boolean)
-        .map(String),
-    ),
-  ].filter((id) => id !== String(sender?._id));
-
+  const recipients = await resolvePlannerRecipients({ project, sender });
   if (recipients.length === 0) return [];
 
   const title = "All Actions Closed";
-  const overriddenNote = overridden
-    ? ` (${overridden} via PM Override)`
-    : "";
+  const overriddenNote = overridden ? ` (${overridden} via PM Override)` : "";
   const message = `All ${total} action${total === 1 ? "" : "s"} on "${
     project?.name || programme.name
   }" are now closed — ${completed} completed${overriddenNote}. The programme is ready for your update.`;
 
-  for (const recipient of recipients) {
-    await Notification.create({
-      recipient,
-      sender: sender?._id,
-      type: "planner_todo_generated",
-      title,
-      message,
-      programme: programme._id,
-      project: programme.project,
-    });
-
-    sendPushForNotification(recipient, "planner_todo_generated", {
-      title,
-      message,
-      programmeId: programme._id,
-      projectId: programme.project,
-    });
-  }
-
-  return recipients;
+  return dispatch({ recipients, sender, title, message, programme });
 };
 
-module.exports = { notifyPlannersIfAllActionsClosed };
+module.exports = {
+  notifyPlannersOfTodoGenerated,
+  notifyPlannersIfAllActionsClosed,
+};

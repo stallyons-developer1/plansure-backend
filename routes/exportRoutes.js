@@ -11,6 +11,9 @@ const Export = require("../models/Export");
 const { protect } = require("../middleware/authMiddleware");
 const { sendError, sendSuccess } = require("../utils/errorResponse");
 const auditLogger = require("../utils/auditLogger");
+const {
+  notifyPlannersOfTodoGenerated,
+} = require("../utils/plannerNotifications");
 
 const exportsDir = path.join(__dirname, "../uploads/exports");
 if (!fs.existsSync(exportsDir)) {
@@ -196,6 +199,10 @@ router.post("/weekly-plan", protect, async (req, res) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    // Owner is recorded on the activity, so actions resolve it by activity id.
+    const ownerFor = (activityId) =>
+      activities.find((a) => a.activityId === activityId)?.ownerName || "-";
+
     const parseActivityDate = (dateStr) => {
       if (!dateStr) return null;
       const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
@@ -245,12 +252,15 @@ router.post("/weekly-plan", protect, async (req, res) => {
       currentWeekNumber =
         requestedWeekNumber || Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
 
-      const pairFirstWeek =
-        currentWeekNumber % 2 === 1 ? currentWeekNumber : currentWeekNumber - 1;
+      // A single governance week. This previously snapped to the odd-numbered
+      // week of a pair and spanned 14 days, so an export labelled "W3" also
+      // carried W4's actions.
       weekStartDate = new Date(referenceDate);
-      weekStartDate.setDate(referenceDate.getDate() + (pairFirstWeek - 1) * 7);
+      weekStartDate.setDate(
+        referenceDate.getDate() + (currentWeekNumber - 1) * 7,
+      );
       weekEndDate = new Date(weekStartDate);
-      weekEndDate.setDate(weekStartDate.getDate() + 13);
+      weekEndDate.setDate(weekStartDate.getDate() + 6);
     }
 
     const allActions = await Action.find({
@@ -384,7 +394,7 @@ router.post("/weekly-plan", protect, async (req, res) => {
       return false;
     });
 
-    const currentWeek = `W${currentWeekNumber}-${currentWeekNumber + 1}`;
+    const currentWeek = `W${currentWeekNumber}`;
 
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "PlanSure";
@@ -394,11 +404,15 @@ router.post("/weekly-plan", protect, async (req, res) => {
     completedSheet.columns = [
       { header: "Action ID", key: "actionId", width: 15 },
       { header: "Title", key: "title", width: 40 },
+      { header: "Description", key: "description", width: 50 },
       { header: "Linked Activity", key: "linkedActivity", width: 30 },
+      { header: "Type", key: "type", width: 12 },
+      { header: "Priority", key: "priority", width: 12 },
       { header: "Assignee", key: "assignee", width: 20 },
       { header: "Due Date", key: "dueDate", width: 15 },
+      { header: "Status", key: "status", width: 14 },
+      { header: "Owner", key: "owner", width: 20 },
       { header: "Completed Date", key: "completedDate", width: 15 },
-      { header: "Priority", key: "priority", width: 12 },
     ];
     completedSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
     completedSheet.getRow(1).fill = {
@@ -411,7 +425,11 @@ router.post("/weekly-plan", protect, async (req, res) => {
       completedSheet.addRow({
         actionId: `ACT-${String(action._id).slice(-4).toUpperCase()}`,
         title: action.title || "-",
+        description: action.description || "-",
         linkedActivity: action.linkedActivity?.activityName || "-",
+        type: action.type || "-",
+        status: action.status || "-",
+        owner: ownerFor(action.linkedActivity?.activityId),
         assignee: action.assignee?.name || "-",
         dueDate: action.dueDate
           ? new Date(action.dueDate).toLocaleDateString()
@@ -427,11 +445,15 @@ router.post("/weekly-plan", protect, async (req, res) => {
     overdueSheet.columns = [
       { header: "Action ID", key: "actionId", width: 15 },
       { header: "Title", key: "title", width: 40 },
+      { header: "Description", key: "description", width: 50 },
       { header: "Linked Activity", key: "linkedActivity", width: 30 },
+      { header: "Type", key: "type", width: 12 },
+      { header: "Priority", key: "priority", width: 12 },
       { header: "Assignee", key: "assignee", width: 20 },
       { header: "Due Date", key: "dueDate", width: 15 },
+      { header: "Status", key: "status", width: 14 },
+      { header: "Owner", key: "owner", width: 20 },
       { header: "Days Overdue", key: "daysOverdue", width: 15 },
-      { header: "Priority", key: "priority", width: 12 },
     ];
     overdueSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
     overdueSheet.getRow(1).fill = {
@@ -447,7 +469,11 @@ router.post("/weekly-plan", protect, async (req, res) => {
       overdueSheet.addRow({
         actionId: `ACT-${String(action._id).slice(-4).toUpperCase()}`,
         title: action.title || "-",
+        description: action.description || "-",
         linkedActivity: action.linkedActivity?.activityName || "-",
+        type: action.type || "-",
+        status: action.status || "-",
+        owner: ownerFor(action.linkedActivity?.activityId),
         assignee: action.assignee?.name || "-",
         dueDate: action.dueDate
           ? new Date(action.dueDate).toLocaleDateString()
@@ -461,11 +487,15 @@ router.post("/weekly-plan", protect, async (req, res) => {
     pmOverrideSheet.columns = [
       { header: "Action ID", key: "actionId", width: 15 },
       { header: "Title", key: "title", width: 40 },
+      { header: "Description", key: "description", width: 50 },
       { header: "Linked Activity", key: "linkedActivity", width: 30 },
+      { header: "Type", key: "type", width: 12 },
+      { header: "Priority", key: "priority", width: 12 },
       { header: "Assignee", key: "assignee", width: 20 },
       { header: "Due Date", key: "dueDate", width: 15 },
+      { header: "Status", key: "status", width: 14 },
+      { header: "Owner", key: "owner", width: 20 },
       { header: "Override Date", key: "overrideDate", width: 15 },
-      { header: "Priority", key: "priority", width: 12 },
     ];
     pmOverrideSheet.getRow(1).font = {
       bold: true,
@@ -481,7 +511,11 @@ router.post("/weekly-plan", protect, async (req, res) => {
       pmOverrideSheet.addRow({
         actionId: `ACT-${String(action._id).slice(-4).toUpperCase()}`,
         title: action.title || "-",
+        description: action.description || "-",
         linkedActivity: action.linkedActivity?.activityName || "-",
+        type: action.type || "-",
+        status: action.status || "-",
+        owner: ownerFor(action.linkedActivity?.activityId),
         assignee: action.assignee?.name || "-",
         dueDate: action.dueDate
           ? new Date(action.dueDate).toLocaleDateString()
@@ -810,12 +844,15 @@ router.post("/planner-todo", protect, async (req, res) => {
       currentWeekNumber =
         requestedWeekNumber || Math.max(1, Math.ceil((daysSinceStart + 1) / 7));
 
-      const pairFirstWeek =
-        currentWeekNumber % 2 === 1 ? currentWeekNumber : currentWeekNumber - 1;
+      // A single governance week. This previously snapped to the odd-numbered
+      // week of a pair and spanned 14 days, so an export labelled "W3" also
+      // carried W4's actions.
       weekStartDate = new Date(referenceDate);
-      weekStartDate.setDate(referenceDate.getDate() + (pairFirstWeek - 1) * 7);
+      weekStartDate.setDate(
+        referenceDate.getDate() + (currentWeekNumber - 1) * 7,
+      );
       weekEndDate = new Date(weekStartDate);
-      weekEndDate.setDate(weekStartDate.getDate() + 13);
+      weekEndDate.setDate(weekStartDate.getDate() + 6);
     }
 
     let actions = await Action.find({
@@ -857,17 +894,25 @@ router.post("/planner-todo", protect, async (req, res) => {
     workbook.creator = "PlanSure";
     workbook.created = new Date();
 
+    // Owner is recorded on the activity, so actions resolve it by activity id.
+    const ownerFor = (activityId) =>
+      activities.find((a) => a.activityId === activityId)?.ownerName || "-";
+
     const addActionRows = (sheet, actionList, includeOverdue = false) => {
       actionList.forEach((action) => {
         const row = {
           actionId: `ACT-${String(action._id).slice(-4).toUpperCase()}`,
           title: action.title || "-",
+          description: action.description || "-",
           linkedActivity: action.linkedActivity?.activityName || "-",
+          type: action.type || "-",
+          priority: action.priority || "-",
           assignee: action.assignee?.name || "-",
           dueDate: action.dueDate
             ? new Date(action.dueDate).toLocaleDateString()
             : "-",
-          priority: action.priority || "-",
+          status: action.status || "-",
+          owner: ownerFor(action.linkedActivity?.activityId),
         };
         if (includeOverdue) {
           row.daysOverdue = action.dueDate
@@ -880,13 +925,18 @@ router.post("/planner-todo", protect, async (req, res) => {
       });
     };
 
+    // Mirrors the fields captured on the action form.
     const baseColumns = [
       { header: "Action ID", key: "actionId", width: 15 },
       { header: "Title", key: "title", width: 40 },
+      { header: "Description", key: "description", width: 50 },
       { header: "Linked Activity", key: "linkedActivity", width: 30 },
+      { header: "Type", key: "type", width: 12 },
+      { header: "Priority", key: "priority", width: 12 },
       { header: "Assignee", key: "assignee", width: 20 },
       { header: "Due Date", key: "dueDate", width: 15 },
-      { header: "Priority", key: "priority", width: 12 },
+      { header: "Status", key: "status", width: 14 },
+      { header: "Owner", key: "owner", width: 20 },
     ];
 
     const openSheet = workbook.addWorksheet("Open Actions");
@@ -931,12 +981,16 @@ router.post("/planner-todo", protect, async (req, res) => {
       overrideSheet.addRow({
         actionId: `ACT-${String(action._id).slice(-4).toUpperCase()}`,
         title: action.title || "-",
+        description: action.description || "-",
         linkedActivity: action.linkedActivity?.activityName || "-",
+        type: action.type || "-",
+        priority: action.priority || "-",
         assignee: action.assignee?.name || "-",
         dueDate: action.dueDate
           ? new Date(action.dueDate).toLocaleDateString()
           : "-",
-        priority: action.priority || "-",
+        status: action.status || "-",
+        owner: ownerFor(action.linkedActivity?.activityId),
         overrideReason: action.overrideReason || "-",
         overriddenBy: action.overriddenBy?.name || "-",
         overriddenAt: action.overriddenAt
@@ -976,7 +1030,7 @@ router.post("/planner-todo", protect, async (req, res) => {
     }
     summarySheet.addRow({ metric: "", value: "" });
     summarySheet.addRow({
-      metric: "Total Actions (Current 2 Weeks)",
+      metric: "Total Actions (Current Week)",
       value:
         openActions.length +
         inProgressActions.length +
@@ -987,6 +1041,12 @@ router.post("/planner-todo", protect, async (req, res) => {
     summarySheet.addRow({
       metric: "In Progress Actions",
       value: inProgressActions.length,
+    });
+    // Broken out so the total reconciles: overridden actions were counted in
+    // "Total Actions" but had no line of their own.
+    summarySheet.addRow({
+      metric: "PM Override Actions",
+      value: overriddenActions.length,
     });
 
     const fileName = `Planner_ToDo_${currentWeek}_${Date.now()}.xlsx`;
@@ -1018,6 +1078,19 @@ router.post("/planner-todo", protect, async (req, res) => {
       currentWeekNumber,
       totalActions,
     );
+
+    // Tell planners the list has been issued (MS-05 §5). Isolated so a
+    // notification failure cannot fail the download.
+    try {
+      await notifyPlannersOfTodoGenerated({
+        programme: activeProgramme,
+        weekNumber: currentWeekNumber,
+        totalActions,
+        sender: req.admin,
+      });
+    } catch (notifyError) {
+      console.error("Planner To-Do notification failed:", notifyError);
+    }
 
     res.setHeader(
       "Content-Type",
@@ -1212,7 +1285,7 @@ router.post("/activities-pdf", protect, async (req, res) => {
         };
       });
 
-    const currentWeek = `W${currentWeekNumber}-${currentWeekNumber + 1}`;
+    const currentWeek = `W${currentWeekNumber}`;
 
     const doc = new PDFDocument({
       margin: 40,
