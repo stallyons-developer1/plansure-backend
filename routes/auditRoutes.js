@@ -162,7 +162,7 @@ router.get("/", protect, adminOnly, async (req, res) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit))
-        .populate("performedBy", "name email")
+        .populate("performedBy", "name email role")
         .populate("project", "name"),
       AuditLog.countDocuments(filter),
     ]);
@@ -359,7 +359,7 @@ router.get("/stats", protect, adminOnly, async (req, res) => {
 router.get("/:id", protect, adminOnly, async (req, res) => {
   try {
     const log = await AuditLog.findById(req.params.id)
-      .populate("performedBy", "name email")
+      .populate("performedBy", "name email role")
       .populate("project", "name");
 
     if (!log) {
@@ -390,7 +390,7 @@ router.get("/resource/:type/:id", protect, adminOnly, async (req, res) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit))
-        .populate("performedBy", "name email"),
+        .populate("performedBy", "name email role"),
       AuditLog.countDocuments(filter),
     ]);
 
