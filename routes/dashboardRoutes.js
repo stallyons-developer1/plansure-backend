@@ -555,7 +555,7 @@ router.get("/recent-activity", protect, async (req, res) => {
 
 router.get("/governance", protect, async (req, res) => {
   try {
-    const { projectId } = req.query;
+    const { projectId, startDate, endDate } = req.query;
     const CycleHistory = require("../models/CycleHistory");
 
     let projects;
@@ -606,9 +606,39 @@ router.get("/governance", protect, async (req, res) => {
 
     const programmeIds = programmes.map((p) => p._id);
 
-    const cycleHistory = await CycleHistory.find({
-      programme: { $in: programmeIds },
-    })
+    /* Optional date range, applied to when each week was closed. Governance
+       is measured from closed weeks, so narrowing the range narrows every
+       score and trend derived below. */
+    let rangeFrom = null;
+    let rangeTo = null;
+    if (startDate) {
+      rangeFrom = new Date(startDate);
+      rangeFrom.setHours(0, 0, 0, 0);
+    }
+    if (endDate) {
+      rangeTo = new Date(endDate);
+      rangeTo.setHours(23, 59, 59, 999);
+    }
+
+    /* Shared bound check for the panels that hang off activity dates rather
+       than closed weeks (constraint intelligence, recurring blockers). An
+       undated row is kept, since excluding it would silently shrink counts
+       the range was never meant to touch. */
+    const inRange = (date) => {
+      if (!date) return true;
+      if (rangeFrom && date < rangeFrom) return false;
+      if (rangeTo && date > rangeTo) return false;
+      return true;
+    };
+
+    const cycleFilter = { programme: { $in: programmeIds } };
+    if (rangeFrom || rangeTo) {
+      cycleFilter.createdAt = {};
+      if (rangeFrom) cycleFilter.createdAt.$gte = rangeFrom;
+      if (rangeTo) cycleFilter.createdAt.$lte = rangeTo;
+    }
+
+    const cycleHistory = await CycleHistory.find(cycleFilter)
       .populate("closedBy", "name")
       .sort({ createdAt: -1 });
 
@@ -617,7 +647,9 @@ router.get("/governance", protect, async (req, res) => {
         governance: {
           hasData: false,
           message:
-            "No weeks closed yet. Governance data will appear after you close your first week.",
+            startDate || endDate
+              ? "No weeks were closed in the selected date range."
+              : "No weeks closed yet. Governance data will appear after you close your first week.",
         },
       });
     }
@@ -954,6 +986,7 @@ router.get("/governance", protect, async (req, res) => {
     for (const prog of programmes) {
       const activities = prog.extractedData?.activities || [];
       activities.forEach((a) => {
+        if (!inRange(parseDate(a.finishDate))) return;
         if (a.isBlocked && a.blocker) {
           blockerTypes.add(a.blocker.split(" ")[0]);
         }
@@ -1078,6 +1111,7 @@ router.get("/governance", protect, async (req, res) => {
       activities.forEach((a) => {
         const activityType = extractActivityType(a.activityName);
         const finishDate = parseDate(a.finishDate);
+        if (!inRange(finishDate)) return;
 
         const isCompleted =
           a.status === "Completed" ||
