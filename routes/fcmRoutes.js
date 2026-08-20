@@ -41,9 +41,30 @@ router.post("/register-token", protect, async (req, res) => {
      * once — both reads see no token, both push a row, and every later push
      * reaches that browser once per row as duplicate OS notifications.
      */
+    /*
+     * Every deployment URL is its own origin holding its own token, so an
+     * account that has signed into several of them gets pushed to once per
+     * deployment. Signing in here supersedes those: keep this origin's
+     * tokens and drop the rest, which also clears legacy rows that predate
+     * this field ($ne matches a missing origin). Several devices on the
+     * same site keep working, since they share an origin.
+     */
+    const origin = req.get("origin") || null;
+    if (origin) {
+      await Admin.updateOne(
+        { _id: user._id },
+        { $pull: { fcmTokens: { origin: { $ne: origin } } } },
+      );
+    }
+
     const touched = await Admin.updateOne(
       { _id: user._id, "fcmTokens.token": token },
-      { $set: { "fcmTokens.$.lastUsed": new Date() } },
+      {
+        $set: {
+          "fcmTokens.$.lastUsed": new Date(),
+          "fcmTokens.$.origin": origin,
+        },
+      },
     );
 
     if (touched.matchedCount > 0) {
@@ -59,6 +80,7 @@ router.post("/register-token", protect, async (req, res) => {
           fcmTokens: {
             token,
             deviceInfo: deviceInfo || "Unknown device",
+            origin,
             createdAt: new Date(),
             lastUsed: new Date(),
           },

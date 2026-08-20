@@ -52,6 +52,13 @@ const adminSchema = new mongoose.Schema(
           type: String,
           default: "Unknown device",
         },
+        // Site the token was issued for. Each deployment URL is a separate
+        // origin with its own token, so an account signed into several of
+        // them would otherwise be pushed to once per deployment.
+        origin: {
+          type: String,
+          default: null,
+        },
         createdAt: {
           type: Date,
           default: Date.now,
