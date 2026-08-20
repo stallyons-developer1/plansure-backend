@@ -3,7 +3,11 @@ const router = express.Router();
 const Project = require("../models/Project");
 const Programme = require("../models/Programme");
 const Action = require("../models/Action");
-const { protect, adminOnly } = require("../middleware/authMiddleware");
+const {
+  protect,
+  adminOnly,
+  adminOrPlanner,
+} = require("../middleware/authMiddleware");
 const {
   sendValidationError,
   sendError,
@@ -12,7 +16,7 @@ const {
 } = require("../utils/errorResponse");
 const auditLogger = require("../utils/auditLogger");
 
-router.post("/", protect, adminOnly, async (req, res) => {
+router.post("/", protect, adminOrPlanner, async (req, res) => {
   try {
     const { name, phase, description, startDate, endDate } = req.body;
 
@@ -31,6 +35,19 @@ router.post("/", protect, adminOnly, async (req, res) => {
       createdBy: req.admin._id,
       team: [{ user: req.admin._id, role: "Project Manager" }],
     });
+
+    /*
+     * A planner's project list is built from admin.projects and the actions
+     * they own — team membership is not consulted. Without this link the
+     * creator would not see the project they just made.
+     */
+    if (req.admin.role === "planner") {
+      const Admin = require("../models/Admin");
+      await Admin.updateOne(
+        { _id: req.admin._id },
+        { $addToSet: { projects: project._id } },
+      );
+    }
 
     const populatedProject = await Project.findById(project._id)
       .populate("createdBy", "name email")

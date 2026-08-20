@@ -37,4 +37,17 @@ const adminOnly = (req, res, next) => {
   }
 };
 
-module.exports = { protect, adminOnly };
+/*
+ * Both roles that run delivery, as opposed to adminOnly for the account and
+ * audit surfaces. Planners own the programme day to day, so they need the
+ * project they will upload against. `user` stays view-only.
+ */
+const adminOrPlanner = (req, res, next) => {
+  if (req.admin && ["admin", "planner"].includes(req.admin.role)) {
+    next();
+  } else {
+    res.status(403).json({ message: "Access denied. Admin or Planner only." });
+  }
+};
+
+module.exports = { protect, adminOnly, adminOrPlanner };
