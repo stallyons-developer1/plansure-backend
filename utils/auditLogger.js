@@ -293,7 +293,7 @@ const auditLogger = {
       changes: { before: { status: oldStatus }, after: { status: newStatus } },
     }),
 
-  actionCompleted: (req, user, action, project) =>
+  actionCompleted: (req, user, action, project, completionNote) =>
     logAudit({
       action: "ACTION_COMPLETED",
       req,
@@ -302,7 +302,10 @@ const auditLogger = {
       resourceId: action._id,
       resourceName: action.title,
       project,
-      description: `Completed action "${action.title}"`,
+      description: completionNote
+        ? `Completed action "${action.title}" — ${completionNote}`
+        : `Completed action "${action.title}"`,
+      metadata: completionNote ? { completionNote } : undefined,
     }),
 
   weekClosed: (req, user, weekNumber, project, stats) =>

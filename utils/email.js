@@ -33,6 +33,13 @@ const createTransporter = () => {
   });
 };
 
+/* Trailing slashes in FRONTEND_URL would otherwise produce "…app//login". */
+const appUrl = () =>
+  (process.env.FRONTEND_URL || "https://plansure-m5.netlify.app").replace(
+    /\/+$/,
+    "",
+  );
+
 const isSmtp = () => {
   const useSmtp = process.env.ISSMTP === "true";
 
@@ -149,7 +156,7 @@ const sendWelcomeEmail = async (options) => {
           ${passwordSection}
 
           <div style="text-align: center; margin: 30px 0;">
-            <a href="${process.env.FRONTEND_URL}/login" class="button">Login to Plansure</a>
+            <a href="${appUrl()}/login" class="button">Login to Plansure</a>
           </div>
         </div>
       </div>
@@ -226,7 +233,7 @@ const sendRoleChangeEmail = async (options) => {
           <p>If you have any questions about these changes, please contact your administrator.</p>
 
           <div style="text-align: center; margin: 30px 0;">
-            <a href="${process.env.FRONTEND_URL}/login" class="button">Go to Plansure</a>
+            <a href="${appUrl()}/login" class="button">Go to Plansure</a>
           </div>
         </div>
       </div>
@@ -258,4 +265,120 @@ const sendRoleChangeEmail = async (options) => {
   }
 };
 
-module.exports = { sendInviteEmail, sendWelcomeEmail, sendRoleChangeEmail };
+/*
+ * Sent to the person an action lands on, alongside the in-app notification and
+ * push. Covers both a brand-new assignment and a reassignment; `isReassignment`
+ * only changes the wording.
+ */
+const sendActionAssignedEmail = async (options) => {
+  const heading = options.isReassignment
+    ? "Action Reassigned to You"
+    : "New Action Assigned";
+  const lead = options.isReassignment
+    ? `<strong>${options.assignedByName}</strong> has reassigned an action to you.`
+    : `<strong>${options.assignedByName}</strong> has assigned you a new action.`;
+
+  const row = (label, value) =>
+    value
+      ? `<tr>
+           <td style="padding: 6px 0; color: #666; font-size: 14px; width: 140px;">${label}</td>
+           <td style="padding: 6px 0; color: #333; font-size: 14px;"><strong>${value}</strong></td>
+         </tr>`
+      : "";
+
+  const dueDate = options.dueDate
+    ? new Date(options.dueDate).toLocaleDateString("en-GB", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      })
+    : "";
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #1a1a2e; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
+        .card { background: #fff; padding: 20px; border-radius: 8px; border-left: 4px solid #3b82f6; margin: 20px 0; }
+        .button { display: inline-block; padding: 14px 28px; background: #3b82f6; color: white; border-radius: 6px; text-decoration: none; font-weight: bold; }
+        .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>${heading}</h1>
+        </div>
+        <div class="content">
+          <h2>Hello ${options.name},</h2>
+          <p>${lead}</p>
+
+          <div class="card">
+            <p style="margin: 0 0 12px 0; font-size: 16px;"><strong>${options.actionTitle}</strong></p>
+            ${options.description ? `<p style="margin: 0 0 12px 0; color: #666; font-size: 14px;">${options.description}</p>` : ""}
+            <table style="width: 100%; border-collapse: collapse;">
+              ${row("Project", options.projectName)}
+              ${row("Linked activity", options.linkedActivity)}
+              ${row("Type", options.type)}
+              ${row("Priority", options.priority)}
+              ${row("Due date", dueDate)}
+            </table>
+          </div>
+
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${appUrl()}/login" class="button">View in Plansure</a>
+          </div>
+        </div>
+        <div class="footer">
+          <p>&copy; ${new Date().getFullYear()} Plansure. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  /* Shown as the sender so the assignee sees who gave them the work. Replies
+     go to that person too. Note this only delivers once the sender's domain is
+     authenticated with the provider — see the note in the README/env setup. */
+  const from = options.assignedByEmail
+    ? `${options.assignedByName} <${options.assignedByEmail}>`
+    : "Plansure <noreply@plansure.io>";
+
+  try {
+    if (isSmtp()) {
+      const transporter = createTransporter();
+      await transporter.sendMail({
+        from,
+        replyTo: options.assignedByEmail || undefined,
+        to: options.email,
+        subject: `${heading}: ${options.actionTitle}`,
+        html: htmlContent,
+      });
+    } else {
+      await getResend().emails.send({
+        from: options.assignedByEmail
+          ? from
+          : process.env.RESEND_FROM_EMAIL ||
+            "Plansure <onboarding@resend.dev>",
+        replyTo: options.assignedByEmail || undefined,
+        to: options.email,
+        subject: `${heading}: ${options.actionTitle}`,
+        html: htmlContent,
+      });
+    }
+  } catch (error) {
+    console.error(`[EMAIL] Error sending action assigned email:`, error);
+    throw error;
+  }
+};
+
+module.exports = {
+  sendInviteEmail,
+  sendWelcomeEmail,
+  sendRoleChangeEmail,
+  sendActionAssignedEmail,
+};

@@ -3,6 +3,7 @@ const router = express.Router();
 const Action = require("../models/Action");
 const Programme = require("../models/Programme");
 const Notification = require("../models/Notification");
+const Project = require("../models/Project");
 const { protect, adminOnly } = require("../middleware/authMiddleware");
 const {
   sendValidationError,
@@ -21,6 +22,7 @@ const {
 const {
   notifyPlannersIfAllActionsClosed,
 } = require("../utils/plannerNotifications");
+const { sendActionAssignedEmail } = require("../utils/email");
 
 /* Editable fields on an action, captured before and after a PUT so the audit
    entry carries a precise diff. Status and assignee are deliberately excluded:
@@ -265,6 +267,31 @@ router.post("/", protect, async (req, res) => {
         programmeId,
         projectId: programme.project,
       });
+
+      /* Email on top of in-app + push. Isolated: a mail failure must not fail
+         the assignment, which has already been written. */
+      try {
+        if (populatedAction.assignee?.email) {
+          const project = programme.project
+            ? await Project.findById(programme.project).select("name")
+            : null;
+          await sendActionAssignedEmail({
+            email: populatedAction.assignee.email,
+            name: populatedAction.assignee.name,
+            actionTitle: populatedAction.title,
+            description: populatedAction.description,
+            projectName: project?.name,
+            linkedActivity: populatedAction.linkedActivity?.activityName,
+            type: populatedAction.type,
+            priority: populatedAction.priority,
+            dueDate: populatedAction.dueDate,
+            assignedByName: req.admin.name,
+            assignedByEmail: req.admin.email,
+          });
+        }
+      } catch (emailError) {
+        console.error("Action assigned email failed:", emailError);
+      }
 
       await Notification.create({
         recipient: req.admin._id,
@@ -770,6 +797,30 @@ router.put("/:id", protect, async (req, res) => {
         programmeId: action.programme,
         projectId: programmeForNotif?.project,
       });
+
+      try {
+        if (updatedAction.assignee?.email) {
+          const project = programmeForNotif?.project
+            ? await Project.findById(programmeForNotif.project).select("name")
+            : null;
+          await sendActionAssignedEmail({
+            email: updatedAction.assignee.email,
+            name: updatedAction.assignee.name,
+            actionTitle: updatedAction.title,
+            description: updatedAction.description,
+            projectName: project?.name,
+            linkedActivity: updatedAction.linkedActivity?.activityName,
+            type: updatedAction.type,
+            priority: updatedAction.priority,
+            dueDate: updatedAction.dueDate,
+            assignedByName: req.admin.name,
+            assignedByEmail: req.admin.email,
+            isReassignment: true,
+          });
+        }
+      } catch (emailError) {
+        console.error("Action reassigned email failed:", emailError);
+      }
     }
 
     return sendSuccess(
@@ -858,9 +909,17 @@ router.patch("/:id/complete", protect, async (req, res) => {
 
     const wasCompleted = action.status === "Completed";
 
+    // Optional: the person completing the action can say how it was resolved.
+    const rawNote = req.body?.reason;
+    const completionNote =
+      typeof rawNote === "string" && rawNote.trim() ? rawNote.trim() : null;
+
     if (action.status === "Completed") {
       action.status = "Open";
       action.completedAt = null;
+      // Reopening discards the note; it described a completion that no
+      // longer stands.
+      action.completionNote = undefined;
       if (action.linkedActivity?.activityId) {
         await updateLinkedActivityStatus(
           action.programme,
@@ -871,6 +930,7 @@ router.patch("/:id/complete", protect, async (req, res) => {
     } else {
       action.status = "Completed";
       action.completedAt = new Date();
+      action.completionNote = completionNote || undefined;
       if (action.linkedActivity?.activityId) {
         await updateLinkedActivityStatus(
           action.programme,
@@ -902,6 +962,7 @@ router.patch("/:id/complete", protect, async (req, res) => {
         req.admin,
         updatedAction,
         programme?.project,
+        completionNote,
       );
     } else if (wasCompleted && action.status === "Open") {
       await auditLogger.actionStatusChanged(

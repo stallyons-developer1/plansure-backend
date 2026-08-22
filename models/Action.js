@@ -94,6 +94,12 @@ const actionSchema = new mongoose.Schema(
     completedAt: {
       type: Date,
     },
+    // Optional free-text note captured when the action is completed, so the
+    // completion carries context in the action record. Cleared on reopen.
+    completionNote: {
+      type: String,
+      trim: true,
+    },
     comments: [
       {
         text: String,

@@ -465,6 +465,9 @@ router.get("/", protect, async (req, res) => {
             role: user.role,
             status: user.status,
             projectAccess: "All Projects",
+            // Admins are not scoped to projects, so they match any project filter.
+            allProjects: true,
+            projectIds: [],
             lastLogin: user.lastLogin,
             createdAt: user.createdAt,
             initials: user.name
@@ -520,6 +523,10 @@ router.get("/", protect, async (req, res) => {
           status: user.status,
           projectAccess:
             projectNames.length > 0 ? projectNames.join(", ") : "No Projects",
+          allProjects: false,
+          // The same set that produced projectAccess above: direct assignments
+          // plus projects reached through the user's actions.
+          projectIds: [...assignedProjectIds],
           lastLogin: user.lastLogin,
           createdAt: user.createdAt,
           initials: user.name
