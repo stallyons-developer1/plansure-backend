@@ -341,18 +341,23 @@ const sendActionAssignedEmail = async (options) => {
     </html>
   `;
 
-  /* Shown as the sender so the assignee sees who gave them the work. Replies
-     go to that person too. Note this only delivers once the sender's domain is
-     authenticated with the provider — see the note in the README/env setup. */
-  const from = options.assignedByEmail
-    ? `${options.assignedByName} <${options.assignedByEmail}>`
-    : "Plansure <noreply@plansure.io>";
+  /* The envelope address must stay on a domain the provider has verified, or
+     the send is rejected outright. So the assigner's name goes in the display
+     name and their address in Reply-To, rather than in From itself. Once a
+     domain of theirs is verified, From can become their real address. */
+  const senderFrom = (base) => {
+    const match = /<([^>]+)>/.exec(base);
+    const address = match ? match[1] : base;
+    return options.assignedByName
+      ? `${options.assignedByName} via Plansure <${address}>`
+      : base;
+  };
 
   try {
     if (isSmtp()) {
       const transporter = createTransporter();
       await transporter.sendMail({
-        from,
+        from: senderFrom("Plansure <noreply@plansure.io>"),
         replyTo: options.assignedByEmail || undefined,
         to: options.email,
         subject: `${heading}: ${options.actionTitle}`,
@@ -360,10 +365,9 @@ const sendActionAssignedEmail = async (options) => {
       });
     } else {
       await getResend().emails.send({
-        from: options.assignedByEmail
-          ? from
-          : process.env.RESEND_FROM_EMAIL ||
-            "Plansure <onboarding@resend.dev>",
+        from: senderFrom(
+          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
+        ),
         replyTo: options.assignedByEmail || undefined,
         to: options.email,
         subject: `${heading}: ${options.actionTitle}`,

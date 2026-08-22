@@ -18,6 +18,18 @@ const {
   validatePassword,
 } = require("../utils/errorResponse");
 
+/* A trailing slash on BACKEND_URL/FRONTEND_URL would produce "…app//api/…",
+   which Express does not match — the invite link 404s. Strip it once here so
+   the env var can be set either way. */
+const trimSlash = (url) => (url || "").replace(/\/+$/, "");
+
+const backendBase = () =>
+  trimSlash(process.env.BACKEND_URL) ||
+  `http://localhost:${process.env.PORT || 4000}`;
+
+const frontendBase = () =>
+  trimSlash(process.env.FRONTEND_URL) || "http://localhost:5173";
+
 router.post("/invite", protect, adminOnly, async (req, res) => {
   try {
     const { name, email, role, projectId } = req.body;
@@ -60,8 +72,7 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
     const inviteToken = user.generateInviteToken();
     await user.save();
 
-    const backendUrl =
-      process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 4000}`;
+    const backendUrl = backendBase();
     const acceptUrl = `${backendUrl}/api/users/invite/accept/${inviteToken}`;
     const rejectUrl = `${backendUrl}/api/users/invite/reject/${inviteToken}`;
 
@@ -249,7 +260,7 @@ router.get("/invite/accept/:token", async (req, res) => {
       console.error("Failed to send welcome email:", emailError);
     }
 
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    const frontendUrl = frontendBase();
     return res.send(`
       <!DOCTYPE html>
       <html>
@@ -603,9 +614,7 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
         projectName = projectDocs.map((p) => p.name).join(", ");
       }
 
-      const backendUrl =
-        process.env.BACKEND_URL ||
-        `http://localhost:${process.env.PORT || 4000}`;
+      const backendUrl = backendBase();
       const acceptUrl = `${backendUrl}/api/users/invite/accept/${inviteToken}`;
       const rejectUrl = `${backendUrl}/api/users/invite/reject/${inviteToken}`;
 
@@ -768,8 +777,7 @@ router.post("/:id/resend-invite", protect, adminOnly, async (req, res) => {
     const inviteToken = user.generateInviteToken();
     await user.save();
 
-    const backendUrl =
-      process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 4000}`;
+    const backendUrl = backendBase();
     const acceptUrl = `${backendUrl}/api/users/invite/accept/${inviteToken}`;
     const rejectUrl = `${backendUrl}/api/users/invite/reject/${inviteToken}`;
 
