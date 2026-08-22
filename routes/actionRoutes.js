@@ -18,6 +18,7 @@ const {
   getCycleEndDate,
   isActionOpen,
   autoOverrideOverdueActions,
+  announceCloseOutEligible,
 } = require("../utils/governance");
 const {
   notifyPlannersIfAllActionsClosed,
@@ -716,6 +717,13 @@ router.put("/:id", protect, async (req, res) => {
       console.error("All-actions-closed notification failed:", notifyError);
     }
 
+    // Closing an action can be what makes the week close-out eligible.
+    try {
+      await announceCloseOutEligible(action.programme);
+    } catch (notifyError) {
+      console.error("Close-out eligible announcement failed:", notifyError);
+    }
+
     /*
      * Reopening a required action revokes close-out eligibility. Without this a
      * week that qualified while everything was closed stays "Close-Out
@@ -1015,6 +1023,13 @@ router.patch("/:id/complete", protect, async (req, res) => {
       console.error("All-actions-closed notification failed:", notifyError);
     }
 
+    // Closing an action can be what makes the week close-out eligible.
+    try {
+      await announceCloseOutEligible(action.programme);
+    } catch (notifyError) {
+      console.error("Close-out eligible announcement failed:", notifyError);
+    }
+
     const updatedAction = await Action.findById(action._id)
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
@@ -1141,6 +1156,13 @@ router.patch("/:id/override", protect, async (req, res) => {
       });
     } catch (notifyError) {
       console.error("All-actions-closed notification failed:", notifyError);
+    }
+
+    // Closing an action can be what makes the week close-out eligible.
+    try {
+      await announceCloseOutEligible(action.programme);
+    } catch (notifyError) {
+      console.error("Close-out eligible announcement failed:", notifyError);
     }
 
     // An override closes the action, so the linked activity must re-derive.

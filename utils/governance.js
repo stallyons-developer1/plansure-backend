@@ -165,7 +165,97 @@ const autoOverrideOverdueActions = async (ActionModel, programmeId) => {
     console.error("All-actions-closed notification failed:", notifyError);
   }
 
+  // …and force-closing the last required action can make the week eligible.
+  try {
+    await announceCloseOutEligible(programmeId);
+  } catch (notifyError) {
+    console.error("Close-out eligible announcement failed:", notifyError);
+  }
+
   return overdue;
+};
+
+/*
+ * The close-out conditions, in one place. programmeUploadRoutes delegates its
+ * checkCloseOutEligible to this so the endpoint and the announcement can never
+ * disagree about what "eligible" means.
+ */
+const evaluateCloseOutEligibility = async (programmeId) => {
+  const Action = require("../models/Action");
+  const Programme = require("../models/Programme");
+
+  const programme = await Programme.findById(programmeId);
+  if (!programme) return { eligible: false, reason: "Programme not found" };
+
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const activities = programme.extractedData?.activities || [];
+  const actions = await Action.find({ programme: programmeId });
+
+  const openRequired = actions.filter(
+    (a) => a.type === "Required" && isActionOpen(a),
+  );
+  if (openRequired.length > 0) {
+    return {
+      eligible: false,
+      reason: `${openRequired.length} required action(s) still open. Complete or override them before close-out.`,
+      openActions: openRequired.length,
+    };
+  }
+
+  const overdueActions = actions.filter(
+    (a) => isActionOpen(a) && new Date(a.dueDate) < startOfToday,
+  );
+  if (overdueActions.length > 0) {
+    return {
+      eligible: false,
+      reason: `${overdueActions.length} overdue action(s) remaining`,
+      overdueActions: overdueActions.length,
+    };
+  }
+
+  const blockedActivities = activities.filter((a) => a.isBlocked);
+  if (blockedActivities.length > 0) {
+    return {
+      eligible: false,
+      reason: `${blockedActivities.length} blocked activity/activities`,
+      blockedActivities: blockedActivities.length,
+    };
+  }
+
+  return { eligible: true, reason: "All conditions met - ready for close-out" };
+};
+
+/*
+ * Announces close-out eligibility the moment it is reached, rather than
+ * waiting for somebody to open a page. Called after anything that closes an
+ * action. The latch on the programme makes it fire once: claimed atomically so
+ * two concurrent closures cannot both send, and released if the programme
+ * falls back out of eligibility.
+ */
+const announceCloseOutEligible = async (programmeId) => {
+  const Programme = require("../models/Programme");
+
+  const { eligible } = await evaluateCloseOutEligibility(programmeId);
+
+  if (!eligible) {
+    await Programme.updateOne(
+      { _id: programmeId, closeOutEligibleNotifiedAt: { $ne: null } },
+      { $set: { closeOutEligibleNotifiedAt: null } },
+    );
+    return false;
+  }
+
+  const claimed = await Programme.findOneAndUpdate(
+    { _id: programmeId, closeOutEligibleNotifiedAt: null },
+    { $set: { closeOutEligibleNotifiedAt: new Date() } },
+    { new: true },
+  );
+  if (!claimed) return false;
+
+  const { emailPlannersCloseOutEligible } = require("./plannerNotifications");
+  await emailPlannersCloseOutEligible({ programme: claimed });
+  return true;
 };
 
 const MONTHS = {
@@ -326,6 +416,8 @@ const syncProgrammesGovernance = async (
 };
 
 module.exports = {
+  evaluateCloseOutEligibility,
+  announceCloseOutEligible,
   CYCLE_LENGTH_DAYS,
   CLOSED_ACTION_STATUSES,
   AUTO_OVERRIDE_REASON,

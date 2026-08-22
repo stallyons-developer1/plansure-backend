@@ -111,6 +111,7 @@ const checkProjectEnded = (activities) => {
 };
 
 const {
+  evaluateCloseOutEligibility,
   getCycleEndDate,
   computeGovernanceStatus,
   syncProgrammeGovernance,
@@ -2269,66 +2270,10 @@ const CYCLE_TRANSITIONS = {
   Closed: [],
 };
 
-const checkCloseOutEligible = async (programmeId) => {
-  const Action = require("../models/Action");
-  const CycleHistory = require("../models/CycleHistory");
-  const programme = await Programme.findById(programmeId);
-
-  if (!programme) return { eligible: false, reason: "Programme not found" };
-
-  const today = new Date();
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-  const activities = programme.extractedData?.activities || [];
-
-  const actions = await Action.find({ programme: programmeId });
-
-  /*
-   * Any open Required action blocks close-out.
-   *
-   * This previously filtered to "GREEN" activities using calculateRAG(a, today)
-   * — a four-argument function called with two — so linkedActions and
-   * cycleEndDate arrived undefined, nothing ever scored Green, and the empty
-   * list short-circuited to `eligible: true`. The gate passed unconditionally.
-   */
-  const openRequired = actions.filter(
-    (a) => a.type === "Required" && isActionOpen(a),
-  );
-
-  if (openRequired.length > 0) {
-    return {
-      eligible: false,
-      reason: `${openRequired.length} required action(s) still open. Complete or override them before close-out.`,
-      openActions: openRequired.length,
-    };
-  }
-
-  const overdueActions = actions.filter(
-    (a) => isActionOpen(a) && new Date(a.dueDate) < startOfToday,
-  );
-
-  if (overdueActions.length > 0) {
-    return {
-      eligible: false,
-      reason: `${overdueActions.length} overdue action(s) remaining`,
-      overdueActions: overdueActions.length,
-    };
-  }
-
-  const blockedActivities = activities.filter((a) => a.isBlocked);
-  if (blockedActivities.length > 0) {
-    return {
-      eligible: false,
-      reason: `${blockedActivities.length} blocked activity/activities`,
-      blockedActivities: blockedActivities.length,
-    };
-  }
-
-  return {
-    eligible: true,
-    reason: "All conditions met - ready for close-out",
-  };
-};
+/* Delegates to utils/governance so the endpoint and the announcement share
+   one definition of "eligible" and cannot drift apart. */
+const checkCloseOutEligible = (programmeId) =>
+  evaluateCloseOutEligibility(programmeId);
 
 router.patch("/:id/cycle-status", protect, async (req, res) => {
   try {
@@ -2748,33 +2693,6 @@ router.get("/:id/close-eligibility", protect, async (req, res) => {
     }
 
     const eligibility = await checkCloseOutEligible(req.params.id);
-
-    /* Announce the moment eligibility is first reached. The claim is a single
-       atomic update, so concurrent polls cannot both win it and send twice.
-       Falling back out of eligibility releases the latch so a later return to
-       eligibility announces again. */
-    try {
-      if (eligibility.eligible) {
-        const claimed = await Programme.findOneAndUpdate(
-          { _id: req.params.id, closeOutEligibleNotifiedAt: null },
-          { $set: { closeOutEligibleNotifiedAt: new Date() } },
-          { new: true },
-        );
-        if (claimed) {
-          const {
-            emailPlannersCloseOutEligible,
-          } = require("../utils/plannerNotifications");
-          await emailPlannersCloseOutEligible({ programme: claimed });
-        }
-      } else if (programme.closeOutEligibleNotifiedAt) {
-        await Programme.updateOne(
-          { _id: req.params.id },
-          { $set: { closeOutEligibleNotifiedAt: null } },
-        );
-      }
-    } catch (notifyError) {
-      console.error("Close-out eligible announcement failed:", notifyError);
-    }
 
     return sendSuccess(res, {
       eligible: eligibility.eligible,
