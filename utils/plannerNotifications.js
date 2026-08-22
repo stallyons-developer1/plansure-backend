@@ -84,7 +84,45 @@ const notifyPlannersOfTodoGenerated = async ({
     totalActions === 1 ? "" : "s"
   } to action.`;
 
-  return dispatch({ recipients, sender, title, message, programme });
+  const notified = await dispatch({
+    recipients,
+    sender,
+    title,
+    message,
+    programme,
+  });
+
+  /* Email the same planners the in-app notification went to. Isolated per
+     recipient so one bad address does not stop the rest, and isolated as a
+     whole so a mail outage cannot fail the export. */
+  try {
+    const Admin = require("../models/Admin");
+    const { sendPlannerTodoEmail } = require("./email");
+    const people = await Admin.find({ _id: { $in: notified } }).select(
+      "name email",
+    );
+
+    for (const person of people) {
+      if (!person.email) continue;
+      try {
+        await sendPlannerTodoEmail({
+          email: person.email,
+          name: person.name,
+          projectName: project?.name || programme.name,
+          weekNumber,
+          totalActions,
+          generatedByName: sender?.name,
+          generatedByEmail: sender?.email,
+        });
+      } catch (emailError) {
+        console.error("Planner To-Do email failed:", emailError);
+      }
+    }
+  } catch (lookupError) {
+    console.error("Planner To-Do email lookup failed:", lookupError);
+  }
+
+  return notified;
 };
 
 /*

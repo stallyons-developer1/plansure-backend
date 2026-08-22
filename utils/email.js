@@ -508,10 +508,105 @@ const sendActionStatusChangedEmail = async (options) => {
   }
 };
 
+/*
+ * Sent to the planners a Planner To-Do has been issued to, alongside the
+ * in-app notification and push. The list itself is downloaded from the app —
+ * this is the prompt to go and do that, not the file.
+ */
+const sendPlannerTodoEmail = async (options) => {
+  const count = options.totalActions || 0;
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #1a1a2e; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
+        .card { background: #fff; padding: 20px; border-radius: 8px; border-left: 4px solid #3b82f6; margin: 20px 0; }
+        .count { font-size: 32px; font-weight: bold; color: #3b82f6; }
+        .button { display: inline-block; padding: 14px 28px; background: #3b82f6; color: white; border-radius: 6px; text-decoration: none; font-weight: bold; }
+        .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>Planner To-Do Issued</h1>
+        </div>
+        <div class="content">
+          <h2>Hello ${options.name},</h2>
+          <p>
+            The Planner To-Do for
+            <strong>Week ${options.weekNumber}</strong>
+            ${options.projectName ? ` on <strong>${options.projectName}</strong>` : ""}
+            has been issued${options.generatedByName ? ` by <strong>${options.generatedByName}</strong>` : ""}.
+          </p>
+
+          <div class="card">
+            <p style="margin: 0; color: #666; font-size: 14px;">Outstanding items to action</p>
+            <p class="count" style="margin: 4px 0 0 0;">${count}</p>
+          </div>
+
+          <p>Sign in to review the list and update the programme.</p>
+
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${appUrl()}/login" class="button">Open Planner To-Do</a>
+          </div>
+        </div>
+        <div class="footer">
+          <p>&copy; ${new Date().getFullYear()} Plansure. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const subject = `Planner To-Do issued — Week ${options.weekNumber}${
+    options.projectName ? `, ${options.projectName}` : ""
+  }`;
+
+  const senderFrom = (base) => {
+    const match = /<([^>]+)>/.exec(base);
+    const address = match ? match[1] : base;
+    return options.generatedByName
+      ? `${options.generatedByName} via Plansure <${address}>`
+      : base;
+  };
+
+  try {
+    if (isSmtp()) {
+      const transporter = createTransporter();
+      await transporter.sendMail({
+        from: senderFrom("Plansure <noreply@plansure.io>"),
+        replyTo: options.generatedByEmail || undefined,
+        to: options.email,
+        subject,
+        html: htmlContent,
+      });
+    } else {
+      await getResend().emails.send({
+        from: senderFrom(
+          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
+        ),
+        replyTo: options.generatedByEmail || undefined,
+        to: options.email,
+        subject,
+        html: htmlContent,
+      });
+    }
+  } catch (error) {
+    console.error(`[EMAIL] Error sending planner to-do email:`, error);
+    throw error;
+  }
+};
+
 module.exports = {
   sendInviteEmail,
   sendWelcomeEmail,
   sendRoleChangeEmail,
   sendActionAssignedEmail,
   sendActionStatusChangedEmail,
+  sendPlannerTodoEmail,
 };
