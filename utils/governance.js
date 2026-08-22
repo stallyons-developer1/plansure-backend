@@ -56,7 +56,7 @@ const autoOverrideOverdueActions = async (ActionModel, programmeId) => {
 
   const Programme = require("../models/Programme");
   const programme = await Programme.findById(programmeId).select(
-    "lookaheadStartDate extractedData.activities",
+    "lookaheadStartDate extractedData.activities project",
   );
   if (!programme) return [];
 
@@ -117,6 +117,41 @@ const autoOverrideOverdueActions = async (ActionModel, programmeId) => {
       });
     } catch (auditError) {
       console.error("Audit log failed (auto override):", auditError);
+    }
+
+    /* Nobody triggered this, so there is no actor to name — the email says the
+       status changed automatically. Isolated per action so one bad address
+       cannot stop the rest of the sweep. */
+    try {
+      const { sendActionStatusChangedEmail } = require("./email");
+      const Project = require("../models/Project");
+      const populated = await ActionModel.findById(action._id)
+        .populate("assignee", "name email")
+        .populate("createdBy", "name email");
+      const project = programme.project
+        ? await Project.findById(programme.project).select("name")
+        : null;
+
+      const seen = new Set();
+      for (const person of [populated?.assignee, populated?.createdBy]) {
+        if (!person?.email) continue;
+        const id = String(person._id);
+        if (seen.has(id)) continue;
+        seen.add(id);
+        await sendActionStatusChangedEmail({
+          email: person.email,
+          name: person.name,
+          actionTitle: action.title,
+          previousStatus,
+          newStatus: "PM Override",
+          reason: AUTO_OVERRIDE_REASON,
+          projectName: project?.name,
+          linkedActivity: action.linkedActivity?.activityName,
+          dueDate: action.dueDate,
+        });
+      }
+    } catch (emailError) {
+      console.error("Auto-override email failed:", emailError);
     }
   }
 

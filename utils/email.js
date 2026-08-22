@@ -380,9 +380,138 @@ const sendActionAssignedEmail = async (options) => {
   }
 };
 
+const STATUS_COLOURS = {
+  Open: "#3b82f6",
+  "In Progress": "#f59e0b",
+  Completed: "#22c55e",
+  Cancelled: "#6b7280",
+  "PM Override": "#ef4444",
+};
+
+/*
+ * Sent when an action moves between statuses — completed, reopened, cancelled,
+ * force-closed by a PM, or force-closed automatically once its governance week
+ * ended. Goes to the assignee and the person who raised it, minus whoever made
+ * the change. `changedByName` is omitted for the automatic sweep, which has no
+ * accountable actor.
+ */
+const sendActionStatusChangedEmail = async (options) => {
+  const colour = STATUS_COLOURS[options.newStatus] || "#3b82f6";
+  const actor = options.changedByName
+    ? `<strong>${options.changedByName}</strong> changed the status of an action.`
+    : "The status of an action has changed automatically.";
+
+  const row = (label, value) =>
+    value
+      ? `<tr>
+           <td style="padding: 6px 0; color: #666; font-size: 14px; width: 140px;">${label}</td>
+           <td style="padding: 6px 0; color: #333; font-size: 14px;"><strong>${value}</strong></td>
+         </tr>`
+      : "";
+
+  const dueDate = options.dueDate
+    ? new Date(options.dueDate).toLocaleDateString("en-GB", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      })
+    : "";
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #1a1a2e; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
+        .card { background: #fff; padding: 20px; border-radius: 8px; border-left: 4px solid ${colour}; margin: 20px 0; }
+        .badge { display: inline-block; padding: 4px 14px; border-radius: 20px; font-size: 13px; font-weight: bold; }
+        .button { display: inline-block; padding: 14px 28px; background: #3b82f6; color: white; border-radius: 6px; text-decoration: none; font-weight: bold; }
+        .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>Action Status Updated</h1>
+        </div>
+        <div class="content">
+          <h2>Hello ${options.name},</h2>
+          <p>${actor}</p>
+
+          <div class="card">
+            <p style="margin: 0 0 12px 0; font-size: 16px;"><strong>${options.actionTitle}</strong></p>
+
+            <p style="margin: 0 0 16px 0; font-size: 14px; color: #666;">
+              <span class="badge" style="background: #e5e7eb; color: #6b7280;">${options.previousStatus}</span>
+              <span style="margin: 0 8px;">&rarr;</span>
+              <span class="badge" style="background: ${colour}22; color: ${colour};">${options.newStatus}</span>
+            </p>
+
+            ${options.reason ? `<p style="margin: 0 0 12px 0; color: #666; font-size: 14px;"><strong>Reason:</strong> ${options.reason}</p>` : ""}
+
+            <table style="width: 100%; border-collapse: collapse;">
+              ${row("Project", options.projectName)}
+              ${row("Linked activity", options.linkedActivity)}
+              ${row("Due date", dueDate)}
+            </table>
+          </div>
+
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${appUrl()}/login" class="button">View in Plansure</a>
+          </div>
+        </div>
+        <div class="footer">
+          <p>&copy; ${new Date().getFullYear()} Plansure. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const subject = `Action ${options.newStatus}: ${options.actionTitle}`;
+
+  const senderFrom = (base) => {
+    const match = /<([^>]+)>/.exec(base);
+    const address = match ? match[1] : base;
+    return options.changedByName
+      ? `${options.changedByName} via Plansure <${address}>`
+      : base;
+  };
+
+  try {
+    if (isSmtp()) {
+      const transporter = createTransporter();
+      await transporter.sendMail({
+        from: senderFrom("Plansure <noreply@plansure.io>"),
+        replyTo: options.changedByEmail || undefined,
+        to: options.email,
+        subject,
+        html: htmlContent,
+      });
+    } else {
+      await getResend().emails.send({
+        from: senderFrom(
+          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
+        ),
+        replyTo: options.changedByEmail || undefined,
+        to: options.email,
+        subject,
+        html: htmlContent,
+      });
+    }
+  } catch (error) {
+    console.error(`[EMAIL] Error sending action status email:`, error);
+    throw error;
+  }
+};
+
 module.exports = {
   sendInviteEmail,
   sendWelcomeEmail,
   sendRoleChangeEmail,
   sendActionAssignedEmail,
+  sendActionStatusChangedEmail,
 };

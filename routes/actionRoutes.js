@@ -22,7 +22,62 @@ const {
 const {
   notifyPlannersIfAllActionsClosed,
 } = require("../utils/plannerNotifications");
-const { sendActionAssignedEmail } = require("../utils/email");
+const {
+  sendActionAssignedEmail,
+  sendActionStatusChangedEmail,
+} = require("../utils/email");
+
+/*
+ * Emails a status change to the two people with a stake in it: whoever the
+ * action sits with, and whoever raised it. The actor is skipped — they just
+ * made the change and do not need telling. Every send is isolated so a mail
+ * failure cannot fail the status change, which is already persisted.
+ */
+const emailStatusChange = async ({
+  action,
+  previousStatus,
+  actor,
+  reason,
+  project,
+}) => {
+  if (!previousStatus || previousStatus === action.status) return;
+
+  // programme.project is an unpopulated id at most call sites.
+  const projectDoc =
+    project && !project.name
+      ? await Project.findById(project).select("name")
+      : project;
+
+  const seen = new Set();
+  const recipients = [];
+  for (const person of [action.assignee, action.createdBy]) {
+    if (!person?.email) continue;
+    const id = String(person._id || person);
+    if (seen.has(id) || (actor && id === String(actor._id))) continue;
+    seen.add(id);
+    recipients.push(person);
+  }
+
+  for (const person of recipients) {
+    try {
+      await sendActionStatusChangedEmail({
+        email: person.email,
+        name: person.name,
+        actionTitle: action.title,
+        previousStatus,
+        newStatus: action.status,
+        reason,
+        projectName: projectDoc?.name,
+        linkedActivity: action.linkedActivity?.activityName,
+        dueDate: action.dueDate,
+        changedByName: actor?.name,
+        changedByEmail: actor?.email,
+      });
+    } catch (emailError) {
+      console.error("Action status email failed:", emailError);
+    }
+  }
+};
 
 /* Editable fields on an action, captured before and after a PUT so the audit
    entry carries a precise diff. Status and assignee are deliberately excluded:
@@ -749,6 +804,14 @@ router.put("/:id", protect, async (req, res) => {
     }
 
     if (status && status !== oldStatus) {
+      await emailStatusChange({
+        action: updatedAction,
+        previousStatus: oldStatus,
+        actor: req.admin,
+        reason: isNewOverride ? action.overrideReason : undefined,
+        project: programme?.project,
+      });
+
       await auditLogger.actionStatusChanged(
         req,
         req.admin,
@@ -956,6 +1019,14 @@ router.patch("/:id/complete", protect, async (req, res) => {
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
 
+    await emailStatusChange({
+      action: updatedAction,
+      previousStatus: wasCompleted ? "Completed" : "Open",
+      actor: req.admin,
+      reason: completionNote,
+      project: programme?.project,
+    });
+
     if (!wasCompleted && action.status === "Completed") {
       await auditLogger.actionCompleted(
         req,
@@ -1132,6 +1203,14 @@ router.patch("/:id/override", protect, async (req, res) => {
         projectId: programme?.project,
       });
     }
+
+    await emailStatusChange({
+      action: updatedAction,
+      previousStatus,
+      actor: req.admin,
+      reason: action.overrideReason,
+      project: programme?.project,
+    });
 
     return sendSuccess(
       res,
