@@ -550,10 +550,6 @@ const sendPlannerTodoEmail = async (options) => {
           </div>
 
           <p>Sign in to review the list and update the programme.</p>
-
-          <div style="text-align: center; margin: 30px 0;">
-            <a href="${appUrl()}/login" class="button">Open Planner To-Do</a>
-          </div>
         </div>
         <div class="footer">
           <p>&copy; ${new Date().getFullYear()} Plansure. All rights reserved.</p>
@@ -602,6 +598,83 @@ const sendPlannerTodoEmail = async (options) => {
   }
 };
 
+/*
+ * Sent once when a programme first satisfies every close-out condition — no
+ * open Required actions, nothing overdue, no blocked activities — which is the
+ * moment the "Mark Close-Out Eligible" control becomes available.
+ */
+const sendCloseOutEligibleEmail = async (options) => {
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #16a34a; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
+        .card { background: #fff; padding: 20px; border-radius: 8px; border-left: 4px solid #22c55e; margin: 20px 0; }
+        .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>Ready for Close-Out</h1>
+        </div>
+        <div class="content">
+          <h2>Hello ${options.name},</h2>
+          <p>
+            <strong>Week ${options.weekNumber}</strong>
+            ${options.projectName ? ` on <strong>${options.projectName}</strong>` : ""}
+            has met every close-out condition and can now be marked Close-Out Eligible.
+          </p>
+
+          <div class="card">
+            <p style="margin: 0 0 8px 0; color: #666; font-size: 14px;">All conditions met</p>
+            <p style="margin: 0; font-size: 14px;">
+              No required actions left open &middot; nothing overdue &middot; no blocked activities
+            </p>
+          </div>
+
+          <p>Sign in to review the week and take it through close-out.</p>
+        </div>
+        <div class="footer">
+          <p>&copy; ${new Date().getFullYear()} Plansure. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const subject = `Ready for close-out — Week ${options.weekNumber}${
+    options.projectName ? `, ${options.projectName}` : ""
+  }`;
+
+  try {
+    if (isSmtp()) {
+      const transporter = createTransporter();
+      await transporter.sendMail({
+        from: "Plansure <noreply@plansure.io>",
+        to: options.email,
+        subject,
+        html: htmlContent,
+      });
+    } else {
+      await getResend().emails.send({
+        from:
+          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
+        to: options.email,
+        subject,
+        html: htmlContent,
+      });
+    }
+  } catch (error) {
+    console.error(`[EMAIL] Error sending close-out eligible email:`, error);
+    throw error;
+  }
+};
+
 module.exports = {
   sendInviteEmail,
   sendWelcomeEmail,
@@ -609,4 +682,5 @@ module.exports = {
   sendActionAssignedEmail,
   sendActionStatusChangedEmail,
   sendPlannerTodoEmail,
+  sendCloseOutEligibleEmail,
 };

@@ -58,6 +58,14 @@ const programmeSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    /* Set the first time this programme is found close-out eligible, so the
+       announcement fires once rather than on every eligibility poll. Cleared
+       whenever it falls back out of eligibility, so a later return to
+       eligibility announces again. */
+    closeOutEligibleNotifiedAt: {
+      type: Date,
+      default: null,
+    },
     closedWeeks: [
       {
         weekNumber: Number,

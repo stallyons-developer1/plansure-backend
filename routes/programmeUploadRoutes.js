@@ -2749,6 +2749,33 @@ router.get("/:id/close-eligibility", protect, async (req, res) => {
 
     const eligibility = await checkCloseOutEligible(req.params.id);
 
+    /* Announce the moment eligibility is first reached. The claim is a single
+       atomic update, so concurrent polls cannot both win it and send twice.
+       Falling back out of eligibility releases the latch so a later return to
+       eligibility announces again. */
+    try {
+      if (eligibility.eligible) {
+        const claimed = await Programme.findOneAndUpdate(
+          { _id: req.params.id, closeOutEligibleNotifiedAt: null },
+          { $set: { closeOutEligibleNotifiedAt: new Date() } },
+          { new: true },
+        );
+        if (claimed) {
+          const {
+            emailPlannersCloseOutEligible,
+          } = require("../utils/plannerNotifications");
+          await emailPlannersCloseOutEligible({ programme: claimed });
+        }
+      } else if (programme.closeOutEligibleNotifiedAt) {
+        await Programme.updateOne(
+          { _id: req.params.id },
+          { $set: { closeOutEligibleNotifiedAt: null } },
+        );
+      }
+    } catch (notifyError) {
+      console.error("Close-out eligible announcement failed:", notifyError);
+    }
+
     return sendSuccess(res, {
       eligible: eligibility.eligible,
       reason: eligibility.reason,

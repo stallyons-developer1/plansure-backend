@@ -175,7 +175,48 @@ const notifyPlannersIfAllActionsClosed = async ({ programmeId, sender }) => {
   return dispatch({ recipients, sender, title, message, programme });
 };
 
+/*
+ * Announces that a programme now satisfies every close-out condition. Nobody
+ * triggers this — it is detected while evaluating eligibility — so there is no
+ * sender to exclude and every planner is told.
+ */
+const emailPlannersCloseOutEligible = async ({ programme }) => {
+  if (!programme) return [];
+
+  const Admin = require("../models/Admin");
+  const Project = require("../models/Project");
+  const { sendCloseOutEligibleEmail } = require("./email");
+
+  const project = programme.project
+    ? await Project.findById(programme.project).select("team name")
+    : null;
+
+  const recipients = await resolvePlannerRecipients({ project, sender: null });
+  if (recipients.length === 0) return [];
+
+  const people = await Admin.find({ _id: { $in: recipients } }).select(
+    "name email",
+  );
+
+  for (const person of people) {
+    if (!person.email) continue;
+    try {
+      await sendCloseOutEligibleEmail({
+        email: person.email,
+        name: person.name,
+        projectName: project?.name || programme.name,
+        weekNumber: programme.weekNumber || 1,
+      });
+    } catch (emailError) {
+      console.error("Close-out eligible email failed:", emailError);
+    }
+  }
+
+  return recipients;
+};
+
 module.exports = {
   notifyPlannersOfTodoGenerated,
   notifyPlannersIfAllActionsClosed,
+  emailPlannersCloseOutEligible,
 };
