@@ -167,7 +167,11 @@ const sendPushForNotification = async (
   { title, message, actionId, programmeId, projectId },
 ) => {
   try {
+    /* `title` is passed through as well as under actionTitle: the "general"
+       entry in the content map titles itself from data.title, so without it
+       every general push arrived headed "Notification". */
     const pushContent = getNotificationContent(type, {
+      title,
       message,
       actionTitle: title,
     });
