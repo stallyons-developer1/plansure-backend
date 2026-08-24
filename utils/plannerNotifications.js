@@ -190,7 +190,6 @@ const notifyPlannersIfAllActionsClosed = async ({ programmeId, sender }) => {
 const emailPlannersCloseOutEligible = async ({ programme }) => {
   if (!programme) return [];
 
-  const Admin = require("../models/Admin");
   const Project = require("../models/Project");
   const { sendCloseOutEligibleEmail } = require("./email");
 
@@ -198,25 +197,44 @@ const emailPlannersCloseOutEligible = async ({ programme }) => {
     ? await Project.findById(programme.project).select("team name")
     : null;
 
-  const recipients = await resolvePlannerRecipients({ project, sender: null });
-  if (recipients.length === 0) return [];
+  /* Same audience as the other week-level events — planners, the uploader and
+     the admins. Nobody triggers this one, so no actor is excluded. */
+  const people = await resolveWeekStakeholders({
+    programme,
+    project,
+    actor: null,
+  });
+  if (people.length === 0) return [];
 
-  const people = await Admin.find({ _id: { $in: recipients } }).select(
-    "name email",
-  );
+  const weekNumber = programme.weekNumber || 1;
+  const projectName = project?.name || programme.name;
 
   for (const person of people) {
-    if (!person.email) continue;
     try {
       await sendCloseOutEligibleEmail({
         email: person.email,
         name: person.name,
-        projectName: project?.name || programme.name,
-        weekNumber: programme.weekNumber || 1,
+        projectName,
+        weekNumber,
       });
     } catch (emailError) {
       console.error("Close-out eligible email failed:", emailError);
     }
+  }
+
+  const recipients = people.map((p) => String(p._id));
+
+  try {
+    await dispatch({
+      recipients,
+      sender: null,
+      type: "general",
+      title: "Ready for Close-Out",
+      message: `Week ${weekNumber} on "${projectName}" has met every close-out condition and can now be marked Close-Out Eligible.`,
+      programme,
+    });
+  } catch (notifyError) {
+    console.error("Close-out ready notification failed:", notifyError);
   }
 
   return recipients;
@@ -314,6 +332,23 @@ const emailStakeholdersMarkedCloseOutEligible = async ({
     console.error("Marked close-out eligible notification failed:", notifyError);
   }
 
+  if (markedBy?._id) {
+    try {
+      await dispatch({
+        recipients: [String(markedBy._id)],
+        sender: markedBy,
+        type: "general",
+        title: "Week Marked Close-Out Eligible",
+        message: `You marked Week ${
+          programme.weekNumber || 1
+        } on "${project?.name || programme.name}" as Close-Out Eligible.`,
+        programme,
+      });
+    } catch (notifyError) {
+      console.error("Marked eligible self-notification failed:", notifyError);
+    }
+  }
+
   return recipients;
 };
 
@@ -383,6 +418,28 @@ const emailStakeholdersWeekClosed = async ({
     });
   } catch (notifyError) {
     console.error("Week closed notification failed:", notifyError);
+  }
+
+  /* And confirm back to whoever did it. The action-assign flow already works
+     this way — the actor gets a "You assigned…" of their own — and without it
+     the person driving the close sees nothing at all. */
+  if (closedBy?._id) {
+    try {
+      await dispatch({
+        recipients: [String(closedBy._id)],
+        sender: closedBy,
+        type: "general",
+        title: "Week Closed",
+        message: `You closed Week ${weekNumber} on "${
+          project?.name || programme.name
+        }"${
+          closeType === "PM Override" ? " via PM Override" : ""
+        }. The week is now locked and read-only.`,
+        programme,
+      });
+    } catch (notifyError) {
+      console.error("Week closed self-notification failed:", notifyError);
+    }
   }
 
   return recipients;
