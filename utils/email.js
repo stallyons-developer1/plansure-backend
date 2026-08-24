@@ -675,6 +675,117 @@ const sendCloseOutEligibleEmail = async (options) => {
   }
 };
 
+/*
+ * Sent when a governance week is closed, to the people who carry the week but
+ * did not close it — most importantly the Planner, who may not have been the
+ * one to do it. Closing locks the week read-only, so anyone who still owed an
+ * update needs telling promptly.
+ */
+const sendWeekClosedEmail = async (options) => {
+  const isOverride = options.closeType === "PM Override";
+  const accent = isOverride ? "#ef4444" : "#3b82f6";
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #1a1a2e; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
+        .card { background: #fff; padding: 20px; border-radius: 8px; border-left: 4px solid ${accent}; margin: 20px 0; }
+        .notice { background: #fff7ed; border: 1px solid #fed7aa; padding: 14px 16px; border-radius: 8px; margin: 20px 0; font-size: 14px; color: #9a3412; }
+        .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>Week ${options.weekNumber} Closed</h1>
+        </div>
+        <div class="content">
+          <h2>Hello ${options.name},</h2>
+          <p>
+            <strong>Week ${options.weekNumber}</strong>
+            ${options.projectName ? ` on <strong>${options.projectName}</strong>` : ""}
+            has been closed${options.closedByName ? ` by <strong>${options.closedByName}</strong>` : ""}.
+          </p>
+
+          <div class="card">
+            <table style="width: 100%; border-collapse: collapse;">
+              <tr>
+                <td style="padding: 6px 0; color: #666; font-size: 14px; width: 140px;">Closed by</td>
+                <td style="padding: 6px 0; color: #333; font-size: 14px;"><strong>${options.closedByName || "System"}</strong></td>
+              </tr>
+              <tr>
+                <td style="padding: 6px 0; color: #666; font-size: 14px;">Close type</td>
+                <td style="padding: 6px 0; font-size: 14px;"><strong style="color: ${accent};">${options.closeType || "Normal Close"}</strong></td>
+              </tr>
+              ${
+                options.notes
+                  ? `<tr>
+                       <td style="padding: 6px 0; color: #666; font-size: 14px;">${isOverride ? "Reason" : "Notes"}</td>
+                       <td style="padding: 6px 0; color: #333; font-size: 14px;">${options.notes}</td>
+                     </tr>`
+                  : ""
+              }
+            </table>
+          </div>
+
+          <div class="notice">
+            This week is now locked and read-only. If you still had a programme
+            update to make against it, raise it with
+            ${options.closedByName || "whoever closed the week"}.
+          </div>
+        </div>
+        <div class="footer">
+          <p>&copy; ${new Date().getFullYear()} Plansure. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const subject = `Week ${options.weekNumber} closed${
+    options.projectName ? ` — ${options.projectName}` : ""
+  }${isOverride ? " (PM Override)" : ""}`;
+
+  const senderFrom = (base) => {
+    const match = /<([^>]+)>/.exec(base);
+    const address = match ? match[1] : base;
+    return options.closedByName
+      ? `${options.closedByName} via Plansure <${address}>`
+      : base;
+  };
+
+  try {
+    if (isSmtp()) {
+      const transporter = createTransporter();
+      await transporter.sendMail({
+        from: senderFrom("Plansure <noreply@plansure.io>"),
+        replyTo: options.closedByEmail || undefined,
+        to: options.email,
+        subject,
+        html: htmlContent,
+      });
+    } else {
+      await getResend().emails.send({
+        from: senderFrom(
+          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
+        ),
+        replyTo: options.closedByEmail || undefined,
+        to: options.email,
+        subject,
+        html: htmlContent,
+      });
+    }
+  } catch (error) {
+    console.error(`[EMAIL] Error sending week closed email:`, error);
+    throw error;
+  }
+};
+
 module.exports = {
   sendInviteEmail,
   sendWelcomeEmail,
@@ -683,4 +794,5 @@ module.exports = {
   sendActionStatusChangedEmail,
   sendPlannerTodoEmail,
   sendCloseOutEligibleEmail,
+  sendWeekClosedEmail,
 };

@@ -1484,6 +1484,23 @@ router.post("/:id/close-cycle", protect, async (req, res) => {
     programme.cycleStatus = "Closed";
     await programme.save();
 
+    /* Tell the stakeholders who did not close it. Isolated so a mail failure
+       cannot fail a close that is already committed. */
+    try {
+      const {
+        emailStakeholdersWeekClosed,
+      } = require("../utils/plannerNotifications");
+      await emailStakeholdersWeekClosed({
+        programme: programme,
+        weekNumber: cycleHistory.weekNumber,
+        closeType: closeType || "Normal Close",
+        notes: notes,
+        closedBy: req.admin,
+      });
+    } catch (notifyError) {
+      console.error("Week closed email failed:", notifyError);
+    }
+
     return sendSuccess(
       res,
       {
@@ -2490,6 +2507,23 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
           });
         } catch (auditError) {
           console.error("Audit log failed (PM Override close):", auditError);
+        }
+
+        /* Tell the stakeholders who did not close it. Isolated so a mail failure
+           cannot fail a close that is already committed. */
+        try {
+          const {
+            emailStakeholdersWeekClosed,
+          } = require("../utils/plannerNotifications");
+          await emailStakeholdersWeekClosed({
+            programme: programme,
+            weekNumber: programme.weekNumber,
+            closeType: "PM Override",
+            notes: overrideReason,
+            closedBy: req.admin,
+          });
+        } catch (notifyError) {
+          console.error("Week closed email failed:", notifyError);
         }
 
         const isLastWeek = totalWeeks > 0 && closedWeeksCount >= totalWeeks;
@@ -3555,6 +3589,24 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
       console.error("[AUDIT DEBUG] auditLogger.log THREW:", auditError.message);
       console.error(auditError.stack);
     }
+
+    /* Tell the stakeholders who did not close it. Isolated so a mail failure
+       cannot fail a close that is already committed. */
+    try {
+      const {
+        emailStakeholdersWeekClosed,
+      } = require("../utils/plannerNotifications");
+      await emailStakeholdersWeekClosed({
+        programme: updatedProgramme,
+        weekNumber: weekNumber,
+        closeType: closeType || "Normal Close",
+        notes: notes,
+        closedBy: req.admin,
+      });
+    } catch (notifyError) {
+      console.error("Week closed email failed:", notifyError);
+    }
+
 
     const formatDateShort = (d) => {
       const months = [

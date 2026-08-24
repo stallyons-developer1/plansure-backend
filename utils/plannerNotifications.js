@@ -215,7 +215,78 @@ const emailPlannersCloseOutEligible = async ({ programme }) => {
   return recipients;
 };
 
+/*
+ * Tells the people who carry a week that it has been closed — the project's
+ * planners plus whoever uploaded the programme, minus whoever did the closing.
+ *
+ * QA's scenario is a stakeholder other than the Planner closing the week, but
+ * this fires on every close and names the closer: a Planner closing their own
+ * week is still worth telling the rest of the team, and the record is more
+ * useful than a conditional.
+ *
+ * Note this is a notification, not the MS-05 B1/B3 gate. It reports a close
+ * after the fact; it does not stop a week closing without the Planner.
+ */
+const emailStakeholdersWeekClosed = async ({
+  programme,
+  weekNumber,
+  closeType,
+  notes,
+  closedBy,
+}) => {
+  if (!programme) return [];
+
+  const Admin = require("../models/Admin");
+  const Project = require("../models/Project");
+  const { sendWeekClosedEmail } = require("./email");
+
+  const project = programme.project
+    ? await Project.findById(programme.project).select("team name")
+    : null;
+
+  const planners = await resolvePlannerRecipients({
+    project,
+    sender: closedBy,
+  });
+
+  // The uploader owns the programme even if they are not a planner.
+  const uploader = programme.uploadedBy ? String(programme.uploadedBy) : null;
+  const recipients = [
+    ...new Set(
+      [...planners, uploader].filter(
+        (id) => id && id !== String(closedBy?._id),
+      ),
+    ),
+  ];
+  if (recipients.length === 0) return [];
+
+  const people = await Admin.find({ _id: { $in: recipients } }).select(
+    "name email",
+  );
+
+  for (const person of people) {
+    if (!person.email) continue;
+    try {
+      await sendWeekClosedEmail({
+        email: person.email,
+        name: person.name,
+        weekNumber,
+        projectName: project?.name || programme.name,
+        closeType: closeType || "Normal Close",
+        notes,
+        closedByName: closedBy?.name,
+        closedByEmail: closedBy?.email,
+      });
+    } catch (emailError) {
+      console.error("Week closed email failed:", emailError);
+    }
+  }
+
+  return recipients;
+};
+
 module.exports = {
+  emailStakeholdersWeekClosed,
   notifyPlannersOfTodoGenerated,
   notifyPlannersIfAllActionsClosed,
   emailPlannersCloseOutEligible,
