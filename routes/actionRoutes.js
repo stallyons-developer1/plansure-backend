@@ -959,11 +959,17 @@ router.patch("/:id/complete", protect, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
+    /* Admins aside, the action can be closed by the person it sits with or by
+       whoever raised it: a planner who assigns work to another planner still
+       owns the outcome and needs to be able to complete it. */
     if (req.admin.role !== "admin") {
-      if (action.assignee?.toString() !== req.admin._id.toString()) {
+      const actorId = req.admin._id.toString();
+      const isAssignee = action.assignee?.toString() === actorId;
+      const isCreator = action.createdBy?.toString() === actorId;
+      if (!isAssignee && !isCreator) {
         return sendError(
           res,
-          "Only the assigned user can complete this action",
+          "Only the assignee or the person who raised this action can complete it",
           403,
         );
       }
@@ -975,6 +981,17 @@ router.patch("/:id/complete", protect, async (req, res) => {
         res,
         "This week is closed and read-only. Cannot modify actions.",
         403,
+      );
+    }
+
+    /* PM Override is terminal. Reopening one is a deliberate decision made
+       through the edit path, which records it and exempts the action from the
+       automatic sweep — it is not something completion should do silently. */
+    if (action.status === "PM Override") {
+      return sendError(
+        res,
+        "This action was force-closed by PM Override and cannot be completed.",
+        400,
       );
     }
 

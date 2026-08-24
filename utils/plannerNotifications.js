@@ -216,6 +216,78 @@ const emailPlannersCloseOutEligible = async ({ programme }) => {
 };
 
 /*
+ * The people who carry a governance week: the project's planners, whoever
+ * uploaded the programme (who owns it even when not a planner), and the
+ * admins, who oversee the cycle and need to know when a Planner moves it on.
+ * The actor is excluded — they performed the action and do not need telling.
+ */
+const resolveWeekStakeholders = async ({ programme, project, actor }) => {
+  const Admin = require("../models/Admin");
+
+  const planners = await resolvePlannerRecipients({ project, sender: actor });
+  const uploader = programme.uploadedBy ? String(programme.uploadedBy) : null;
+
+  const admins = await Admin.find({ role: "admin", status: "active" }).select(
+    "_id",
+  );
+
+  const ids = [
+    ...new Set(
+      [...planners, uploader, ...admins.map((a) => String(a._id))].filter(
+        (id) => id && id !== String(actor?._id),
+      ),
+    ),
+  ];
+  if (ids.length === 0) return [];
+
+  const people = await Admin.find({ _id: { $in: ids } }).select("name email");
+  return people.filter((p) => p.email);
+};
+
+/*
+ * Announces that a week has been marked Close-Out Eligible. Distinct from the
+ * "ready for close-out" announcement: that one says the conditions are met and
+ * somebody should mark it, this one says somebody has.
+ */
+const emailStakeholdersMarkedCloseOutEligible = async ({
+  programme,
+  markedBy,
+}) => {
+  if (!programme) return [];
+
+  const Project = require("../models/Project");
+  const { sendMarkedCloseOutEligibleEmail } = require("./email");
+
+  const project = programme.project
+    ? await Project.findById(programme.project).select("team name")
+    : null;
+
+  const people = await resolveWeekStakeholders({
+    programme,
+    project,
+    actor: markedBy,
+  });
+
+  for (const person of people) {
+    try {
+      await sendMarkedCloseOutEligibleEmail({
+        email: person.email,
+        name: person.name,
+        weekNumber: programme.weekNumber || 1,
+        projectName: project?.name || programme.name,
+        markedByName: markedBy?.name,
+        markedByEmail: markedBy?.email,
+        markedByRole: markedBy?.role,
+      });
+    } catch (emailError) {
+      console.error("Marked close-out eligible email failed:", emailError);
+    }
+  }
+
+  return people.map((p) => String(p._id));
+};
+
+/*
  * Tells the people who carry a week that it has been closed — the project's
  * planners plus whoever uploaded the programme, minus whoever did the closing.
  *
@@ -244,25 +316,9 @@ const emailStakeholdersWeekClosed = async ({
     ? await Project.findById(programme.project).select("team name")
     : null;
 
-  const planners = await resolvePlannerRecipients({
-    project,
-    sender: closedBy,
-  });
-
-  // The uploader owns the programme even if they are not a planner.
-  const uploader = programme.uploadedBy ? String(programme.uploadedBy) : null;
-  const recipients = [
-    ...new Set(
-      [...planners, uploader].filter(
-        (id) => id && id !== String(closedBy?._id),
-      ),
-    ),
-  ];
-  if (recipients.length === 0) return [];
-
-  const people = await Admin.find({ _id: { $in: recipients } }).select(
-    "name email",
-  );
+  const people = await resolveWeekStakeholders({ programme, project, actor: closedBy });
+  if (people.length === 0) return [];
+  const recipients = people.map((p) => String(p._id));
 
   for (const person of people) {
     if (!person.email) continue;
@@ -287,6 +343,7 @@ const emailStakeholdersWeekClosed = async ({
 
 module.exports = {
   emailStakeholdersWeekClosed,
+  emailStakeholdersMarkedCloseOutEligible,
   notifyPlannersOfTodoGenerated,
   notifyPlannersIfAllActionsClosed,
   emailPlannersCloseOutEligible,

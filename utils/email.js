@@ -786,6 +786,110 @@ const sendWeekClosedEmail = async (options) => {
   }
 };
 
+/*
+ * Sent when someone marks a week Close-Out Eligible. Either an Admin or a
+ * Planner can do it, so the email names who did and in what role — the other
+ * stakeholders need to know the week has moved on without them.
+ */
+const sendMarkedCloseOutEligibleEmail = async (options) => {
+  const actor = options.markedByName || "Someone";
+  const role = options.markedByRole
+    ? options.markedByRole.charAt(0).toUpperCase() +
+      options.markedByRole.slice(1)
+    : null;
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #1a1a2e; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
+        .card { background: #fff; padding: 20px; border-radius: 8px; border-left: 4px solid #3b82f6; margin: 20px 0; }
+        .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>Marked Close-Out Eligible</h1>
+        </div>
+        <div class="content">
+          <h2>Hello ${options.name},</h2>
+          <p>
+            <strong>Week ${options.weekNumber}</strong>
+            ${options.projectName ? ` on <strong>${options.projectName}</strong>` : ""}
+            has been marked <strong>Close-Out Eligible</strong> by
+            <strong>${actor}</strong>${role ? ` (${role})` : ""}.
+          </p>
+
+          <div class="card">
+            <table style="width: 100%; border-collapse: collapse;">
+              <tr>
+                <td style="padding: 6px 0; color: #666; font-size: 14px; width: 140px;">Marked by</td>
+                <td style="padding: 6px 0; color: #333; font-size: 14px;"><strong>${actor}</strong>${role ? ` (${role})` : ""}</td>
+              </tr>
+              <tr>
+                <td style="padding: 6px 0; color: #666; font-size: 14px;">New status</td>
+                <td style="padding: 6px 0; font-size: 14px;"><strong style="color: #3b82f6;">Close-Out Eligible</strong></td>
+              </tr>
+            </table>
+          </div>
+
+          <p>
+            The week can now be closed. Sign in to review it before it is,
+            since closing locks it read-only.
+          </p>
+        </div>
+        <div class="footer">
+          <p>&copy; ${new Date().getFullYear()} Plansure. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const subject = `Week ${options.weekNumber} marked Close-Out Eligible${
+    options.projectName ? ` — ${options.projectName}` : ""
+  }`;
+
+  const senderFrom = (base) => {
+    const match = /<([^>]+)>/.exec(base);
+    const address = match ? match[1] : base;
+    return options.markedByName
+      ? `${options.markedByName} via Plansure <${address}>`
+      : base;
+  };
+
+  try {
+    if (isSmtp()) {
+      const transporter = createTransporter();
+      await transporter.sendMail({
+        from: senderFrom("Plansure <noreply@plansure.io>"),
+        replyTo: options.markedByEmail || undefined,
+        to: options.email,
+        subject,
+        html: htmlContent,
+      });
+    } else {
+      await getResend().emails.send({
+        from: senderFrom(
+          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
+        ),
+        replyTo: options.markedByEmail || undefined,
+        to: options.email,
+        subject,
+        html: htmlContent,
+      });
+    }
+  } catch (error) {
+    console.error(`[EMAIL] Error sending marked close-out email:`, error);
+    throw error;
+  }
+};
+
 module.exports = {
   sendInviteEmail,
   sendWelcomeEmail,
@@ -795,4 +899,5 @@ module.exports = {
   sendPlannerTodoEmail,
   sendCloseOutEligibleEmail,
   sendWeekClosedEmail,
+  sendMarkedCloseOutEligibleEmail,
 };

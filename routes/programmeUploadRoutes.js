@@ -2696,6 +2696,23 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
       console.error("Audit log failed (cycle-status):", auditError);
     }
 
+    /* Either an Admin or a Planner can mark the week eligible, so tell the
+       other stakeholders who did it. Isolated: the transition is already
+       persisted and must not fail on a mail error. */
+    if (cycleStatus === "Close-Out Eligible") {
+      try {
+        const {
+          emailStakeholdersMarkedCloseOutEligible,
+        } = require("../utils/plannerNotifications");
+        await emailStakeholdersMarkedCloseOutEligible({
+          programme,
+          markedBy: req.admin,
+        });
+      } catch (notifyError) {
+        console.error("Marked close-out eligible email failed:", notifyError);
+      }
+    }
+
     return sendSuccess(
       res,
       {
