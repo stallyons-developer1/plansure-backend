@@ -31,7 +31,14 @@ const resolvePlannerRecipients = async ({ project, sender }) => {
 };
 
 /* Creates the in-app notification and fires the matching push. */
-const dispatch = async ({ recipients, sender, title, message, programme }) => {
+const dispatch = async ({
+  recipients,
+  sender,
+  title,
+  message,
+  programme,
+  type = "planner_todo_generated",
+}) => {
   const Notification = require("../models/Notification");
   const { sendPushForNotification } = require("../services/fcmService");
 
@@ -39,14 +46,14 @@ const dispatch = async ({ recipients, sender, title, message, programme }) => {
     await Notification.create({
       recipient,
       sender: sender?._id,
-      type: "planner_todo_generated",
+      type,
       title,
       message,
       programme: programme._id,
       project: programme.project,
     });
 
-    sendPushForNotification(recipient, "planner_todo_generated", {
+    sendPushForNotification(recipient, type, {
       title,
       message,
       programmeId: programme._id,
@@ -284,7 +291,30 @@ const emailStakeholdersMarkedCloseOutEligible = async ({
     }
   }
 
-  return people.map((p) => String(p._id));
+  const recipients = people.map((p) => String(p._id));
+
+  /* Same audience gets the bell and the push. Isolated: the transition is
+     already persisted and must not fail on a notification error. */
+  try {
+    const actor = markedBy?.name || "Someone";
+    const role = markedBy?.role
+      ? ` (${markedBy.role.charAt(0).toUpperCase()}${markedBy.role.slice(1)})`
+      : "";
+    await dispatch({
+      recipients,
+      sender: markedBy,
+      type: "general",
+      title: "Week Marked Close-Out Eligible",
+      message: `${actor}${role} marked Week ${
+        programme.weekNumber || 1
+      } on "${project?.name || programme.name}" as Close-Out Eligible.`,
+      programme,
+    });
+  } catch (notifyError) {
+    console.error("Marked close-out eligible notification failed:", notifyError);
+  }
+
+  return recipients;
 };
 
 /*
@@ -336,6 +366,23 @@ const emailStakeholdersWeekClosed = async ({
     } catch (emailError) {
       console.error("Week closed email failed:", emailError);
     }
+  }
+
+  try {
+    const actor = closedBy?.name || "The system";
+    const via = closeType === "PM Override" ? " via PM Override" : "";
+    await dispatch({
+      recipients,
+      sender: closedBy,
+      type: "general",
+      title: "Week Closed",
+      message: `${actor} closed Week ${weekNumber} on "${
+        project?.name || programme.name
+      }"${via}. The week is now locked and read-only.`,
+      programme,
+    });
+  } catch (notifyError) {
+    console.error("Week closed notification failed:", notifyError);
   }
 
   return recipients;

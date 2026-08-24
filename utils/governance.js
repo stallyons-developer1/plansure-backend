@@ -223,6 +223,71 @@ const evaluateCloseOutEligibility = async (programmeId) => {
     };
   }
 
+  /*
+   * Every activity in the six-week lookahead must have been interrogated —
+   * assigned an action or explicitly marked as needing none. Same window and
+   * same "settled" rule the close-week gate uses, so the two agree.
+   *
+   * Settled activities are exempt: one already finished or whose actions are
+   * all closed has been dealt with, and may legitimately still read
+   * Unassigned.
+   */
+  const hasAction = {};
+  const openByActivity = {};
+  for (const action of actions) {
+    const actId = action.linkedActivity?.activityId;
+    if (!actId) continue;
+    hasAction[actId] = true;
+    openByActivity[actId] = (openByActivity[actId] || 0) + (isActionOpen(action) ? 1 : 0);
+  }
+
+  const isSettled = (activity) => {
+    if (hasActualMarker(activity.finishDate)) return true;
+    if (
+      activity.activityStatus === "Completed" ||
+      activity.activityStatus === "Complete"
+    )
+      return true;
+    return (
+      !!hasAction[activity.activityId] &&
+      (openByActivity[activity.activityId] || 0) === 0
+    );
+  };
+
+  let anchor = programme.lookaheadStartDate
+    ? new Date(programme.lookaheadStartDate)
+    : null;
+  if (!anchor) {
+    for (const activity of activities) {
+      const start = parseActivityDate(activity.startDate);
+      if (start && (!anchor || start < anchor)) anchor = start;
+    }
+  }
+
+  if (anchor) {
+    anchor.setHours(0, 0, 0, 0);
+    const lookaheadEnd = new Date(anchor);
+    lookaheadEnd.setDate(lookaheadEnd.getDate() + 41);
+    lookaheadEnd.setHours(23, 59, 59, 999);
+
+    const unassigned = activities.filter((a) => {
+      const start = parseActivityDate(a.startDate);
+      if (!start || start < anchor || start > lookaheadEnd) return false;
+      if (isSettled(a)) return false;
+      return (a.assignmentState || "Unassigned") === "Unassigned";
+    });
+
+    if (unassigned.length > 0) {
+      return {
+        eligible: false,
+        reason: `${unassigned.length} activit${
+          unassigned.length === 1 ? "y is" : "ies are"
+        } still unassigned. Assign every activity before close-out.`,
+        unassignedActivities: unassigned.length,
+      };
+    }
+  }
+
   return { eligible: true, reason: "All conditions met - ready for close-out" };
 };
 

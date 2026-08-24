@@ -2752,6 +2752,7 @@ router.get("/:id/close-eligibility", protect, async (req, res) => {
       openActions: eligibility.openActions || 0,
       overdueActions: eligibility.overdueActions || 0,
       blockedActivities: eligibility.blockedActivities || 0,
+      unassignedActivities: eligibility.unassignedActivities || 0,
     });
   } catch (error) {
     console.error(error);
