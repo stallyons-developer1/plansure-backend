@@ -5,7 +5,11 @@ const path = require("path");
 const Programme = require("../models/Programme");
 const Project = require("../models/Project");
 const Action = require("../models/Action");
-const { protect, adminOnly } = require("../middleware/authMiddleware");
+const {
+  protect,
+  adminOnly,
+  adminOrPlanner,
+} = require("../middleware/authMiddleware");
 const { uploadToDisk } = require("../middleware/upload");
 const {
   sendValidationError,
@@ -1359,7 +1363,7 @@ const CYCLE_TRANSITIONS = {
   Closed: [],
 };
 
-router.post("/:id/close-cycle", protect, async (req, res) => {
+router.post("/:id/close-cycle", protect, adminOrPlanner, async (req, res) => {
   try {
     const { closeType, notes } = req.body;
     const CycleHistory = require("../models/CycleHistory");
@@ -2313,7 +2317,11 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
 const checkCloseOutEligible = (programmeId) =>
   evaluateCloseOutEligibility(programmeId);
 
-router.patch("/:id/cycle-status", protect, async (req, res) => {
+router.patch(
+  "/:id/cycle-status",
+  protect,
+  adminOrPlanner,
+  async (req, res) => {
   try {
     const { cycleStatus, overrideReason } = req.body;
 
@@ -3308,7 +3316,11 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
   }
 });
 
-router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
+router.post(
+  "/:id/close-week/:weekNumber",
+  protect,
+  adminOrPlanner,
+  async (req, res) => {
   try {
     const { closeType, notes, isSecondOfPair } = req.body;
     const weekNumber = parseInt(req.params.weekNumber);

@@ -409,31 +409,11 @@ router.get("/resource/:type/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.delete("/all", protect, adminOnly, async (req, res) => {
-  try {
-    const result = await AuditLog.deleteMany({});
-    return sendSuccess(
-      res,
-      { deleted: result.deletedCount },
-      "All audit logs deleted",
-    );
-  } catch (error) {
-    console.error("Delete all audit logs error:", error);
-    return sendError(res, "Server error");
-  }
-});
-
-router.delete("/:id", protect, adminOnly, async (req, res) => {
-  try {
-    const log = await AuditLog.findByIdAndDelete(req.params.id);
-    if (!log) {
-      return sendError(res, "Audit log not found", 404);
-    }
-    return sendSuccess(res, {}, "Audit log deleted successfully");
-  } catch (error) {
-    console.error("Delete audit log error:", error);
-    return sendError(res, "Server error");
-  }
-});
+/*
+ * The audit trail is append-only (MS-05 B5). DELETE /all and DELETE /:id used
+ * to exist here and are deliberately gone: a record that can be erased is not
+ * an audit trail, and nothing in the product called them. Retention is handled
+ * by keeping entries, not by pruning them.
+ */
 
 module.exports = router;

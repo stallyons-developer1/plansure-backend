@@ -121,10 +121,36 @@ const diffEditableFields = (before, after) => {
   return { changedBefore, changedAfter, changedKeys: Object.keys(changedAfter) };
 };
 
-const checkProgrammeLocked = async (programmeId) => {
+/*
+ * A programme is read-only once its cycle is closed, and an individual action
+ * is read-only once the week it belongs to has closed.
+ *
+ * The second half was previously enforced only in the browser, by
+ * isActionFromClosedWeek — so a closed week's actions were still editable
+ * through the API. Same rule as the client used: an action raised before the
+ * most recent week closure sits inside a closed week and is retained as
+ * evidence, not amended (MS-05 B5).
+ */
+const checkProgrammeLocked = async (programmeId, action = null) => {
   const programme = await Programme.findById(programmeId);
   if (!programme) return { locked: false, error: "Programme not found" };
-  return { locked: programme.isLocked, programme };
+  if (programme.isLocked) return { locked: true, programme };
+
+  if (action?.createdAt) {
+    const closures = (programme.closedWeeks || [])
+      .map((w) => w.closedAt)
+      .filter(Boolean)
+      .map((d) => new Date(d).getTime());
+
+    if (closures.length > 0) {
+      const lastClosure = Math.max(...closures);
+      if (new Date(action.createdAt).getTime() < lastClosure) {
+        return { locked: true, programme, closedWeek: true };
+      }
+    }
+  }
+
+  return { locked: false, programme };
 };
 
 const parseActivityDate = (dateStr) => {
@@ -599,7 +625,7 @@ router.put("/:id", protect, async (req, res) => {
     const oldAssignee = action.assignee?.toString();
     const beforeEdit = snapshotEditableFields(action);
 
-    const { locked, programme } = await checkProgrammeLocked(action.programme);
+    const { locked, programme } = await checkProgrammeLocked(action.programme, action);
     if (locked) {
       return sendError(
         res,
@@ -923,7 +949,7 @@ router.post("/:id/comments", protect, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    const { locked } = await checkProgrammeLocked(action.programme);
+    const { locked } = await checkProgrammeLocked(action.programme, action);
     if (locked) {
       return sendError(
         res,
@@ -979,7 +1005,7 @@ router.patch("/:id/complete", protect, async (req, res) => {
       }
     }
 
-    const { locked, programme } = await checkProgrammeLocked(action.programme);
+    const { locked, programme } = await checkProgrammeLocked(action.programme, action);
     if (locked) {
       return sendError(
         res,
@@ -1145,7 +1171,7 @@ router.patch("/:id/override", protect, plannerOnly, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    const { locked, programme } = await checkProgrammeLocked(action.programme);
+    const { locked, programme } = await checkProgrammeLocked(action.programme, action);
     if (locked) {
       return sendError(
         res,
@@ -1279,6 +1305,7 @@ router.delete("/:id", protect, async (req, res) => {
 
     const { locked } = await checkProgrammeLocked(
       action.programme._id || action.programme,
+      action,
     );
     if (locked) {
       return sendError(
