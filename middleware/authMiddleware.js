@@ -50,4 +50,22 @@ const adminOrPlanner = (req, res, next) => {
   }
 };
 
-module.exports = { protect, adminOnly, adminOrPlanner };
+/*
+ * The closure authority. SRS §10.2 puts "PM override close", "Close week
+ * (standard)" and "Trigger state transitions" at Planner: Yes, Admin: No —
+ * there is no separate PM role in this system, the Planner holds it. Admin is
+ * deliberately excluded: its remit is projects, users and audit, not running
+ * the week.
+ */
+const plannerOnly = (req, res, next) => {
+  if (req.admin && req.admin.role === "planner") {
+    next();
+  } else {
+    res.status(403).json({
+      message:
+        "Access denied. Only the Planner can perform this governance action.",
+    });
+  }
+};
+
+module.exports = { protect, adminOnly, adminOrPlanner, plannerOnly };

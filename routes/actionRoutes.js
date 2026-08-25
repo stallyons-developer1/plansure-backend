@@ -4,7 +4,11 @@ const Action = require("../models/Action");
 const Programme = require("../models/Programme");
 const Notification = require("../models/Notification");
 const Project = require("../models/Project");
-const { protect, adminOnly } = require("../middleware/authMiddleware");
+const {
+  protect,
+  adminOnly,
+  plannerOnly,
+} = require("../middleware/authMiddleware");
 const {
   sendValidationError,
   sendError,
@@ -1117,7 +1121,7 @@ router.patch("/:id/complete", protect, async (req, res) => {
 /* Force-close ONE action. Deliberately scoped to a single action: the previous
    behaviour closed every outstanding action in the week at once, which the
    MS-05 review rejected (B4). Reason is mandatory and the actor is recorded. */
-router.patch("/:id/override", protect, async (req, res) => {
+router.patch("/:id/override", protect, plannerOnly, async (req, res) => {
   try {
     const { reason } = req.body;
 

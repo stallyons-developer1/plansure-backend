@@ -1347,6 +1347,18 @@ const formatDateShort = (date) => {
   return `${d.getDate().toString().padStart(2, "0")} ${months[d.getMonth()]} ${d.getFullYear()}`;
 };
 
+/* The governance lifecycle. Every path that moves a cycle checks this, so a
+   week cannot skip a state or be closed out of order. "Draft" is retained as a
+   source state only: programmes already persisted with it can still move on. */
+const CYCLE_TRANSITIONS = {
+  Draft: ["Meeting Open"],
+  Uploaded: ["Meeting Open"],
+  "Meeting Open": ["Execution"],
+  Execution: ["Close-Out Eligible"],
+  "Close-Out Eligible": ["Closed"],
+  Closed: [],
+};
+
 router.post("/:id/close-cycle", protect, async (req, res) => {
   try {
     const { closeType, notes } = req.body;
@@ -1356,6 +1368,19 @@ router.post("/:id/close-cycle", protect, async (req, res) => {
     const programme = await Programme.findById(req.params.id);
     if (!programme) {
       return sendError(res, "Programme not found", 404);
+    }
+
+    /* This path set "Closed" from any state, so it was the way round the
+       lifecycle the cycle-status endpoint enforces. Same table, same rule. */
+    const allowedFromHere = CYCLE_TRANSITIONS[programme.cycleStatus] || [];
+    if (!allowedFromHere.includes("Closed")) {
+      return sendError(
+        res,
+        `Cannot close from "${programme.cycleStatus}". Allowed next: ${
+          allowedFromHere.join(", ") || "none (already closed)"
+        }.`,
+        400,
+      );
     }
 
     const today = new Date();
@@ -1482,6 +1507,10 @@ router.post("/:id/close-cycle", protect, async (req, res) => {
     });
 
     programme.cycleStatus = "Closed";
+    // Final lock: a closed cycle is read-only from here.
+    programme.isLocked = true;
+    programme.closedAt = new Date();
+    programme.closedBy = req.admin._id;
     await programme.save();
 
     /* Tell the stakeholders who did not close it. Isolated so a mail failure
@@ -2278,14 +2307,6 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
   }
 });
 
-const CYCLE_TRANSITIONS = {
-  Draft: ["Meeting Open"],
-  Uploaded: ["Meeting Open"],
-  "Meeting Open": ["Execution"],
-  Execution: ["Close-Out Eligible"],
-  "Close-Out Eligible": ["Closed"],
-  Closed: [],
-};
 
 /* Delegates to utils/governance so the endpoint and the announcement share
    one definition of "eligible" and cannot drift apart. */
@@ -3538,7 +3559,10 @@ router.post("/:id/close-week/:weekNumber", protect, async (req, res) => {
     const currentClosedCount = (programme.closedWeeks || []).length;
     const isLastWeek = currentClosedCount + 1 >= calculatedTotalWeeks;
 
-    let nextCycleStatus = "Draft";
+    /* "Uploaded", not "Draft": Draft is absent from the cycleStatus enum and
+       only ever persisted because this write skips validators. Both map to the
+       same entry in CYCLE_TRANSITIONS, so behaviour is unchanged. */
+    let nextCycleStatus = "Uploaded";
     if (isLastWeek) {
       nextCycleStatus = "Close-Out Eligible";
     }
