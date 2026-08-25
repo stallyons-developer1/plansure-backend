@@ -54,6 +54,15 @@ const programmeSchema = new mongoose.Schema(
     weekNumber: {
       type: Number,
     },
+    /* The programme this governance week grew out of. MS-05 AC12: the next
+       week is created from the updated programme once the prior loop
+       completes, so the chain has to be recorded, not inferred. Null on the
+       first week of a project. */
+    previousProgramme: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Programme",
+      default: null,
+    },
     isLocked: {
       type: Boolean,
       default: false,

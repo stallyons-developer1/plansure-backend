@@ -504,13 +504,44 @@ router.post(
 
       const today = new Date();
       let anchorDate = new Date(today);
+
+      /*
+       * MS-05 AC12. A governance week is created from the updated programme
+       * once the prior loop completes, so the upload has to know three things
+       * the old code did not record:
+       *   - which programme it follows (previousProgramme)
+       *   - which week of the cycle it is (sequence, not calendar)
+       *   - whether the prior week was actually closed
+       */
+      let priorCount = 0;
+      let previousProgramme = null;
+
       if (project) {
-        const priorCount = await Programme.countDocuments({ project });
+        priorCount = await Programme.countDocuments({ project });
+
         if (priorCount === 0) {
           const anchorProject =
             await Project.findById(project).select("startDate");
           if (anchorProject?.startDate) {
             anchorDate = new Date(anchorProject.startDate);
+          }
+        } else {
+          previousProgramme = await Programme.findOne({ project })
+            .sort({ createdAt: -1 })
+            .select("weekNumber closedWeeks cycleStatus name");
+
+          const priorLoopClosed =
+            previousProgramme?.cycleStatus === "Closed" ||
+            (previousProgramme?.closedWeeks || []).length > 0;
+
+          if (previousProgramme && !priorLoopClosed) {
+            return sendError(
+              res,
+              `Cannot start the next governance week: Week ${
+                previousProgramme.weekNumber || priorCount
+              } on this project has not been closed yet. Close the current week first.`,
+              400,
+            );
           }
         }
       }
@@ -529,9 +560,11 @@ router.post(
 
       const summary = buildActivitySummary(activities, lookaheadActivities);
 
-      const startOfYear = new Date(today.getFullYear(), 0, 1);
-      const days = Math.floor((today - startOfYear) / (24 * 60 * 60 * 1000));
-      const weekNumber = Math.ceil((days + 1) / 7);
+      /* Sequential within the project's cycle. This was the calendar week of
+         the year, which bore no relation to the governance week being run. */
+      const weekNumber = previousProgramme
+        ? (previousProgramme.weekNumber || priorCount) + 1
+        : 1;
 
       const fileData = fs.readFileSync(req.file.path);
 
@@ -556,6 +589,7 @@ router.post(
         uploadedBy: req.admin._id,
         status: "processed",
         closedWeeks: [],
+        previousProgramme: previousProgramme?._id || null,
       });
 
       await syncProgrammeGovernance(programme, Action);
@@ -908,10 +942,12 @@ router.get("/project/:projectId/activities", protect, async (req, res) => {
 
 router.get("/:id", protect, async (req, res) => {
   try {
-    const programme = await Programme.findById(req.params.id).populate(
-      "uploadedBy",
-      "name email",
-    );
+    /* previousProgramme is populated so the governance chain is visible on
+       the record itself — AC12 asks for the next week to be created from
+       the prior one, which has to be demonstrable, not just stored. */
+    const programme = await Programme.findById(req.params.id)
+      .populate("uploadedBy", "name email")
+      .populate("previousProgramme", "name weekNumber closedWeeks createdAt");
 
     if (!programme) {
       return sendError(res, "Programme not found", 404);
