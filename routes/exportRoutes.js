@@ -888,6 +888,12 @@ router.post("/planner-todo", protect, async (req, res) => {
     // done, so the Planner has to reflect that in the programme update.
     const overriddenActions = actions.filter((a) => a.status === "PM Override");
 
+    /* Closed actions carry the narrative the Action Owner wrote on closure.
+       MS-05 N2: that is the programme-relevant information the Planner needs
+       to update the programme, so it belongs in this output rather than only
+       on the action record. */
+    const completedActions = actions.filter((a) => a.status === "Completed");
+
     const currentWeek = `W${currentWeekNumber}`;
 
     const workbook = new ExcelJS.Workbook();
@@ -999,6 +1005,41 @@ router.post("/planner-todo", protect, async (req, res) => {
       });
     });
 
+    /* Always created, like the sheets above: an empty tab still tells the
+       Planner nothing was closed this week. */
+    const completedSheet = workbook.addWorksheet("Completed Actions");
+    completedSheet.columns = [
+      ...baseColumns,
+      { header: "Closure Narrative", key: "completionNote", width: 60 },
+      { header: "Completed At", key: "completedAt", width: 22 },
+    ];
+    completedSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    completedSheet.getRow(1).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF16A34A" },
+    };
+    completedActions.forEach((action) => {
+      completedSheet.addRow({
+        actionId: `ACT-${String(action._id).slice(-4).toUpperCase()}`,
+        title: action.title || "-",
+        description: action.description || "-",
+        linkedActivity: action.linkedActivity?.activityName || "-",
+        type: action.type || "-",
+        priority: action.priority || "-",
+        assignee: action.assignee?.name || "-",
+        dueDate: action.dueDate
+          ? new Date(action.dueDate).toLocaleDateString()
+          : "-",
+        status: action.status || "-",
+        owner: ownerFor(action.linkedActivity?.activityId),
+        completionNote: action.completionNote || "-",
+        completedAt: action.completedAt
+          ? new Date(action.completedAt).toLocaleString()
+          : "-",
+      });
+    });
+
     const summarySheet = workbook.addWorksheet("Summary");
     summarySheet.columns = [
       { header: "Metric", key: "metric", width: 30 },
@@ -1048,6 +1089,13 @@ router.post("/planner-todo", protect, async (req, res) => {
       metric: "PM Override Actions",
       value: overriddenActions.length,
     });
+    /* Listed separately from the total below: these are closed, so they are
+       not outstanding work — but the Planner still needs them, because their
+       closure narratives are what the programme update is based on. */
+    summarySheet.addRow({
+      metric: "Completed Actions (with narrative)",
+      value: completedActions.length,
+    });
 
     const fileName = `Planner_ToDo_${currentWeek}_${Date.now()}.xlsx`;
     const filePath = path.join(exportsDir, fileName);
@@ -1068,6 +1116,7 @@ router.post("/planner-todo", protect, async (req, res) => {
         totalActionsCount: totalActions,
         openActionsCount: openActions.length,
         inProgressActionsCount: inProgressActions.length,
+        completedActionsCount: completedActions.length,
       },
     });
 

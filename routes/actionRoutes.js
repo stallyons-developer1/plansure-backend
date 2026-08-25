@@ -7,6 +7,7 @@ const Project = require("../models/Project");
 const {
   protect,
   adminOnly,
+  adminOrPlanner,
   plannerOnly,
 } = require("../middleware/authMiddleware");
 const {
@@ -236,7 +237,7 @@ const updateLinkedActivityStatus = async (programmeId, activityId) => {
   }
 };
 
-router.post("/", protect, async (req, res) => {
+router.post("/", protect, adminOrPlanner, async (req, res) => {
   try {
     const {
       programmeId,
@@ -601,7 +602,7 @@ router.get("/:id/history", protect, async (req, res) => {
   }
 });
 
-router.put("/:id", protect, async (req, res) => {
+router.put("/:id", protect, adminOrPlanner, async (req, res) => {
   try {
     const {
       title,
@@ -1027,10 +1028,40 @@ router.patch("/:id/complete", protect, async (req, res) => {
 
     const wasCompleted = action.status === "Completed";
 
-    // Optional: the person completing the action can say how it was resolved.
+    /*
+     * MS-05 N1: an action cannot be closed on a tick alone. Whoever closes it
+     * must say what the response or outcome was — the governance action can be
+     * closed once the requested information has been supplied, even where the
+     * underlying programme constraint remains outstanding, and that
+     * distinction only survives if someone writes it down.
+     *
+     * Required on the way in, not on the way out: reopening discards the
+     * narrative because it described a completion that no longer stands.
+     */
     const rawNote = req.body?.reason;
     const completionNote =
       typeof rawNote === "string" && rawNote.trim() ? rawNote.trim() : null;
+
+    if (!wasCompleted) {
+      if (!completionNote) {
+        return sendValidationError(res, [
+          {
+            field: "reason",
+            message:
+              "A closure narrative is required. Describe the response or outcome.",
+          },
+        ]);
+      }
+      if (completionNote.length < 10) {
+        return sendValidationError(res, [
+          {
+            field: "reason",
+            message:
+              "Please give a fuller closure narrative (at least 10 characters).",
+          },
+        ]);
+      }
+    }
 
     if (action.status === "Completed") {
       action.status = "Open";
