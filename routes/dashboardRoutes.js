@@ -10,7 +10,10 @@ const {
   isActionOpen,
 } = require("../utils/governance");
 
-const getPlannerAccessibleProjects = async (admin) => {
+/* Projects a non-admin can see: granted to them directly, reached through an
+   action assigned to them, or via project team membership. Applies to planners
+   and standard users alike. */
+const getAccessibleProjects = async (admin) => {
   const userAssignedProjects = (admin.projects || []).map((p) => p.toString());
 
   const userActions = await Action.find({
@@ -130,8 +133,11 @@ router.get("/stats", protect, async (req, res) => {
       const project = await Project.findById(projectId);
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
-    } else if (req.admin.role === "planner") {
-      const accessibleProjectIds = await getPlannerAccessibleProjects(
+    } else if (req.admin.role !== "admin") {
+      /* Every non-admin is scoped the same way. This branch used to be
+         planner-only, so a `user` fell through to the branch that loads
+         every project — a view-only account saw system-wide figures. */
+      const accessibleProjectIds = await getAccessibleProjects(
         req.admin,
       );
       if (accessibleProjectIds.length === 0) {
@@ -327,8 +333,11 @@ router.get("/rag-distribution", protect, async (req, res) => {
       const project = await Project.findById(projectId);
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
-    } else if (req.admin.role === "planner") {
-      const accessibleProjectIds = await getPlannerAccessibleProjects(
+    } else if (req.admin.role !== "admin") {
+      /* Every non-admin is scoped the same way. This branch used to be
+         planner-only, so a `user` fell through to the branch that loads
+         every project — a view-only account saw system-wide figures. */
+      const accessibleProjectIds = await getAccessibleProjects(
         req.admin,
       );
       projects = await Project.find({
@@ -419,8 +428,11 @@ router.get("/recent-activity", protect, async (req, res) => {
       const project = await Project.findById(projectId);
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
-    } else if (req.admin.role === "planner") {
-      const accessibleProjectIds = await getPlannerAccessibleProjects(
+    } else if (req.admin.role !== "admin") {
+      /* Every non-admin is scoped the same way. This branch used to be
+         planner-only, so a `user` fell through to the branch that loads
+         every project — a view-only account saw system-wide figures. */
+      const accessibleProjectIds = await getAccessibleProjects(
         req.admin,
       );
       projects = await Project.find({
@@ -569,7 +581,7 @@ router.get("/governance", protect, async (req, res) => {
       projects = await Project.find({ status: { $ne: "Cancelled" } });
       projectIds = projects.map((p) => p._id);
     } else {
-      const accessibleProjectIds = await getPlannerAccessibleProjects(
+      const accessibleProjectIds = await getAccessibleProjects(
         req.admin,
       );
       if (accessibleProjectIds.length === 0) {
@@ -1318,8 +1330,11 @@ router.get("/weekly", protect, async (req, res) => {
       const project = await Project.findById(projectId);
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
-    } else if (req.admin.role === "planner") {
-      const accessibleProjectIds = await getPlannerAccessibleProjects(
+    } else if (req.admin.role !== "admin") {
+      /* Every non-admin is scoped the same way. This branch used to be
+         planner-only, so a `user` fell through to the branch that loads
+         every project — a view-only account saw system-wide figures. */
+      const accessibleProjectIds = await getAccessibleProjects(
         req.admin,
       );
       projects = await Project.find({
