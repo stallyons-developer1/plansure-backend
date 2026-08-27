@@ -32,7 +32,7 @@ const frontendBase = () =>
 
 router.post("/invite", protect, adminOnly, async (req, res) => {
   try {
-    const { name, email, role, projectId } = req.body;
+    const { name, email, role, projectId, projectIds } = req.body;
 
     const errors = validateRequired({ name, email, role });
 
@@ -52,11 +52,21 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
       ]);
     }
 
+    /* A user can be granted several projects at invite time. projectId is
+       still accepted so older callers keep working. */
+    const grantedProjects = Array.isArray(projectIds)
+      ? projectIds.filter(Boolean)
+      : projectId
+        ? [projectId]
+        : [];
+
     let projectName = "All Projects";
-    if (projectId) {
-      const project = await Project.findById(projectId);
-      if (project) {
-        projectName = project.name;
+    if (grantedProjects.length > 0) {
+      const named = await Project.find({ _id: { $in: grantedProjects } }).select(
+        "name",
+      );
+      if (named.length > 0) {
+        projectName = named.map((p) => p.name).join(", ");
       }
     }
 
@@ -65,7 +75,7 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
       email,
       role,
       status: "pending",
-      projects: projectId ? [projectId] : [],
+      projects: grantedProjects,
       invitedBy: req.admin._id,
     });
 
