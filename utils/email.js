@@ -78,7 +78,6 @@ const sendInviteEmail = async (options) => {
           <p><strong>Your Role:</strong></p>
           <span class="role-badge ${options.role}">${options.role.charAt(0).toUpperCase() + options.role.slice(1)}</span>
 
-          <p><strong>Project Assignment:</strong> ${options.projectName || "All Projects"}</p>
 
           <p>Click below to accept or decline this invitation:</p>
 
