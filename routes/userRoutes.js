@@ -489,6 +489,7 @@ router.get("/", protect, async (req, res) => {
             // Admins are not scoped to projects, so they match any project filter.
             allProjects: true,
             projectIds: [],
+            grantedProjectIds: [],
             lastLogin: user.lastLogin,
             createdAt: user.createdAt,
             initials: user.name
@@ -548,6 +549,10 @@ router.get("/", protect, async (req, res) => {
           // The same set that produced projectAccess above: direct assignments
           // plus projects reached through the user's actions.
           projectIds: [...assignedProjectIds],
+          /* Only what an admin granted directly. The edit form needs this
+             separately: pre-selecting action-derived access would turn it into
+             a permanent grant the moment the form is saved. */
+          grantedProjectIds: validProjects.map((p) => p._id.toString()),
           lastLogin: user.lastLogin,
           createdAt: user.createdAt,
           initials: user.name
