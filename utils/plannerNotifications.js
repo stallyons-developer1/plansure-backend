@@ -494,6 +494,12 @@ const notifyUsersOfExport = async ({
     ),
   ].filter((id) => id !== String(sender?._id));
 
+  /* Logged either way: without it a silent zero-recipient result is
+     indistinguishable from the notifier never running at all. */
+  console.log(
+    `[export-notify] ${exportType} | project ${projectId} | granted ${granted.length} | team ${teamUsers.length} | sending to ${recipients.length}`,
+  );
+
   if (recipients.length === 0) return [];
 
   return dispatch({
