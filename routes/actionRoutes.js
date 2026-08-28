@@ -132,6 +132,58 @@ const diffEditableFields = (before, after) => {
  * most recent week closure sits inside a closed week and is retained as
  * evidence, not amended (MS-05 B5).
  */
+/*
+ * Programmes a non-admin may see actions for: those in projects granted to
+ * them, reached through their own work, or where they are on the team.
+ *
+ * Listing used to return only actions the person was personally attached to.
+ * That hid the assignee from a User — who is granted view access to action
+ * status (SRS §10) — and hid one Planner's actions from another on the same
+ * programme.
+ */
+const visibleProgrammeIds = async (admin) => {
+  const Project = require("../models/Project");
+
+  const granted = (admin.projects || []).map((p) => p.toString());
+
+  const ownActions = await Action.find({
+    $or: [
+      { assignee: admin._id },
+      { "previousAssignees.user": admin._id },
+      { createdBy: admin._id },
+    ],
+  }).select("programme");
+
+  let reached = [];
+  if (ownActions.length > 0) {
+    const progIds = [
+      ...new Set(ownActions.map((a) => a.programme?.toString()).filter(Boolean)),
+    ];
+    const progs = await Programme.find({ _id: { $in: progIds } }).select(
+      "project",
+    );
+    reached = progs.map((p) => p.project?.toString()).filter(Boolean);
+  }
+
+  const teamProjects = await Project.find({ "team.user": admin._id }).select(
+    "_id",
+  );
+
+  const projectIds = [
+    ...new Set([
+      ...granted,
+      ...reached,
+      ...teamProjects.map((p) => p._id.toString()),
+    ]),
+  ];
+  if (projectIds.length === 0) return [];
+
+  const programmes = await Programme.find({
+    project: { $in: projectIds },
+  }).select("_id");
+  return programmes.map((p) => p._id);
+};
+
 const checkProgrammeLocked = async (programmeId, action = null) => {
   const programme = await Programme.findById(programmeId);
   if (!programme) return { locked: false, error: "Programme not found" };
@@ -428,11 +480,9 @@ router.get("/", protect, async (req, res) => {
     }
 
     if (req.admin.role !== "admin") {
-      filter.$or = [
-        { assignee: req.admin._id },
-        { "previousAssignees.user": req.admin._id },
-        { createdBy: req.admin._id },
-      ];
+      const allowed = await visibleProgrammeIds(req.admin);
+      if (allowed.length === 0) return sendSuccess(res, { actions: [] });
+      if (!filter.programme) filter.programme = { $in: allowed };
     }
 
     const actions = await Action.find(filter)
@@ -485,11 +535,9 @@ router.get("/activity/:activityId", protect, async (req, res) => {
     if (programmeId) filter.programme = programmeId;
 
     if (req.admin.role !== "admin") {
-      filter.$or = [
-        { assignee: req.admin._id },
-        { "previousAssignees.user": req.admin._id },
-        { createdBy: req.admin._id },
-      ];
+      const allowed = await visibleProgrammeIds(req.admin);
+      if (allowed.length === 0) return sendSuccess(res, { actions: [] });
+      if (!filter.programme) filter.programme = { $in: allowed };
     }
 
     const actions = await Action.find(filter)
