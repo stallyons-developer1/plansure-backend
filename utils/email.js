@@ -95,8 +95,8 @@ const sendInviteEmail = async (options) => {
           <p>Click below to accept or decline this invitation:</p>
 
           <div style="text-align: center; margin: 30px 0;">
-            <a href="${options.acceptUrl}" class="button accept">Accept Invite</a>
-            <a href="${options.rejectUrl}" class="button reject">Decline</a>
+            <a href="${options.acceptUrl}" class="button" style="display: inline-block; padding: 14px 28px; border-radius: 6px; text-decoration: none; font-weight: bold; color: #ffffff; background: #4CAF50;">Accept Invite</a>
+            <a href="${options.rejectUrl}" class="button" style="display: inline-block; padding: 14px 28px; border-radius: 6px; text-decoration: none; font-weight: bold; color: #ffffff; background: #f44336;">Decline</a>
           </div>
 
           <p style="color: #666; font-size: 14px;">This invitation will expire in 7 days.</p>
@@ -167,7 +167,7 @@ const sendWelcomeEmail = async (options) => {
           ${passwordSection}
 
           <div style="text-align: center; margin: 30px 0;">
-            <a href="${appUrl()}/login" class="button">Login to Plansure</a>
+            <a href="${appUrl()}/login" class="button" style="display: inline-block; padding: 14px 28px; border-radius: 6px; text-decoration: none; font-weight: bold; color: #ffffff; background: #3b82f6;">Login to Plansure</a>
           </div>
         </div>
       </div>
@@ -243,7 +243,7 @@ const sendRoleChangeEmail = async (options) => {
           <p>If you have any questions about these changes, please contact your administrator.</p>
 
           <div style="text-align: center; margin: 30px 0;">
-            <a href="${appUrl()}/login" class="button">Go to Plansure</a>
+            <a href="${appUrl()}/login" class="button" style="display: inline-block; padding: 14px 28px; border-radius: 6px; text-decoration: none; font-weight: bold; color: #ffffff; background: #3b82f6;">Go to Plansure</a>
           </div>
         </div>
       </div>
@@ -339,7 +339,7 @@ const sendActionAssignedEmail = async (options) => {
           </div>
 
           <div style="text-align: center; margin: 30px 0;">
-            <a href="${appUrl()}/login" class="button">View in Plansure</a>
+            <a href="${appUrl()}/login" class="button" style="display: inline-block; padding: 14px 28px; border-radius: 6px; text-decoration: none; font-weight: bold; color: #ffffff; background: #3b82f6;">View in Plansure</a>
           </div>
         </div>
         <div class="footer">
@@ -467,7 +467,7 @@ const sendActionStatusChangedEmail = async (options) => {
           </div>
 
           <div style="text-align: center; margin: 30px 0;">
-            <a href="${appUrl()}/login" class="button">View in Plansure</a>
+            <a href="${appUrl()}/login" class="button" style="display: inline-block; padding: 14px 28px; border-radius: 6px; text-decoration: none; font-weight: bold; color: #ffffff; background: #3b82f6;">View in Plansure</a>
           </div>
         </div>
         <div class="footer">
