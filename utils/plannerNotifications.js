@@ -445,7 +445,71 @@ const emailStakeholdersWeekClosed = async ({
   return recipients;
 };
 
+/*
+ * Tells the view-only users on a project that a formal output has been issued
+ * for it — the Weekly Plan or the Planner To-Do.
+ *
+ * Bell and push only, no email: these users cannot generate exports (SRS §10.2
+ * grants them "View exports (read-only)"), so this is simply how they learn a
+ * new one is available.
+ *
+ * Scoped to users granted the project directly or sitting on its team. Whoever
+ * generated the export is skipped.
+ */
+const notifyUsersOfExport = async ({
+  programme,
+  exportType,
+  weekNumber,
+  sender,
+}) => {
+  if (!programme?.project) return [];
+
+  const Admin = require("../models/Admin");
+  const Project = require("../models/Project");
+
+  const projectId = programme.project.toString();
+
+  const granted = await Admin.find({
+    role: "user",
+    status: "active",
+    projects: programme.project,
+  }).select("_id");
+
+  const project = await Project.findById(projectId).select("team name");
+  const teamUserIds = (project?.team || [])
+    .filter((member) => member.user)
+    .map((member) => member.user.toString());
+
+  const teamUsers = teamUserIds.length
+    ? await Admin.find({
+        _id: { $in: teamUserIds },
+        role: "user",
+        status: "active",
+      }).select("_id")
+    : [];
+
+  const recipients = [
+    ...new Set(
+      [...granted, ...teamUsers].map((u) => u._id.toString()),
+    ),
+  ].filter((id) => id !== String(sender?._id));
+
+  if (recipients.length === 0) return [];
+
+  return dispatch({
+    recipients,
+    sender,
+    type: "general",
+    title: `New ${exportType} Available`,
+    message: `A new ${exportType} for Week ${weekNumber} on "${
+      project?.name || programme.name
+    }" has been issued. Open Exports to view it.`,
+    programme,
+  });
+};
+
 module.exports = {
+  notifyUsersOfExport,
   emailStakeholdersWeekClosed,
   emailStakeholdersMarkedCloseOutEligible,
   notifyPlannersOfTodoGenerated,

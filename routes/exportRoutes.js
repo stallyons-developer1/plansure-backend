@@ -760,6 +760,20 @@ router.post("/weekly-plan", protect, async (req, res) => {
       totalItems,
     );
 
+    /* Tell the view-only users on this project that a new output exists.
+       Isolated so a notification failure cannot fail the download. */
+    try {
+      const { notifyUsersOfExport } = require("../utils/plannerNotifications");
+      await notifyUsersOfExport({
+        programme: activeProgramme,
+        exportType: "Weekly Plan",
+        weekNumber: currentWeekNumber,
+        sender: req.admin,
+      });
+    } catch (notifyError) {
+      console.error("Weekly Plan user notification failed:", notifyError);
+    }
+
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1139,6 +1153,18 @@ router.post("/planner-todo", protect, async (req, res) => {
       });
     } catch (notifyError) {
       console.error("Planner To-Do notification failed:", notifyError);
+    }
+
+    try {
+      const { notifyUsersOfExport } = require("../utils/plannerNotifications");
+      await notifyUsersOfExport({
+        programme: activeProgramme,
+        exportType: "Planner To-Do",
+        weekNumber: currentWeekNumber,
+        sender: req.admin,
+      });
+    } catch (notifyError) {
+      console.error("Planner To-Do user notification failed:", notifyError);
     }
 
     res.setHeader(
