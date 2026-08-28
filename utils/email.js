@@ -40,6 +40,19 @@ const appUrl = () =>
     "",
   );
 
+/*
+ * The sender address, in one place for both transports. Providers only deliver
+ * mail whose From domain they have verified, so this has to match whatever
+ * domain is set up with the provider in use — it was hardcoded to
+ * noreply@plansure.io in the SMTP branch, which is not the domain the project
+ * actually owns. RESEND_FROM_EMAIL is still honoured so existing deployments
+ * keep working without an extra variable.
+ */
+const mailFrom = () =>
+  process.env.MAIL_FROM ||
+  process.env.RESEND_FROM_EMAIL ||
+  "Plansure <noreply@plansure.ai>";
+
 const isSmtp = () => {
   const useSmtp = process.env.ISSMTP === "true";
 
@@ -100,15 +113,14 @@ const sendInviteEmail = async (options) => {
     if (isSmtp()) {
       const transporter = createTransporter();
       const result = await transporter.sendMail({
-        from: "Plansure <noreply@plansure.io>",
+        from: mailFrom(),
         to: options.email,
         subject: "You've been invited to join Plansure",
         html: htmlContent,
       });
     } else {
       const result = await getResend().emails.send({
-        from:
-          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
+        from: mailFrom(),
         to: options.email,
         subject: "You've been invited to join Plansure",
         html: htmlContent,
@@ -167,15 +179,14 @@ const sendWelcomeEmail = async (options) => {
     if (isSmtp()) {
       const transporter = createTransporter();
       const result = await transporter.sendMail({
-        from: "Plansure <noreply@plansure.io>",
+        from: mailFrom(),
         to: options.email,
         subject: "Welcome to Plansure!",
         html: htmlContent,
       });
     } else {
       const result = await getResend().emails.send({
-        from:
-          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
+        from: mailFrom(),
         to: options.email,
         subject: "Welcome to Plansure!",
         html: htmlContent,
@@ -244,15 +255,14 @@ const sendRoleChangeEmail = async (options) => {
     if (isSmtp()) {
       const transporter = createTransporter();
       const result = await transporter.sendMail({
-        from: "Plansure <noreply@plansure.io>",
+        from: mailFrom(),
         to: options.email,
         subject: "Your Plansure Account Has Been Updated",
         html: htmlContent,
       });
     } else {
       const result = await getResend().emails.send({
-        from:
-          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
+        from: mailFrom(),
         to: options.email,
         subject: "Your Plansure Account Has Been Updated",
         html: htmlContent,
@@ -356,7 +366,7 @@ const sendActionAssignedEmail = async (options) => {
     if (isSmtp()) {
       const transporter = createTransporter();
       await transporter.sendMail({
-        from: senderFrom("Plansure <noreply@plansure.io>"),
+        from: senderFrom(mailFrom()),
         replyTo: options.assignedByEmail || undefined,
         to: options.email,
         subject: `${heading}: ${options.actionTitle}`,
@@ -364,9 +374,7 @@ const sendActionAssignedEmail = async (options) => {
       });
     } else {
       await getResend().emails.send({
-        from: senderFrom(
-          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
-        ),
+        from: senderFrom(mailFrom()),
         replyTo: options.assignedByEmail || undefined,
         to: options.email,
         subject: `${heading}: ${options.actionTitle}`,
@@ -484,7 +492,7 @@ const sendActionStatusChangedEmail = async (options) => {
     if (isSmtp()) {
       const transporter = createTransporter();
       await transporter.sendMail({
-        from: senderFrom("Plansure <noreply@plansure.io>"),
+        from: senderFrom(mailFrom()),
         replyTo: options.changedByEmail || undefined,
         to: options.email,
         subject,
@@ -492,9 +500,7 @@ const sendActionStatusChangedEmail = async (options) => {
       });
     } else {
       await getResend().emails.send({
-        from: senderFrom(
-          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
-        ),
+        from: senderFrom(mailFrom()),
         replyTo: options.changedByEmail || undefined,
         to: options.email,
         subject,
@@ -574,7 +580,7 @@ const sendPlannerTodoEmail = async (options) => {
     if (isSmtp()) {
       const transporter = createTransporter();
       await transporter.sendMail({
-        from: senderFrom("Plansure <noreply@plansure.io>"),
+        from: senderFrom(mailFrom()),
         replyTo: options.generatedByEmail || undefined,
         to: options.email,
         subject,
@@ -582,9 +588,7 @@ const sendPlannerTodoEmail = async (options) => {
       });
     } else {
       await getResend().emails.send({
-        from: senderFrom(
-          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
-        ),
+        from: senderFrom(mailFrom()),
         replyTo: options.generatedByEmail || undefined,
         to: options.email,
         subject,
@@ -654,15 +658,14 @@ const sendCloseOutEligibleEmail = async (options) => {
     if (isSmtp()) {
       const transporter = createTransporter();
       await transporter.sendMail({
-        from: "Plansure <noreply@plansure.io>",
+        from: mailFrom(),
         to: options.email,
         subject,
         html: htmlContent,
       });
     } else {
       await getResend().emails.send({
-        from:
-          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
+        from: mailFrom(),
         to: options.email,
         subject,
         html: htmlContent,
@@ -762,7 +765,7 @@ const sendWeekClosedEmail = async (options) => {
     if (isSmtp()) {
       const transporter = createTransporter();
       await transporter.sendMail({
-        from: senderFrom("Plansure <noreply@plansure.io>"),
+        from: senderFrom(mailFrom()),
         replyTo: options.closedByEmail || undefined,
         to: options.email,
         subject,
@@ -770,9 +773,7 @@ const sendWeekClosedEmail = async (options) => {
       });
     } else {
       await getResend().emails.send({
-        from: senderFrom(
-          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
-        ),
+        from: senderFrom(mailFrom()),
         replyTo: options.closedByEmail || undefined,
         to: options.email,
         subject,
@@ -866,7 +867,7 @@ const sendMarkedCloseOutEligibleEmail = async (options) => {
     if (isSmtp()) {
       const transporter = createTransporter();
       await transporter.sendMail({
-        from: senderFrom("Plansure <noreply@plansure.io>"),
+        from: senderFrom(mailFrom()),
         replyTo: options.markedByEmail || undefined,
         to: options.email,
         subject,
@@ -874,9 +875,7 @@ const sendMarkedCloseOutEligibleEmail = async (options) => {
       });
     } else {
       await getResend().emails.send({
-        from: senderFrom(
-          process.env.RESEND_FROM_EMAIL || "Plansure <onboarding@resend.dev>",
-        ),
+        from: senderFrom(mailFrom()),
         replyTo: options.markedByEmail || undefined,
         to: options.email,
         subject,
