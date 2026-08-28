@@ -176,8 +176,19 @@ const sendPushForNotification = async (
       actionTitle: title,
     });
 
+    /* The prefix has to match the recipient's own route tree. A user sent to
+       /planner/... hits ProtectedRoute, fails the role check and gets logged
+       out, so resolve the role before building the link. */
+    const recipient = await Admin.findById(recipientId).select("role");
+    const prefix =
+      recipient?.role === "admin"
+        ? "/admin"
+        : recipient?.role === "planner"
+          ? "/planner"
+          : "/dashboard";
+
     const clickUrl = projectId
-      ? `${process.env.FRONTEND_URL || ""}/planner/projects/${projectId}?tab=actions`
+      ? `${process.env.FRONTEND_URL || ""}${prefix}/projects/${projectId}?tab=actions`
       : process.env.FRONTEND_URL || "/";
 
     const result = await sendToUser(recipientId, {
