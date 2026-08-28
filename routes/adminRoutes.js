@@ -110,13 +110,15 @@ router.put("/profile", protect, async (req, res) => {
   try {
     const { name, email } = req.body;
 
+    /* Email is optional here. The settings form states that email cannot be
+       changed and therefore sends only the name — requiring email made every
+       save fail with "Email is required". It is still validated when a client
+       does send one. */
     const errors = [];
     if (!name || name.trim() === "") {
       errors.push({ field: "name", message: "Name is required" });
     }
-    if (!email || email.trim() === "") {
-      errors.push({ field: "email", message: "Email is required" });
-    } else {
+    if (email !== undefined && email.trim() !== "") {
       const emailError = validateEmail(email);
       if (emailError) errors.push(emailError);
     }
@@ -125,7 +127,7 @@ router.put("/profile", protect, async (req, res) => {
       return sendValidationError(res, errors);
     }
 
-    if (email !== req.admin.email) {
+    if (email && email !== req.admin.email) {
       const existingUser = await Admin.findOne({
         email,
         _id: { $ne: req.admin._id },
@@ -137,11 +139,12 @@ router.put("/profile", protect, async (req, res) => {
       }
     }
 
-    const updatedUser = await Admin.findByIdAndUpdate(
-      req.admin._id,
-      { name: name.trim(), email: email.trim().toLowerCase() },
-      { new: true },
-    ).select("-password");
+    const update = { name: name.trim() };
+    if (email && email.trim()) update.email = email.trim().toLowerCase();
+
+    const updatedUser = await Admin.findByIdAndUpdate(req.admin._id, update, {
+      new: true,
+    }).select("-password");
 
     return sendSuccess(
       res,
