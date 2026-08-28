@@ -503,15 +503,15 @@ router.get("/programme/:programmeId", protect, async (req, res) => {
   try {
     let filter = { programme: req.params.programmeId };
 
+    /* Same visibility rule as the other listings: if the programme sits in a
+       project they can reach, they see all of its actions. Filtering to their
+       own actions here hid the assignee on every other activity. */
     if (req.admin.role !== "admin") {
-      filter = {
-        programme: req.params.programmeId,
-        $or: [
-          { assignee: req.admin._id },
-          { "previousAssignees.user": req.admin._id },
-          { createdBy: req.admin._id },
-        ],
-      };
+      const allowed = await visibleProgrammeIds(req.admin);
+      const canSee = allowed.some(
+        (id) => id.toString() === req.params.programmeId,
+      );
+      if (!canSee) return sendSuccess(res, { actions: [] });
     }
 
     const actions = await Action.find(filter)
@@ -1426,11 +1426,16 @@ router.get("/stats/summary", protect, async (req, res) => {
     const filter = {};
     if (programmeId) filter.programme = programmeId;
 
+    /* Counts should describe the same set the lists show, otherwise the
+       summary and the table disagree. */
     if (req.admin.role !== "admin") {
-      filter.$or = [
-        { assignee: req.admin._id },
-        { "previousAssignees.user": req.admin._id },
-      ];
+      const allowed = await visibleProgrammeIds(req.admin);
+      if (allowed.length === 0) {
+        return sendSuccess(res, {
+          stats: { total: 0, open: 0, inProgress: 0, completed: 0, overdue: 0 },
+        });
+      }
+      if (!filter.programme) filter.programme = { $in: allowed };
     }
 
     const startOfToday = new Date();
