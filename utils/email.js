@@ -48,6 +48,14 @@ const appUrl = () =>
  * actually owns. RESEND_FROM_EMAIL is still honoured so existing deployments
  * keep working without an extra variable.
  */
+/*
+ * Logo for the email header. Served from the app's public folder so the URL is
+ * stable across builds. Note this does not change the sender avatar shown in
+ * Gmail — that comes from BIMI or a Google profile, not from the message.
+ */
+const logoTag = () =>
+  `<img src="${appUrl()}/logo.png" alt="Plansure" width="150" style="display: block; margin: 0 auto 12px; max-width: 150px; height: auto;" />`;
+
 const mailFrom = () =>
   process.env.MAIL_FROM ||
   process.env.RESEND_FROM_EMAIL ||
@@ -82,6 +90,7 @@ const sendInviteEmail = async (options) => {
     <body>
       <div class="container">
         <div class="header">
+          ${logoTag()}
           <h1>Welcome to Plansure</h1>
         </div>
         <div class="content">
@@ -158,6 +167,7 @@ const sendWelcomeEmail = async (options) => {
     <body>
       <div class="container">
         <div class="header">
+          ${logoTag()}
           <h1>Welcome to Plansure!</h1>
         </div>
         <div class="content">
@@ -227,6 +237,7 @@ const sendRoleChangeEmail = async (options) => {
     <body>
       <div class="container">
         <div class="header">
+          ${logoTag()}
           <h1>Account Updated</h1>
         </div>
         <div class="content">
@@ -320,6 +331,7 @@ const sendActionAssignedEmail = async (options) => {
     <body>
       <div class="container">
         <div class="header">
+          ${logoTag()}
           <h1>${heading}</h1>
         </div>
         <div class="content">
@@ -442,6 +454,7 @@ const sendActionStatusChangedEmail = async (options) => {
     <body>
       <div class="container">
         <div class="header">
+          ${logoTag()}
           <h1>Action Status Updated</h1>
         </div>
         <div class="content">
@@ -538,6 +551,7 @@ const sendPlannerTodoEmail = async (options) => {
     <body>
       <div class="container">
         <div class="header">
+          ${logoTag()}
           <h1>Planner To-Do Issued</h1>
         </div>
         <div class="content">
@@ -623,6 +637,7 @@ const sendCloseOutEligibleEmail = async (options) => {
     <body>
       <div class="container">
         <div class="header">
+          ${logoTag()}
           <h1>Ready for Close-Out</h1>
         </div>
         <div class="content">
@@ -704,6 +719,7 @@ const sendWeekClosedEmail = async (options) => {
     <body>
       <div class="container">
         <div class="header">
+          ${logoTag()}
           <h1>Week ${options.weekNumber} Closed</h1>
         </div>
         <div class="content">
@@ -814,6 +830,7 @@ const sendMarkedCloseOutEligibleEmail = async (options) => {
     <body>
       <div class="container">
         <div class="header">
+          ${logoTag()}
           <h1>Marked Close-Out Eligible</h1>
         </div>
         <div class="content">
