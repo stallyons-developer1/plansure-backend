@@ -49,13 +49,11 @@ const checkProgrammeAccess = async (user, programmeId, projectId = null) => {
         })
       : 0;
 
-  if (user.role === "planner") {
-    const userProjects = user.projects || [];
-    const isAssigned = userProjects.some((p) => p.toString() === projId);
-    return { hasAccess: isAssigned || userActionCount > 0 };
-  }
-
-  return { hasAccess: userActionCount > 0 };
+  /* Same rule for every non-admin: the project was granted to them, or work on
+     it was assigned to them. This was planner-only, so a user granted a project
+     could not open its programme or lookahead. */
+  const isAssigned = (user.projects || []).some((p) => p.toString() === projId);
+  return { hasAccess: isAssigned || userActionCount > 0 };
 };
 
 const parseDate = (dateStr) => {
@@ -663,55 +661,36 @@ router.get("/", protect, async (req, res) => {
     if (req.admin.role !== "admin") {
       let projectIds = [];
 
-      if (req.admin.role === "planner") {
-        const userAssignedProjects = (req.admin.projects || []).map((p) =>
-          p.toString(),
-        );
+      /* Same rule for every non-admin: projects granted to them plus projects
+         reached through their own actions. The granted half was planner-only,
+         so a user saw no programmes for a project they had been given. */
+      const userAssignedProjects = (req.admin.projects || []).map((p) =>
+        p.toString(),
+      );
 
-        const userActions = await Action.find({
-          $or: [
-            { assignee: req.admin._id },
-            { "previousAssignees.user": req.admin._id },
-          ],
-        }).select("programme");
-        let actionProjectIds = [];
-        if (userActions.length > 0) {
-          const programmeIds = [
-            ...new Set(userActions.map((a) => a.programme.toString())),
-          ];
-          const programmes = await Programme.find({
-            _id: { $in: programmeIds },
-          }).select("project");
-          actionProjectIds = programmes
-            .map((p) => p.project?.toString())
-            .filter(Boolean);
-        }
+      const userActions = await Action.find({
+        $or: [
+          { assignee: req.admin._id },
+          { "previousAssignees.user": req.admin._id },
+        ],
+      }).select("programme");
 
-        projectIds = [
-          ...new Set([...userAssignedProjects, ...actionProjectIds]),
+      let actionProjectIds = [];
+      if (userActions.length > 0) {
+        const programmeIds = [
+          ...new Set(userActions.map((a) => a.programme.toString())),
         ];
-      } else {
-        const userActions = await Action.find({
-          $or: [
-            { assignee: req.admin._id },
-            { "previousAssignees.user": req.admin._id },
-          ],
-        }).select("programme");
-
-        if (userActions.length > 0) {
-          const programmeIds = [
-            ...new Set(userActions.map((a) => a.programme.toString())),
-          ];
-          const programmes = await Programme.find({
-            _id: { $in: programmeIds },
-          }).select("project");
-          projectIds = [
-            ...new Set(
-              programmes.map((p) => p.project?.toString()).filter(Boolean),
-            ),
-          ];
-        }
+        const programmes = await Programme.find({
+          _id: { $in: programmeIds },
+        }).select("project");
+        actionProjectIds = programmes
+          .map((p) => p.project?.toString())
+          .filter(Boolean);
       }
+
+      projectIds = [
+        ...new Set([...userAssignedProjects, ...actionProjectIds]),
+      ];
 
       if (projectIds.length === 0) {
         return sendSuccess(res, { programmes: [] });

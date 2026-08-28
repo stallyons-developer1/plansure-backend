@@ -546,19 +546,16 @@ router.get("/:id", protect, async (req, res) => {
             })
           : 0;
 
-      if (req.admin.role === "planner") {
-        const userProjects = req.admin.projects || [];
-        const isAssigned = userProjects.some(
-          (p) => p.toString() === req.params.id,
-        );
+      /* Same rule for every non-admin: the project was granted to them, or
+         work on it was assigned to them. The granted half used to apply to
+         planners only, so a user could see a project in their list and then
+         be refused when opening it. */
+      const isAssigned = (req.admin.projects || []).some(
+        (p) => p.toString() === req.params.id,
+      );
 
-        if (!isAssigned && userActionCount === 0) {
-          return sendError(res, "Access denied", 403);
-        }
-      } else {
-        if (userActionCount === 0) {
-          return sendError(res, "Access denied", 403);
-        }
+      if (!isAssigned && userActionCount === 0) {
+        return sendError(res, "Access denied", 403);
       }
     }
 
