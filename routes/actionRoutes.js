@@ -119,7 +119,11 @@ const diffEditableFields = (before, after) => {
       changedAfter[key] = to;
     }
   }
-  return { changedBefore, changedAfter, changedKeys: Object.keys(changedAfter) };
+  return {
+    changedBefore,
+    changedAfter,
+    changedKeys: Object.keys(changedAfter),
+  };
 };
 
 /*
@@ -157,7 +161,9 @@ const visibleProgrammeIds = async (admin) => {
   let reached = [];
   if (ownActions.length > 0) {
     const progIds = [
-      ...new Set(ownActions.map((a) => a.programme?.toString()).filter(Boolean)),
+      ...new Set(
+        ownActions.map((a) => a.programme?.toString()).filter(Boolean),
+      ),
     ];
     const progs = await Programme.find({ _id: { $in: progIds } }).select(
       "project",
@@ -288,6 +294,26 @@ const updateLinkedActivityStatus = async (programmeId, activityId) => {
     console.error("Error updating linked activity status:", error);
   }
 };
+
+/* Who may force-close an action.
+ *
+ * A PM Override is a closure, so it answers to the same ownership rule as a
+ * normal closure: the action sits with someone, and only that person — or the
+ * planner who raised it and still owns the outcome — may close it out. The
+ * role gate is separate and stricter (plannerOnly), because SRS 10.2 puts PM
+ * Override with the Planner and denies it to the Admin outright. Without this
+ * check any planner could force-close another planner's action. */
+const canForceClose = (admin, action) => {
+  if (!admin || admin.role !== "planner") return false;
+  const actorId = admin._id.toString();
+  return (
+    action.assignee?.toString() === actorId ||
+    action.createdBy?.toString() === actorId
+  );
+};
+
+const FORCE_CLOSE_DENIED =
+  "Only the planner this action is assigned to, or the planner who raised it, can PM Override it";
 
 router.post("/", protect, adminOrPlanner, async (req, res) => {
   try {
@@ -674,7 +700,10 @@ router.put("/:id", protect, adminOrPlanner, async (req, res) => {
     const oldAssignee = action.assignee?.toString();
     const beforeEdit = snapshotEditableFields(action);
 
-    const { locked, programme } = await checkProgrammeLocked(action.programme, action);
+    const { locked, programme } = await checkProgrammeLocked(
+      action.programme,
+      action,
+    );
     if (locked) {
       return sendError(
         res,
@@ -739,6 +768,17 @@ router.put("/:id", protect, adminOrPlanner, async (req, res) => {
     const isNewOverride =
       status === "PM Override" && oldStatus !== "PM Override";
     if (isNewOverride) {
+      /* This route is adminOrPlanner, which is correct for an ordinary edit
+         but would otherwise let an admin, or a planner with no stake in the
+         action, force-close it through the status dropdown. */
+      if (
+        !canForceClose(req.admin, {
+          assignee: oldAssignee,
+          createdBy: action.createdBy,
+        })
+      ) {
+        return sendError(res, FORCE_CLOSE_DENIED, 403);
+      }
       const reason = (overrideReason || "").trim();
       if (reason.length < 10) {
         return sendValidationError(res, [
@@ -755,7 +795,11 @@ router.put("/:id", protect, adminOrPlanner, async (req, res) => {
     } else if (status === "PM Override" && overrideReason !== undefined) {
       // Already overridden: allow the evidence to be corrected.
       action.overrideReason = (overrideReason || "").trim();
-    } else if (status && status !== "PM Override" && oldStatus === "PM Override") {
+    } else if (
+      status &&
+      status !== "PM Override" &&
+      oldStatus === "PM Override"
+    ) {
       // Reverted off an override: drop the evidence and attribution so a stale
       // reason cannot resurface. The ACTION_PM_OVERRIDE audit entry still holds
       // the original record.
@@ -1054,7 +1098,10 @@ router.patch("/:id/complete", protect, async (req, res) => {
       }
     }
 
-    const { locked, programme } = await checkProgrammeLocked(action.programme, action);
+    const { locked, programme } = await checkProgrammeLocked(
+      action.programme,
+      action,
+    );
     if (locked) {
       return sendError(
         res,
@@ -1250,7 +1297,14 @@ router.patch("/:id/override", protect, plannerOnly, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    const { locked, programme } = await checkProgrammeLocked(action.programme, action);
+    if (!canForceClose(req.admin, action)) {
+      return sendError(res, FORCE_CLOSE_DENIED, 403);
+    }
+
+    const { locked, programme } = await checkProgrammeLocked(
+      action.programme,
+      action,
+    );
     if (locked) {
       return sendError(
         res,
