@@ -297,23 +297,19 @@ const updateLinkedActivityStatus = async (programmeId, activityId) => {
 
 /* Who may force-close an action.
  *
- * A PM Override is a closure, so it answers to the same ownership rule as a
- * normal closure: the action sits with someone, and only that person — or the
- * planner who raised it and still owns the outcome — may close it out. The
- * role gate is separate and stricter (plannerOnly), because SRS 10.2 puts PM
- * Override with the Planner and denies it to the Admin outright. Without this
- * check any planner could force-close another planner's action. */
+ * Strictly the planner the action is assigned to. Raising an action is not
+ * enough: a planner who hands work to someone else does not get to declare it
+ * unachievable on their behalf. This is deliberately tighter than a normal
+ * closure, which also admits the creator. The role gate is separate
+ * (plannerOnly), because SRS 10.2 puts PM Override with the Planner and denies
+ * it to the Admin outright. */
 const canForceClose = (admin, action) => {
   if (!admin || admin.role !== "planner") return false;
-  const actorId = admin._id.toString();
-  return (
-    action.assignee?.toString() === actorId ||
-    action.createdBy?.toString() === actorId
-  );
+  return action.assignee?.toString() === admin._id.toString();
 };
 
 const FORCE_CLOSE_DENIED =
-  "Only the planner this action is assigned to, or the planner who raised it, can PM Override it";
+  "Only the planner this action is assigned to can PM Override it";
 
 router.post("/", protect, adminOrPlanner, async (req, res) => {
   try {
@@ -771,12 +767,7 @@ router.put("/:id", protect, adminOrPlanner, async (req, res) => {
       /* This route is adminOrPlanner, which is correct for an ordinary edit
          but would otherwise let an admin, or a planner with no stake in the
          action, force-close it through the status dropdown. */
-      if (
-        !canForceClose(req.admin, {
-          assignee: oldAssignee,
-          createdBy: action.createdBy,
-        })
-      ) {
+      if (!canForceClose(req.admin, { assignee: oldAssignee })) {
         return sendError(res, FORCE_CLOSE_DENIED, 403);
       }
       const reason = (overrideReason || "").trim();
