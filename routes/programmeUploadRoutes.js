@@ -688,9 +688,7 @@ router.get("/", protect, async (req, res) => {
           .filter(Boolean);
       }
 
-      projectIds = [
-        ...new Set([...userAssignedProjects, ...actionProjectIds]),
-      ];
+      projectIds = [...new Set([...userAssignedProjects, ...actionProjectIds])];
 
       if (projectIds.length === 0) {
         return sendSuccess(res, { programmes: [] });
@@ -717,6 +715,61 @@ router.get("/", protect, async (req, res) => {
     return sendError(res, "Server error");
   }
 });
+
+/* Acknowledge a week closure and move the project on to the next cycle.
+ *
+ * Previously this was three localStorage writes in the browser that clicked
+ * it, so the prompt stayed up for nobody else and the other accounts carried
+ * on seeing the superseded programme (MS-05 B6/AC1). */
+router.post(
+  "/:id/acknowledge-close",
+  protect,
+  adminOrPlanner,
+  async (req, res) => {
+    try {
+      const programme = await Programme.findById(req.params.id);
+      if (!programme) {
+        return sendError(res, "Programme not found", 404);
+      }
+
+      const { hasAccess } = await checkProgrammeAccess(
+        req.admin,
+        req.params.id,
+      );
+      if (!hasAccess) {
+        return sendError(res, "Access denied", 403);
+      }
+
+      if (programme.pendingCloseAckWeek == null) {
+        return sendError(
+          res,
+          "No closed week is awaiting acknowledgement",
+          400,
+        );
+      }
+
+      const acknowledgedWeek = programme.pendingCloseAckWeek;
+
+      const updated = await Programme.findByIdAndUpdate(
+        req.params.id,
+        { $set: { pendingCloseAckWeek: null, awaitingNextUpload: true } },
+        { new: true },
+      );
+
+      return sendSuccess(res, {
+        acknowledgedWeek,
+        programme: {
+          _id: updated._id,
+          pendingCloseAckWeek: updated.pendingCloseAckWeek,
+          awaitingNextUpload: updated.awaitingNextUpload,
+        },
+      });
+    } catch (error) {
+      console.error("Acknowledge close error:", error);
+      return sendError(res, "Server error");
+    }
+  },
+);
 
 router.get("/by-project/:projectId", protect, async (req, res) => {
   try {
@@ -2326,17 +2379,12 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
   }
 });
 
-
 /* Delegates to utils/governance so the endpoint and the announcement share
    one definition of "eligible" and cannot drift apart. */
 const checkCloseOutEligible = (programmeId) =>
   evaluateCloseOutEligibility(programmeId);
 
-router.patch(
-  "/:id/cycle-status",
-  protect,
-  adminOrPlanner,
-  async (req, res) => {
+router.patch("/:id/cycle-status", protect, adminOrPlanner, async (req, res) => {
   try {
     const { cycleStatus, overrideReason } = req.body;
 
@@ -3336,413 +3384,427 @@ router.post(
   protect,
   adminOrPlanner,
   async (req, res) => {
-  try {
-    const { closeType, notes, isSecondOfPair } = req.body;
-    const weekNumber = parseInt(req.params.weekNumber);
-    const CycleHistory = require("../models/CycleHistory");
+    try {
+      const { closeType, notes, isSecondOfPair } = req.body;
+      const weekNumber = parseInt(req.params.weekNumber);
+      const CycleHistory = require("../models/CycleHistory");
 
-    const programme = await Programme.findById(req.params.id);
-    if (!programme) {
-      return sendError(res, "Programme not found", 404);
-    }
-
-    const { hasAccess } = await checkProgrammeAccess(req.admin, req.params.id);
-    if (!hasAccess) {
-      return sendError(res, "Access denied", 403);
-    }
-
-    const closedWeeks = programme.closedWeeks || [];
-    if (closedWeeks.some((w) => w.weekNumber === weekNumber)) {
-      return sendError(res, `Week ${weekNumber} is already closed`, 400);
-    }
-
-    const closedWeekNumbers = closedWeeks.map((w) => w.weekNumber);
-    for (let i = 1; i < weekNumber; i++) {
-      if (!closedWeekNumbers.includes(i)) {
-        return sendError(
-          res,
-          `Cannot close Week ${weekNumber}. Week ${i} must be closed first.`,
-          400,
-        );
-      }
-    }
-
-    const parseDate = (dateStr) => {
-      if (!dateStr) return null;
-      const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
-
-      const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-      if (isoMatch) {
-        return new Date(
-          parseInt(isoMatch[1]),
-          parseInt(isoMatch[2]) - 1,
-          parseInt(isoMatch[3]),
-        );
+      const programme = await Programme.findById(req.params.id);
+      if (!programme) {
+        return sendError(res, "Programme not found", 404);
       }
 
-      const months = {
-        Jan: 0,
-        Feb: 1,
-        Mar: 2,
-        Apr: 3,
-        May: 4,
-        Jun: 5,
-        Jul: 6,
-        Aug: 7,
-        Sep: 8,
-        Oct: 9,
-        Nov: 10,
-        Dec: 11,
-      };
-      const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
-      if (!match) return null;
-      const day = parseInt(match[1]);
-      const month = months[match[2]];
-      let year = parseInt(match[3]);
-      year = year < 50 ? 2000 + year : 1900 + year;
-      return new Date(year, month, day);
-    };
-
-    const activities = programme.extractedData?.activities || [];
-    let earliestDate = null;
-    let latestDate = null;
-
-    for (const activity of activities) {
-      const startDate = parseDate(activity.startDate);
-      const finishDate = parseDate(activity.finishDate);
-      if (startDate && (!earliestDate || startDate < earliestDate)) {
-        earliestDate = startDate;
-      }
-      if (finishDate && (!latestDate || finishDate > latestDate)) {
-        latestDate = finishDate;
-      }
-    }
-
-    if (!earliestDate) {
-      return sendError(res, "Cannot determine programme start date", 400);
-    }
-
-    const weekAnchorDate = programme.lookaheadStartDate
-      ? new Date(programme.lookaheadStartDate)
-      : new Date(earliestDate);
-    weekAnchorDate.setHours(0, 0, 0, 0);
-
-    const weekStartDate = new Date(weekAnchorDate);
-    weekStartDate.setDate(weekStartDate.getDate() + (weekNumber - 1) * 7);
-    const weekEndDate = new Date(weekStartDate);
-    weekEndDate.setDate(weekStartDate.getDate() + 6);
-
-    const pairFirstWeek = weekNumber % 2 === 1 ? weekNumber : weekNumber - 1;
-    const pairStartDate = new Date(weekAnchorDate);
-    pairStartDate.setDate(pairStartDate.getDate() + (pairFirstWeek - 1) * 7);
-    const twoWeekEndDate = new Date(pairStartDate);
-    twoWeekEndDate.setDate(pairStartDate.getDate() + 13);
-
-    const today = new Date();
-    const todayStart = new Date(today);
-    todayStart.setHours(0, 0, 0, 0);
-    const twoWeekEndDateStart = new Date(twoWeekEndDate);
-    twoWeekEndDateStart.setHours(0, 0, 0, 0);
-
-    const isOverride = closeType === "PM Override";
-
-    if (!isOverride && !isSecondOfPair) {
-      const gateActions = await require("../models/Action")
-        .find({
-          programme: req.params.id,
-        })
-        .lean();
-      const openByActivity = {};
-      const hasActionByActivity = {};
-      for (const action of gateActions) {
-        const actId = action.linkedActivity?.activityId;
-        if (!actId) continue;
-        hasActionByActivity[actId] = true;
-        const isOpen = isActionOpen(action);
-        openByActivity[actId] = (openByActivity[actId] || 0) + (isOpen ? 1 : 0);
-      }
-      const isSettled = (activity) => {
-        if (activity.finishDate && activity.finishDate.includes(" A"))
-          return true;
-        if (
-          activity.activityStatus === "Completed" ||
-          activity.activityStatus === "Complete"
-        )
-          return true;
-        if (
-          hasActionByActivity[activity.activityId] &&
-          (openByActivity[activity.activityId] || 0) === 0
-        )
-          return true;
-        return false;
-      };
-      const lookaheadEnd = new Date(weekAnchorDate);
-      lookaheadEnd.setDate(lookaheadEnd.getDate() + 41);
-      lookaheadEnd.setHours(23, 59, 59, 999);
-      const openActivities = activities.filter((a) => {
-        const s = parseDate(a.startDate);
-        return s && s >= weekAnchorDate && s <= lookaheadEnd && !isSettled(a);
-      });
-      const unassignedActivities = openActivities.filter(
-        (a) => (a.assignmentState || "Unassigned") === "Unassigned",
+      const { hasAccess } = await checkProgrammeAccess(
+        req.admin,
+        req.params.id,
       );
-      if (unassignedActivities.length > 0) {
-        return sendError(
-          res,
-          `Cannot close yet. ${unassignedActivities.length} activit${
-            unassignedActivities.length === 1 ? "y is" : "ies are"
-          } still unassigned. Assign every activity before closing.`,
-          400,
-        );
+      if (!hasAccess) {
+        return sendError(res, "Access denied", 403);
       }
-      const withOpenActions = openActivities.filter(
-        (a) => (openByActivity[a.activityId] || 0) > 0,
-      );
-      if (withOpenActions.length > 0) {
-        return sendError(
-          res,
-          `Cannot close yet. ${withOpenActions.length} activit${
-            withOpenActions.length === 1 ? "y has" : "ies have"
-          } open actions. Complete all actions before closing.`,
-          400,
-        );
+
+      const closedWeeks = programme.closedWeeks || [];
+      if (closedWeeks.some((w) => w.weekNumber === weekNumber)) {
+        return sendError(res, `Week ${weekNumber} is already closed`, 400);
       }
-    }
 
-    const Action = require("../models/Action");
-
-    const allProgActions = await Action.find({
-      programme: req.params.id,
-    }).lean();
-    refreshProgrammeGovernance(
-      programme,
-      groupActionsByActivity(allProgActions),
-      new Date(),
-    );
-
-    const ragBucket = (activity) => {
-      const rag = activity.ragStatus || "Grey";
-      if (rag === "Blue" || rag === "Green") return "green";
-      if (rag === "Red") return "red";
-      return "amber";
-    };
-
-    let weekStats = {
-      totalActivities: 0,
-      green: 0,
-      amber: 0,
-      red: 0,
-      actionsTotal: 0,
-      actionsCompleted: 0,
-    };
-
-    const statLookaheadEnd = new Date(weekAnchorDate);
-    statLookaheadEnd.setDate(statLookaheadEnd.getDate() + 41);
-    statLookaheadEnd.setHours(23, 59, 59, 999);
-
-    for (const activity of activities) {
-      const actStart = parseDate(activity.startDate);
-      if (!actStart) continue;
-
-      const inLookahead =
-        actStart >= weekAnchorDate && actStart <= statLookaheadEnd;
-
-      if (inLookahead) {
-        weekStats.totalActivities++;
-        weekStats[ragBucket(activity)]++;
+      const closedWeekNumbers = closedWeeks.map((w) => w.weekNumber);
+      for (let i = 1; i < weekNumber; i++) {
+        if (!closedWeekNumbers.includes(i)) {
+          return sendError(
+            res,
+            `Cannot close Week ${weekNumber}. Week ${i} must be closed first.`,
+            400,
+          );
+        }
       }
-    }
 
-    const previousClosedWeeks = closedWeeks.filter(
-      (w) => w.weekNumber < weekNumber,
-    );
-    const lastClosureDate =
-      previousClosedWeeks.length > 0
-        ? new Date(
-            Math.max(
-              ...previousClosedWeeks.map((w) => new Date(w.closedAt).getTime()),
-            ),
+      const parseDate = (dateStr) => {
+        if (!dateStr) return null;
+        const cleanDate = dateStr.replace(/\s*[AB\*]$/, "").trim();
+
+        const isoMatch = cleanDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (isoMatch) {
+          return new Date(
+            parseInt(isoMatch[1]),
+            parseInt(isoMatch[2]) - 1,
+            parseInt(isoMatch[3]),
+          );
+        }
+
+        const months = {
+          Jan: 0,
+          Feb: 1,
+          Mar: 2,
+          Apr: 3,
+          May: 4,
+          Jun: 5,
+          Jul: 6,
+          Aug: 7,
+          Sep: 8,
+          Oct: 9,
+          Nov: 10,
+          Dec: 11,
+        };
+        const match = cleanDate.match(/(\d{2})-([A-Za-z]{3})-(\d{2})/);
+        if (!match) return null;
+        const day = parseInt(match[1]);
+        const month = months[match[2]];
+        let year = parseInt(match[3]);
+        year = year < 50 ? 2000 + year : 1900 + year;
+        return new Date(year, month, day);
+      };
+
+      const activities = programme.extractedData?.activities || [];
+      let earliestDate = null;
+      let latestDate = null;
+
+      for (const activity of activities) {
+        const startDate = parseDate(activity.startDate);
+        const finishDate = parseDate(activity.finishDate);
+        if (startDate && (!earliestDate || startDate < earliestDate)) {
+          earliestDate = startDate;
+        }
+        if (finishDate && (!latestDate || finishDate > latestDate)) {
+          latestDate = finishDate;
+        }
+      }
+
+      if (!earliestDate) {
+        return sendError(res, "Cannot determine programme start date", 400);
+      }
+
+      const weekAnchorDate = programme.lookaheadStartDate
+        ? new Date(programme.lookaheadStartDate)
+        : new Date(earliestDate);
+      weekAnchorDate.setHours(0, 0, 0, 0);
+
+      const weekStartDate = new Date(weekAnchorDate);
+      weekStartDate.setDate(weekStartDate.getDate() + (weekNumber - 1) * 7);
+      const weekEndDate = new Date(weekStartDate);
+      weekEndDate.setDate(weekStartDate.getDate() + 6);
+
+      const pairFirstWeek = weekNumber % 2 === 1 ? weekNumber : weekNumber - 1;
+      const pairStartDate = new Date(weekAnchorDate);
+      pairStartDate.setDate(pairStartDate.getDate() + (pairFirstWeek - 1) * 7);
+      const twoWeekEndDate = new Date(pairStartDate);
+      twoWeekEndDate.setDate(pairStartDate.getDate() + 13);
+
+      const today = new Date();
+      const todayStart = new Date(today);
+      todayStart.setHours(0, 0, 0, 0);
+      const twoWeekEndDateStart = new Date(twoWeekEndDate);
+      twoWeekEndDateStart.setHours(0, 0, 0, 0);
+
+      const isOverride = closeType === "PM Override";
+
+      if (!isOverride && !isSecondOfPair) {
+        const gateActions = await require("../models/Action")
+          .find({
+            programme: req.params.id,
+          })
+          .lean();
+        const openByActivity = {};
+        const hasActionByActivity = {};
+        for (const action of gateActions) {
+          const actId = action.linkedActivity?.activityId;
+          if (!actId) continue;
+          hasActionByActivity[actId] = true;
+          const isOpen = isActionOpen(action);
+          openByActivity[actId] =
+            (openByActivity[actId] || 0) + (isOpen ? 1 : 0);
+        }
+        const isSettled = (activity) => {
+          if (activity.finishDate && activity.finishDate.includes(" A"))
+            return true;
+          if (
+            activity.activityStatus === "Completed" ||
+            activity.activityStatus === "Complete"
           )
-        : null;
+            return true;
+          if (
+            hasActionByActivity[activity.activityId] &&
+            (openByActivity[activity.activityId] || 0) === 0
+          )
+            return true;
+          return false;
+        };
+        const lookaheadEnd = new Date(weekAnchorDate);
+        lookaheadEnd.setDate(lookaheadEnd.getDate() + 41);
+        lookaheadEnd.setHours(23, 59, 59, 999);
+        const openActivities = activities.filter((a) => {
+          const s = parseDate(a.startDate);
+          return s && s >= weekAnchorDate && s <= lookaheadEnd && !isSettled(a);
+        });
+        const unassignedActivities = openActivities.filter(
+          (a) => (a.assignmentState || "Unassigned") === "Unassigned",
+        );
+        if (unassignedActivities.length > 0) {
+          return sendError(
+            res,
+            `Cannot close yet. ${unassignedActivities.length} activit${
+              unassignedActivities.length === 1 ? "y is" : "ies are"
+            } still unassigned. Assign every activity before closing.`,
+            400,
+          );
+        }
+        const withOpenActions = openActivities.filter(
+          (a) => (openByActivity[a.activityId] || 0) > 0,
+        );
+        if (withOpenActions.length > 0) {
+          return sendError(
+            res,
+            `Cannot close yet. ${withOpenActions.length} activit${
+              withOpenActions.length === 1 ? "y has" : "ies have"
+            } open actions. Complete all actions before closing.`,
+            400,
+          );
+        }
+      }
 
-    const actionQuery = { programme: req.params.id };
-    if (lastClosureDate) {
-      actionQuery.createdAt = { $gt: lastClosureDate };
-    }
+      const Action = require("../models/Action");
 
-    const weekActions = await Action.find(actionQuery);
-    weekStats.actionsTotal = weekActions.length;
-    weekStats.actionsCompleted = weekActions.filter(
-      (a) => a.status === "Completed",
-    ).length;
+      const allProgActions = await Action.find({
+        programme: req.params.id,
+      }).lean();
+      refreshProgrammeGovernance(
+        programme,
+        groupActionsByActivity(allProgActions),
+        new Date(),
+      );
 
-    let calculatedTotalWeeks = programme.totalWeeks;
-    if (!calculatedTotalWeeks && earliestDate && latestDate) {
-      const msPerDay = 1000 * 60 * 60 * 24;
-      const totalDays = Math.ceil((latestDate - earliestDate) / msPerDay);
-      calculatedTotalWeeks = Math.ceil(totalDays / 7);
-    }
+      const ragBucket = (activity) => {
+        const rag = activity.ragStatus || "Grey";
+        if (rag === "Blue" || rag === "Green") return "green";
+        if (rag === "Red") return "red";
+        return "amber";
+      };
 
-    const currentClosedCount = (programme.closedWeeks || []).length;
-    const isLastWeek = currentClosedCount + 1 >= calculatedTotalWeeks;
+      let weekStats = {
+        totalActivities: 0,
+        green: 0,
+        amber: 0,
+        red: 0,
+        actionsTotal: 0,
+        actionsCompleted: 0,
+      };
 
-    /* "Uploaded", not "Draft": Draft is absent from the cycleStatus enum and
+      const statLookaheadEnd = new Date(weekAnchorDate);
+      statLookaheadEnd.setDate(statLookaheadEnd.getDate() + 41);
+      statLookaheadEnd.setHours(23, 59, 59, 999);
+
+      for (const activity of activities) {
+        const actStart = parseDate(activity.startDate);
+        if (!actStart) continue;
+
+        const inLookahead =
+          actStart >= weekAnchorDate && actStart <= statLookaheadEnd;
+
+        if (inLookahead) {
+          weekStats.totalActivities++;
+          weekStats[ragBucket(activity)]++;
+        }
+      }
+
+      const previousClosedWeeks = closedWeeks.filter(
+        (w) => w.weekNumber < weekNumber,
+      );
+      const lastClosureDate =
+        previousClosedWeeks.length > 0
+          ? new Date(
+              Math.max(
+                ...previousClosedWeeks.map((w) =>
+                  new Date(w.closedAt).getTime(),
+                ),
+              ),
+            )
+          : null;
+
+      const actionQuery = { programme: req.params.id };
+      if (lastClosureDate) {
+        actionQuery.createdAt = { $gt: lastClosureDate };
+      }
+
+      const weekActions = await Action.find(actionQuery);
+      weekStats.actionsTotal = weekActions.length;
+      weekStats.actionsCompleted = weekActions.filter(
+        (a) => a.status === "Completed",
+      ).length;
+
+      let calculatedTotalWeeks = programme.totalWeeks;
+      if (!calculatedTotalWeeks && earliestDate && latestDate) {
+        const msPerDay = 1000 * 60 * 60 * 24;
+        const totalDays = Math.ceil((latestDate - earliestDate) / msPerDay);
+        calculatedTotalWeeks = Math.ceil(totalDays / 7);
+      }
+
+      const currentClosedCount = (programme.closedWeeks || []).length;
+      const isLastWeek = currentClosedCount + 1 >= calculatedTotalWeeks;
+
+      /* "Uploaded", not "Draft": Draft is absent from the cycleStatus enum and
        only ever persisted because this write skips validators. Both map to the
        same entry in CYCLE_TRANSITIONS, so behaviour is unchanged. */
-    let nextCycleStatus = "Uploaded";
-    if (isLastWeek) {
-      nextCycleStatus = "Close-Out Eligible";
-    }
+      let nextCycleStatus = "Uploaded";
+      if (isLastWeek) {
+        nextCycleStatus = "Close-Out Eligible";
+      }
 
-    const updateData = {
-      $push: {
-        closedWeeks: {
+      const updateData = {
+        $push: {
+          closedWeeks: {
+            weekNumber,
+            closedAt: new Date(),
+            closedBy: req.admin._id,
+            closeType: closeType || "Normal Close",
+            stats: weekStats,
+          },
+        },
+        $set: {
+          cycleStatus: nextCycleStatus,
+          totalWeeks: calculatedTotalWeeks,
+          // Everyone on the project should see the closure, not just the closer.
+          pendingCloseAckWeek: weekNumber,
+        },
+      };
+
+      const updatedProgramme = await Programme.findByIdAndUpdate(
+        req.params.id,
+        updateData,
+        { new: true },
+      );
+
+      if (!updatedProgramme) {
+        return sendError(res, "Failed to update programme", 500);
+      }
+
+      console.log(
+        "[AUDIT DEBUG] Reached close-week audit block. weekNumber:",
+        weekNumber,
+        "programmeId:",
+        updatedProgramme._id?.toString(),
+      );
+
+      // AUDIT LOG — week closed (normal close or PM override)
+      try {
+        const auditResult = await auditLogger.log({
+          action:
+            closeType === "PM Override"
+              ? "WEEK_CLOSED_PM_OVERRIDE"
+              : "WEEK_CLOSED",
+          category: "WEEK",
+          req,
+          user: req.admin,
+          resourceType: "Programme",
+          resourceId: updatedProgramme._id,
+          resourceName: updatedProgramme.name,
+          project: updatedProgramme.project,
+          description: `Closed Week ${weekNumber} for programme "${updatedProgramme.name}"${
+            closeType === "PM Override"
+              ? ` via PM Override. Reason: ${notes || "no reason given"}`
+              : ""
+          }`,
+          metadata: {
+            weekNumber,
+            closeType: closeType || "Normal Close",
+            stats: weekStats,
+            resultingCycleStatus: nextCycleStatus,
+          },
+        });
+        console.log(
+          "[AUDIT DEBUG] auditLogger.log resolved with:",
+          auditResult,
+        );
+      } catch (auditError) {
+        console.error(
+          "[AUDIT DEBUG] auditLogger.log THREW:",
+          auditError.message,
+        );
+        console.error(auditError.stack);
+      }
+
+      /* Tell the stakeholders who did not close it. Isolated so a mail failure
+       cannot fail a close that is already committed. */
+      try {
+        const {
+          emailStakeholdersWeekClosed,
+        } = require("../utils/plannerNotifications");
+        await emailStakeholdersWeekClosed({
+          programme: updatedProgramme,
+          weekNumber: weekNumber,
+          closeType: closeType || "Normal Close",
+          notes: notes,
+          closedBy: req.admin,
+        });
+      } catch (notifyError) {
+        console.error("Week closed email failed:", notifyError);
+      }
+
+      const formatDateShort = (d) => {
+        const months = [
+          "Jan",
+          "Feb",
+          "Mar",
+          "Apr",
+          "May",
+          "Jun",
+          "Jul",
+          "Aug",
+          "Sep",
+          "Oct",
+          "Nov",
+          "Dec",
+        ];
+        return `${d.getDate().toString().padStart(2, "0")} ${months[d.getMonth()]} ${d.getFullYear()}`;
+      };
+
+      await CycleHistory.create({
+        programme: req.params.id,
+        weekNumber,
+        weekLabel: `Week ${weekNumber}`,
+        dateRange: {
+          startDate: weekStartDate,
+          endDate: weekEndDate,
+        },
+        closeType: closeType || "Normal Close",
+        score:
+          weekStats.totalActivities > 0
+            ? Math.round((weekStats.green / weekStats.totalActivities) * 100)
+            : 0,
+        stats: weekStats,
+        closedBy: req.admin._id,
+        notes: notes || "",
+      });
+
+      const totalWeeks = calculatedTotalWeeks || 0;
+      return sendSuccess(
+        res,
+        {
           weekNumber,
           closedAt: new Date(),
-          closedBy: req.admin._id,
           closeType: closeType || "Normal Close",
           stats: weekStats,
+          progress:
+            totalWeeks > 0
+              ? Math.min(
+                  100,
+                  Math.round(
+                    (updatedProgramme.closedWeeks.length / totalWeeks) * 100,
+                  ),
+                )
+              : 0,
+          isFullyClosed: false,
+          isLastWeek: isLastWeek,
+          cycleStatus: nextCycleStatus,
         },
-      },
-      $set: {
-        cycleStatus: nextCycleStatus,
-        totalWeeks: calculatedTotalWeeks,
-      },
-    };
-
-    const updatedProgramme = await Programme.findByIdAndUpdate(
-      req.params.id,
-      updateData,
-      { new: true },
-    );
-
-    if (!updatedProgramme) {
-      return sendError(res, "Failed to update programme", 500);
+        isLastWeek
+          ? `All weeks completed - Ready for Close-Out`
+          : `Week ${weekNumber} closed successfully`,
+      );
+    } catch (error) {
+      console.error(error);
+      return sendError(res, "Server error");
     }
-
-    console.log(
-      "[AUDIT DEBUG] Reached close-week audit block. weekNumber:",
-      weekNumber,
-      "programmeId:",
-      updatedProgramme._id?.toString(),
-    );
-
-    // AUDIT LOG — week closed (normal close or PM override)
-    try {
-      const auditResult = await auditLogger.log({
-        action:
-          closeType === "PM Override"
-            ? "WEEK_CLOSED_PM_OVERRIDE"
-            : "WEEK_CLOSED",
-        category: "WEEK",
-        req,
-        user: req.admin,
-        resourceType: "Programme",
-        resourceId: updatedProgramme._id,
-        resourceName: updatedProgramme.name,
-        project: updatedProgramme.project,
-        description: `Closed Week ${weekNumber} for programme "${updatedProgramme.name}"${
-          closeType === "PM Override"
-            ? ` via PM Override. Reason: ${notes || "no reason given"}`
-            : ""
-        }`,
-        metadata: {
-          weekNumber,
-          closeType: closeType || "Normal Close",
-          stats: weekStats,
-          resultingCycleStatus: nextCycleStatus,
-        },
-      });
-      console.log("[AUDIT DEBUG] auditLogger.log resolved with:", auditResult);
-    } catch (auditError) {
-      console.error("[AUDIT DEBUG] auditLogger.log THREW:", auditError.message);
-      console.error(auditError.stack);
-    }
-
-    /* Tell the stakeholders who did not close it. Isolated so a mail failure
-       cannot fail a close that is already committed. */
-    try {
-      const {
-        emailStakeholdersWeekClosed,
-      } = require("../utils/plannerNotifications");
-      await emailStakeholdersWeekClosed({
-        programme: updatedProgramme,
-        weekNumber: weekNumber,
-        closeType: closeType || "Normal Close",
-        notes: notes,
-        closedBy: req.admin,
-      });
-    } catch (notifyError) {
-      console.error("Week closed email failed:", notifyError);
-    }
-
-
-    const formatDateShort = (d) => {
-      const months = [
-        "Jan",
-        "Feb",
-        "Mar",
-        "Apr",
-        "May",
-        "Jun",
-        "Jul",
-        "Aug",
-        "Sep",
-        "Oct",
-        "Nov",
-        "Dec",
-      ];
-      return `${d.getDate().toString().padStart(2, "0")} ${months[d.getMonth()]} ${d.getFullYear()}`;
-    };
-
-    await CycleHistory.create({
-      programme: req.params.id,
-      weekNumber,
-      weekLabel: `Week ${weekNumber}`,
-      dateRange: {
-        startDate: weekStartDate,
-        endDate: weekEndDate,
-      },
-      closeType: closeType || "Normal Close",
-      score:
-        weekStats.totalActivities > 0
-          ? Math.round((weekStats.green / weekStats.totalActivities) * 100)
-          : 0,
-      stats: weekStats,
-      closedBy: req.admin._id,
-      notes: notes || "",
-    });
-
-    const totalWeeks = calculatedTotalWeeks || 0;
-    return sendSuccess(
-      res,
-      {
-        weekNumber,
-        closedAt: new Date(),
-        closeType: closeType || "Normal Close",
-        stats: weekStats,
-        progress:
-          totalWeeks > 0
-            ? Math.min(
-                100,
-                Math.round(
-                  (updatedProgramme.closedWeeks.length / totalWeeks) * 100,
-                ),
-              )
-            : 0,
-        isFullyClosed: false,
-        isLastWeek: isLastWeek,
-        cycleStatus: nextCycleStatus,
-      },
-      isLastWeek
-        ? `All weeks completed - Ready for Close-Out`
-        : `Week ${weekNumber} closed successfully`,
-    );
-  } catch (error) {
-    console.error(error);
-    return sendError(res, "Server error");
-  }
-});
+  },
+);
 
 router.post(
   "/:id/reopen-week/:weekNumber",

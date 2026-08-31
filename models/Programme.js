@@ -67,6 +67,24 @@ const programmeSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    /* MS-05 B6/AC1: the week-close handover used to live in the closing
+       browser's localStorage, so the "Week N Closed" prompt and the reset that
+       follows it were invisible to every other account on the project. Both
+       states belong to the programme, not to whoever happened to click.
+
+       pendingCloseAckWeek: a week has been closed and nobody has moved the
+       project on from it yet. Cleared when someone acknowledges. */
+    pendingCloseAckWeek: {
+      type: Number,
+      default: null,
+    },
+    /* Set on acknowledgement: the cycle has moved on and this programme is
+       superseded, so the workspace waits for the next upload. Never cleared —
+       the next upload creates a new programme, which becomes the current one. */
+    awaitingNextUpload: {
+      type: Boolean,
+      default: false,
+    },
     /* Set the first time this programme is found close-out eligible, so the
        announcement fires once rather than on every eligibility poll. Cleared
        whenever it falls back out of eligibility, so a later return to
