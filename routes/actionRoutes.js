@@ -708,6 +708,51 @@ router.put("/:id", protect, adminOrPlanner, async (req, res) => {
       );
     }
 
+    /* MS-05 F1: an Admin must not be able to rewrite the substance of an
+     * action raised by someone else — the due date and the description are
+     * what the record is judged against. An Admin who raised the action is its
+     * owner and keeps full access.
+     *
+     * Compared against the stored values rather than rejected on presence:
+     * the edit form submits every field on every save, so an unchanged due
+     * date arriving with a title edit is not an attempt to change it. */
+    if (req.admin.role === "admin") {
+      const isCreator =
+        action.createdBy?.toString() === req.admin._id.toString();
+
+      if (!isCreator) {
+        const asDay = (value) => {
+          if (!value) return "";
+          const date = new Date(value);
+          return Number.isNaN(date.getTime())
+            ? ""
+            : date.toISOString().slice(0, 10);
+        };
+
+        const restricted = [];
+        if (dueDate !== undefined && asDay(dueDate) !== asDay(action.dueDate)) {
+          restricted.push({
+            field: "dueDate",
+            message:
+              "Only the planner who raised this action can change its due date",
+          });
+        }
+        if (
+          description !== undefined &&
+          (description || "") !== (action.description || "")
+        ) {
+          restricted.push({
+            field: "description",
+            message:
+              "Only the planner who raised this action can change its description",
+          });
+        }
+        if (restricted.length > 0) {
+          return sendValidationError(res, restricted, 403);
+        }
+      }
+    }
+
     if (programmeId) {
       const programme = await Programme.findById(programmeId);
       if (!programme) {
