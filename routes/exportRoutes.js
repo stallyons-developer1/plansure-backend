@@ -15,6 +15,45 @@ const {
   notifyPlannersOfTodoGenerated,
 } = require("../utils/plannerNotifications");
 
+/* Owner resolution for the exports.
+ *
+ * activity.ownerName is only written when someone edits the activity, so on a
+ * freshly uploaded programme it is an empty string. The workspace hides that
+ * by falling back to activity.owner and then to the uploader; the exports did
+ * not, which is why every Owner cell read "-". Same order of preference here
+ * so the spreadsheet and the screen agree. */
+const buildOwnerResolver = async (programme, activities) => {
+  const Admin = require("../models/Admin");
+
+  const ownerIds = [
+    ...new Set(
+      activities.map((a) => a.owner && String(a.owner)).filter(Boolean),
+    ),
+  ];
+
+  const ownersById = new Map();
+  if (ownerIds.length > 0) {
+    const owners = await Admin.find({ _id: { $in: ownerIds } }).select("name");
+    owners.forEach((o) => ownersById.set(String(o._id), o.name));
+  }
+
+  let uploaderName = "";
+  if (programme?.uploadedBy) {
+    const uploader = await Admin.findById(programme.uploadedBy).select("name");
+    uploaderName = uploader?.name || "";
+  }
+
+  return (activityId) => {
+    const activity = activities.find((a) => a.activityId === activityId);
+    return (
+      activity?.ownerName ||
+      (activity?.owner && ownersById.get(String(activity.owner))) ||
+      uploaderName ||
+      "-"
+    );
+  };
+};
+
 const exportsDir = path.join(__dirname, "../uploads/exports");
 if (!fs.existsSync(exportsDir)) {
   fs.mkdirSync(exportsDir, { recursive: true });
@@ -200,8 +239,7 @@ router.post("/weekly-plan", protect, async (req, res) => {
     today.setHours(0, 0, 0, 0);
 
     // Owner is recorded on the activity, so actions resolve it by activity id.
-    const ownerFor = (activityId) =>
-      activities.find((a) => a.activityId === activityId)?.ownerName || "-";
+    const ownerFor = await buildOwnerResolver(activeProgramme, activities);
 
     const parseActivityDate = (dateStr) => {
       if (!dateStr) return null;
@@ -555,7 +593,7 @@ router.post("/weekly-plan", protect, async (req, res) => {
         finishDate: activity.finishDate || "-",
         duration: activity.duration || "-",
         basis: readinessBasis(activity),
-        owner: activity.ownerName || "-",
+        owner: ownerFor(activity.activityId),
       });
     });
 
@@ -584,7 +622,7 @@ router.post("/weekly-plan", protect, async (req, res) => {
         finishDate: activity.finishDate || "-",
         duration: activity.duration || "-",
         ragZone: activity.weekZone || "-",
-        owner: activity.ownerName || "-",
+        owner: ownerFor(activity.activityId),
       });
     });
 
@@ -615,7 +653,7 @@ router.post("/weekly-plan", protect, async (req, res) => {
         startDate: activity.startDate || "-",
         finishDate: activity.finishDate || "-",
         duration: activity.duration || "-",
-        owner: activity.ownerName || "-",
+        owner: ownerFor(activity.activityId),
         blocker: activity.blocker || "-",
       });
     });
@@ -674,7 +712,7 @@ router.post("/weekly-plan", protect, async (req, res) => {
         startDate: activity.startDate || "-",
         finishDate: activity.finishDate || "-",
         duration: activity.duration || "-",
-        owner: activity.ownerName || "-",
+        owner: ownerFor(activity.activityId),
         daysOverdue: daysOverdue,
       });
     });
@@ -915,8 +953,7 @@ router.post("/planner-todo", protect, async (req, res) => {
     workbook.created = new Date();
 
     // Owner is recorded on the activity, so actions resolve it by activity id.
-    const ownerFor = (activityId) =>
-      activities.find((a) => a.activityId === activityId)?.ownerName || "-";
+    const ownerFor = await buildOwnerResolver(activeProgramme, activities);
 
     const addActionRows = (sheet, actionList, includeOverdue = false) => {
       actionList.forEach((action) => {
@@ -1246,6 +1283,7 @@ router.post("/activities-pdf", protect, async (req, res) => {
 
     const activeProgramme = programmes[0];
     const activities = activeProgramme.extractedData?.activities || [];
+    const ownerFor = await buildOwnerResolver(activeProgramme, activities);
     const today = new Date();
 
     const parseActivityDate = (dateStr) => {
@@ -1494,7 +1532,7 @@ router.post("/activities-pdf", protect, async (req, res) => {
         activity.finishDate || "-",
         activity.duration || "-",
         activity.displayStatus || "-",
-        (activity.ownerName || "-").substring(0, 15),
+        ownerFor(activity.activityId).substring(0, 15),
       ];
 
       x = 40;
