@@ -36,6 +36,10 @@ const cycleHistorySchema = new mongoose.Schema(
       blocked: Number,
       actionsCompleted: Number,
       actionsTotal: Number,
+      /* Force-closed rather than completed. Recorded separately because a week
+         closed on overrides is not the same as one closed on delivery, and the
+         count is what makes that visible after the fact. */
+      actionsOverridden: Number,
     },
     closedBy: {
       type: mongoose.Schema.Types.ObjectId,

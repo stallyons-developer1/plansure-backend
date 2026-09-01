@@ -3607,6 +3607,7 @@ router.post(
         red: 0,
         actionsTotal: 0,
         actionsCompleted: 0,
+        actionsOverridden: 0,
       };
 
       const statLookaheadEnd = new Date(weekAnchorDate);
@@ -3649,6 +3650,9 @@ router.post(
       weekStats.actionsTotal = weekActions.length;
       weekStats.actionsCompleted = weekActions.filter(
         (a) => a.status === "Completed",
+      ).length;
+      weekStats.actionsOverridden = weekActions.filter(
+        (a) => a.status === "PM Override",
       ).length;
 
       let calculatedTotalWeeks = programme.totalWeeks;
