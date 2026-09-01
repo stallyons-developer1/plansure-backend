@@ -36,6 +36,10 @@ const adminSchema = new mongoose.Schema(
     ],
     inviteToken: String,
     inviteTokenExpiry: Date,
+    /* Only the hash is stored, as with the invite token: a database dump must
+       not hand out working reset links. */
+    resetPasswordToken: String,
+    resetPasswordTokenExpiry: Date,
     invitedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Admin",
@@ -81,6 +85,19 @@ adminSchema.methods.generateInviteToken = function () {
   const token = crypto.randomBytes(32).toString("hex");
   this.inviteToken = crypto.createHash("sha256").update(token).digest("hex");
   this.inviteTokenExpiry = Date.now() + 7 * 24 * 60 * 60 * 1000;
+  return token;
+};
+
+/* Short-lived by design. An invite can sit in an inbox for a week because it
+   is expected to; a reset link is requested and used in one sitting, and the
+   longer it lives the longer a forwarded or logged URL stays usable. */
+adminSchema.methods.generatePasswordResetToken = function () {
+  const token = crypto.randomBytes(32).toString("hex");
+  this.resetPasswordToken = crypto
+    .createHash("sha256")
+    .update(token)
+    .digest("hex");
+  this.resetPasswordTokenExpiry = Date.now() + 60 * 60 * 1000;
   return token;
 };
 

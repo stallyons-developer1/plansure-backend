@@ -11,6 +11,21 @@ const {
   validateEmail,
 } = require("../utils/errorResponse");
 const auditLogger = require("../utils/auditLogger");
+const crypto = require("crypto");
+const { sendPasswordResetEmail } = require("../utils/email");
+
+/* Trailing slashes would otherwise produce "…app//reset-password/x". */
+const frontendBase = () =>
+  (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/+$/, "");
+
+const hashResetToken = (token) =>
+  crypto.createHash("sha256").update(token).digest("hex");
+
+/* This form answers honestly about whether an address has an account, which
+   does let someone test emails against the system. That is a deliberate call:
+   POST /login already says "No account found with this email", so hiding it
+   here would protect nothing while leaving people guessing why no mail
+   arrived. Both routes should stay in step if that is ever revisited. */
 
 router.post("/login", async (req, res) => {
   try {
@@ -93,6 +108,208 @@ router.post("/login", async (req, res) => {
     );
   } catch (error) {
     console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
+/* Password reset, in three parts: request a link, check the link is still
+   good, then use it. The token is single-use and short-lived — see
+   generatePasswordResetToken on the Admin model. */
+router.post("/forgot-password", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const errors = validateRequired({ email });
+    if (email && !errors.find((e) => e.field === "email")) {
+      const emailError = validateEmail(email);
+      if (emailError) errors.push(emailError);
+    }
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
+    }
+
+    const user = await Admin.findOne({ email: email.toLowerCase().trim() });
+
+    if (!user) {
+      return sendValidationError(
+        res,
+        [{ field: "email", message: "No account found with this email" }],
+        404,
+      );
+    }
+
+    /* Wording matches POST /login so the same account state does not get two
+       different explanations depending on which form you are standing in. */
+    if (user.status === "blocked") {
+      return sendValidationError(
+        res,
+        [
+          {
+            field: "email",
+            message: "Your account has been blocked. Contact admin.",
+          },
+        ],
+        403,
+      );
+    }
+
+    /* Nothing to reset: an unaccepted invitation has never had a password.
+       The invite link is the way in, not this form. */
+    if (user.status !== "active") {
+      return sendValidationError(
+        res,
+        [{ field: "email", message: "Please accept your invitation first" }],
+        403,
+      );
+    }
+
+    const resetToken = user.generatePasswordResetToken();
+    await user.save();
+
+    const resetUrl = `${frontendBase()}/reset-password/${resetToken}`;
+
+    try {
+      await sendPasswordResetEmail({
+        email: user.email,
+        name: user.name,
+        resetUrl,
+      });
+    } catch (emailError) {
+      /* The link is useless if it never arrives, so clear it rather than
+         leaving a live token nobody can see. */
+      console.error("Failed to send password reset email:", emailError);
+      user.resetPasswordToken = undefined;
+      user.resetPasswordTokenExpiry = undefined;
+      await user.save();
+      return sendError(
+        res,
+        "Could not send the reset email. Please try again shortly.",
+        502,
+      );
+    }
+
+    await auditLogger.log({
+      action: "PASSWORD_RESET_REQUESTED",
+      req,
+      user,
+      resourceType: "User",
+      resourceId: user._id,
+      resourceName: user.name,
+      description: `${user.name} requested a password reset`,
+    });
+
+    return sendSuccess(res, {}, "A reset link has been sent to your email.");
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    return sendError(res, "Server error");
+  }
+});
+
+router.get("/reset-password/:token/verify", async (req, res) => {
+  try {
+    const user = await Admin.findOne({
+      resetPasswordToken: hashResetToken(req.params.token),
+      resetPasswordTokenExpiry: { $gt: Date.now() },
+      status: "active",
+    });
+
+    if (!user) {
+      return sendValidationError(
+        res,
+        [
+          {
+            field: "token",
+            message: "This reset link is invalid or has expired",
+          },
+        ],
+        400,
+      );
+    }
+
+    return sendSuccess(res, {
+      valid: true,
+      email: user.email,
+      name: user.name,
+    });
+  } catch (error) {
+    console.error("Reset token verify error:", error);
+    return sendError(res, "Server error");
+  }
+});
+
+router.post("/reset-password/:token", async (req, res) => {
+  try {
+    const { password, confirmPassword } = req.body;
+
+    const errors = [];
+    if (!password) {
+      errors.push({ field: "password", message: "New password is required" });
+    } else if (password.length < 6) {
+      errors.push({
+        field: "password",
+        message: "Password must be at least 6 characters",
+      });
+    }
+    if (!confirmPassword) {
+      errors.push({
+        field: "confirmPassword",
+        message: "Please confirm your new password",
+      });
+    } else if (password !== confirmPassword) {
+      errors.push({
+        field: "confirmPassword",
+        message: "Passwords do not match",
+      });
+    }
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
+    }
+
+    const user = await Admin.findOne({
+      resetPasswordToken: hashResetToken(req.params.token),
+      resetPasswordTokenExpiry: { $gt: Date.now() },
+      status: "active",
+    });
+
+    if (!user) {
+      return sendValidationError(
+        res,
+        [
+          {
+            field: "token",
+            message: "This reset link is invalid or has expired",
+          },
+        ],
+        400,
+      );
+    }
+
+    user.password = password;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordTokenExpiry = undefined;
+    await user.save();
+
+    /* Whoever asked for this may be locked out because someone else is signed
+       in as them, so every existing session goes with the old password. */
+    await Token.deleteMany({ user: user._id });
+
+    await auditLogger.log({
+      action: "PASSWORD_CHANGED",
+      req,
+      user,
+      resourceType: "User",
+      resourceId: user._id,
+      resourceName: user.name,
+      description: `${user.name} reset their password using an emailed link`,
+    });
+
+    return sendSuccess(
+      res,
+      {},
+      "Password reset. You can now sign in with your new password.",
+    );
+  } catch (error) {
+    console.error("Reset password error:", error);
     return sendError(res, "Server error");
   }
 });

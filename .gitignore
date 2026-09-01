@@ -4,3 +4,6 @@ node_modules/
 uploads/
 *.log
 .env
+
+# Timestamped .env backups taken before local edits
+.env.bak-*

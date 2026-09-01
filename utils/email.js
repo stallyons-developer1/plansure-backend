@@ -141,6 +141,74 @@ const sendInviteEmail = async (options) => {
   }
 };
 
+const sendPasswordResetEmail = async (options) => {
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: #1a1a2e; color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
+        .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          ${logoTag()}
+          <h1>Reset your password</h1>
+        </div>
+        <div class="content">
+          <h2>Hello ${options.name},</h2>
+          <p>We received a request to reset the password for your Plansure account.</p>
+
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${options.resetUrl}" style="display: inline-block; padding: 14px 28px; border-radius: 6px; text-decoration: none; font-weight: bold; color: #ffffff; background: #3b82f6;">Reset Password</a>
+          </div>
+
+          <p style="color: #666; font-size: 14px;">This link expires in 1 hour and can only be used once.</p>
+          <p style="color: #666; font-size: 14px;">If you did not ask for this, you can ignore this email — your password will not change.</p>
+
+          <p style="color: #666; font-size: 12px; word-break: break-all;">
+            If the button does not work, paste this into your browser:<br />
+            ${options.resetUrl}
+          </p>
+        </div>
+        <div class="footer">
+          <p>&copy; ${new Date().getFullYear()} Plansure. All rights reserved.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const subject = "Reset your Plansure password";
+
+  try {
+    if (isSmtp()) {
+      const transporter = createTransporter();
+      await transporter.sendMail({
+        from: mailFrom(),
+        to: options.email,
+        subject,
+        html: htmlContent,
+      });
+    } else {
+      await getResend().emails.send({
+        from: mailFrom(),
+        to: options.email,
+        subject,
+        html: htmlContent,
+      });
+    }
+  } catch (error) {
+    console.error(`[EMAIL] Error sending password reset email:`, error);
+    throw error;
+  }
+};
+
 const sendWelcomeEmail = async (options) => {
   const passwordSection = options.password
     ? `
@@ -907,6 +975,7 @@ const sendMarkedCloseOutEligibleEmail = async (options) => {
 
 module.exports = {
   sendInviteEmail,
+  sendPasswordResetEmail,
   sendWelcomeEmail,
   sendRoleChangeEmail,
   sendActionAssignedEmail,
