@@ -423,16 +423,12 @@ router.put("/password", protect, async (req, res) => {
 
     const isMatch = await user.matchPassword(currentPassword);
     if (!isMatch) {
-      return sendValidationError(
-        res,
-        [
-          {
-            field: "currentPassword",
-            message: "Current password is incorrect",
-          },
-        ],
-        401,
-      );
+      return sendValidationError(res, [
+        {
+          field: "currentPassword",
+          message: "Current password is incorrect",
+        },
+      ]);
     }
 
     user.password = newPassword;
