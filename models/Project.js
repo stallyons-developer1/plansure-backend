@@ -59,6 +59,15 @@ const projectSchema = new mongoose.Schema(
       ref: "Admin",
       required: true,
     },
+    /* MS-05 B6/AC1: whether the planning meeting for the current cycle has
+       been opened. Once a programme exists its cycleStatus carries this, but
+       the meeting is opened before the upload — and that gap used to live in
+       the opener's localStorage, so nobody else saw the cycle had started.
+       Cleared when a closed week is acknowledged and the next one begins. */
+    meetingOpen: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true },
 );

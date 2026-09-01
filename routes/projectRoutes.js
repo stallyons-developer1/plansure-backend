@@ -566,6 +566,39 @@ router.get("/:id", protect, async (req, res) => {
   }
 });
 
+/* Open or close the planning meeting for the current cycle.
+ *
+ * Recorded on the project rather than in the browser: the meeting is opened
+ * before a programme exists, so there is nothing else server-side to hang it
+ * on, and while it lived in localStorage each account saw a different stage
+ * for the same project (MS-05 B6/AC1). */
+router.patch("/:id/meeting-open", protect, adminOrPlanner, async (req, res) => {
+  try {
+    const { open } = req.body;
+
+    if (typeof open !== "boolean") {
+      return sendValidationError(res, [
+        { field: "open", message: "open must be true or false" },
+      ]);
+    }
+
+    const project = await Project.findByIdAndUpdate(
+      req.params.id,
+      { $set: { meetingOpen: open } },
+      { new: true },
+    ).select("_id meetingOpen");
+
+    if (!project) {
+      return sendError(res, "Project not found", 404);
+    }
+
+    return sendSuccess(res, { meetingOpen: project.meetingOpen });
+  } catch (error) {
+    console.error("Set meeting open error:", error);
+    return sendError(res, "Server error");
+  }
+});
+
 router.put("/:id", protect, adminOnly, async (req, res) => {
   try {
     const { name, phase, description, startDate, endDate, status } = req.body;

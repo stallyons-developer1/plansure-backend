@@ -756,6 +756,15 @@ router.post(
         { new: true },
       );
 
+      /* The next cycle starts with its meeting unopened. Held on the project
+         because there is no programme for the new week yet. */
+      if (programme.project) {
+        const Project = require("../models/Project");
+        await Project.findByIdAndUpdate(programme.project, {
+          $set: { meetingOpen: false },
+        });
+      }
+
       return sendSuccess(res, {
         acknowledgedWeek,
         programme: {
