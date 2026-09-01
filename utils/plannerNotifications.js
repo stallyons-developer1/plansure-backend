@@ -158,7 +158,8 @@ const notifyPlannersIfAllActionsClosed = async ({ programmeId, sender }) => {
   // while work is still outstanding.
   if (total === 0 || stillOpen > 0) return [];
 
-  const programme = await Programme.findById(programmeId).select("name project");
+  const programme =
+    await Programme.findById(programmeId).select("name project");
   if (!programme) return [];
 
   const [completed, overridden] = await Promise.all([
@@ -329,7 +330,10 @@ const emailStakeholdersMarkedCloseOutEligible = async ({
       programme,
     });
   } catch (notifyError) {
-    console.error("Marked close-out eligible notification failed:", notifyError);
+    console.error(
+      "Marked close-out eligible notification failed:",
+      notifyError,
+    );
   }
 
   if (markedBy?._id) {
@@ -381,7 +385,11 @@ const emailStakeholdersWeekClosed = async ({
     ? await Project.findById(programme.project).select("team name")
     : null;
 
-  const people = await resolveWeekStakeholders({ programme, project, actor: closedBy });
+  const people = await resolveWeekStakeholders({
+    programme,
+    project,
+    actor: closedBy,
+  });
   if (people.length === 0) return [];
   const recipients = people.map((p) => String(p._id));
 
@@ -420,6 +428,19 @@ const emailStakeholdersWeekClosed = async ({
     console.error("Week closed notification failed:", notifyError);
   }
 
+  /* The read-only users on the project are told separately: bell and push,
+     no email. Isolated so a failure here cannot lose the stakeholder run. */
+  try {
+    await notifyUsersOfWeekClosed({
+      programme,
+      weekNumber,
+      closeType,
+      closedBy,
+    });
+  } catch (notifyError) {
+    console.error("Week closed user notification failed:", notifyError);
+  }
+
   /* And confirm back to whoever did it. The action-assign flow already works
      this way — the actor gets a "You assigned…" of their own — and without it
      the person driving the close sees nothing at all. */
@@ -446,24 +467,14 @@ const emailStakeholdersWeekClosed = async ({
 };
 
 /*
- * Tells the view-only users on a project that a formal output has been issued
- * for it — the Weekly Plan or the Planner To-Do.
+ * The view-only users attached to a project: those granted it directly and
+ * those sitting on its team. The actor is skipped — they did the thing.
  *
- * Bell and push only, no email: these users cannot generate exports (SRS §10.2
- * grants them "View exports (read-only)"), so this is simply how they learn a
- * new one is available.
- *
- * Scoped to users granted the project directly or sitting on its team. Whoever
- * generated the export is skipped.
+ * Returns { recipients, project, granted, team } so callers can log what they
+ * resolved; a silent zero-recipient result is otherwise indistinguishable from
+ * the notifier never having run.
  */
-const notifyUsersOfExport = async ({
-  programme,
-  exportType,
-  weekNumber,
-  sender,
-}) => {
-  if (!programme?.project) return [];
-
+const resolveProjectUsers = async ({ programme, actor }) => {
   const Admin = require("../models/Admin");
   const Project = require("../models/Project");
 
@@ -489,15 +500,39 @@ const notifyUsersOfExport = async ({
     : [];
 
   const recipients = [
-    ...new Set(
-      [...granted, ...teamUsers].map((u) => u._id.toString()),
-    ),
-  ].filter((id) => id !== String(sender?._id));
+    ...new Set([...granted, ...teamUsers].map((u) => u._id.toString())),
+  ].filter((id) => id !== String(actor?._id));
 
-  /* Logged either way: without it a silent zero-recipient result is
-     indistinguishable from the notifier never running at all. */
+  return {
+    recipients,
+    project,
+    projectId,
+    grantedCount: granted.length,
+    teamCount: teamUsers.length,
+  };
+};
+
+/*
+ * Tells the view-only users on a project that a formal output has been issued
+ * for it — the Weekly Plan or the Planner To-Do.
+ *
+ * Bell and push only, no email: these users cannot generate exports (SRS §10.2
+ * grants them "View exports (read-only)"), so this is simply how they learn a
+ * new one is available.
+ */
+const notifyUsersOfExport = async ({
+  programme,
+  exportType,
+  weekNumber,
+  sender,
+}) => {
+  if (!programme?.project) return [];
+
+  const { recipients, project, projectId, grantedCount, teamCount } =
+    await resolveProjectUsers({ programme, actor: sender });
+
   console.log(
-    `[export-notify] ${exportType} | project ${projectId} | granted ${granted.length} | team ${teamUsers.length} | sending to ${recipients.length}`,
+    `[export-notify] ${exportType} | project ${projectId} | granted ${grantedCount} | team ${teamCount} | sending to ${recipients.length}`,
   );
 
   if (recipients.length === 0) return [];
@@ -514,8 +549,49 @@ const notifyUsersOfExport = async ({
   });
 };
 
+/*
+ * Tells the view-only users on a project that a governance week has closed.
+ *
+ * Bell and push only, like the export notice and for the same reason: these
+ * users take no part in the close (SRS §10.2 gives them read access), so this
+ * tells them the week they were watching is now locked. The stakeholders'
+ * email is unchanged — users are not added to it.
+ */
+const notifyUsersOfWeekClosed = async ({
+  programme,
+  weekNumber,
+  closeType,
+  closedBy,
+}) => {
+  if (!programme?.project) return [];
+
+  const { recipients, project, projectId, grantedCount, teamCount } =
+    await resolveProjectUsers({ programme, actor: closedBy });
+
+  console.log(
+    `[week-closed-notify] week ${weekNumber} | project ${projectId} | granted ${grantedCount} | team ${teamCount} | sending to ${recipients.length}`,
+  );
+
+  if (recipients.length === 0) return [];
+
+  const actor = closedBy?.name || "The system";
+  const via = closeType === "PM Override" ? " via PM Override" : "";
+
+  return dispatch({
+    recipients,
+    sender: closedBy,
+    type: "general",
+    title: "Week Closed",
+    message: `${actor} closed Week ${weekNumber} on "${
+      project?.name || programme.name
+    }"${via}. The week is now locked and read-only.`,
+    programme,
+  });
+};
+
 module.exports = {
   notifyUsersOfExport,
+  notifyUsersOfWeekClosed,
   emailStakeholdersWeekClosed,
   emailStakeholdersMarkedCloseOutEligible,
   notifyPlannersOfTodoGenerated,
