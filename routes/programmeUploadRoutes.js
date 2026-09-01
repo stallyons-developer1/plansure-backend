@@ -1988,16 +1988,32 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
       ).length,
     };
 
+    /* A finished activity is delivered, so it reads Green. Checked first in
+       every bucket so completion wins over a stale isBlocked flag and an
+       activity cannot land in two slices at once. Both spellings are in the
+       activityStatus enum. Weekly Control only — the lookahead RAG is left
+       as it was. */
+    const isCompleteActivity = (a) =>
+      a.activityStatus === "Complete" || a.activityStatus === "Completed";
+
     const ragDistribution = {
       green: allActivities.filter(
-        (a) => a.activityStatus === "Ready" && !a.isBlocked,
+        (a) =>
+          isCompleteActivity(a) ||
+          (a.activityStatus === "Ready" && !a.isBlocked),
       ).length,
-      amber: allActivities.filter((a) => a.activityStatus === "At Risk").length,
+      amber: allActivities.filter(
+        (a) => !isCompleteActivity(a) && a.activityStatus === "At Risk",
+      ).length,
       red: allActivities.filter(
-        (a) => a.activityStatus === "Blocked" || a.isBlocked,
+        (a) =>
+          !isCompleteActivity(a) &&
+          (a.activityStatus === "Blocked" || a.isBlocked),
       ).length,
       grey: allActivities.filter(
-        (a) => a.activityStatus === "Unassigned" || a.ragStatus === "Grey",
+        (a) =>
+          !isCompleteActivity(a) &&
+          (a.activityStatus === "Unassigned" || a.ragStatus === "Grey"),
       ).length,
     };
 
