@@ -137,9 +137,7 @@ router.get("/stats", protect, async (req, res) => {
       /* Every non-admin is scoped the same way. This branch used to be
          planner-only, so a `user` fell through to the branch that loads
          every project — a view-only account saw system-wide figures. */
-      const accessibleProjectIds = await getAccessibleProjects(
-        req.admin,
-      );
+      const accessibleProjectIds = await getAccessibleProjects(req.admin);
       if (accessibleProjectIds.length === 0) {
         return sendSuccess(res, {
           stats: {
@@ -337,9 +335,7 @@ router.get("/rag-distribution", protect, async (req, res) => {
       /* Every non-admin is scoped the same way. This branch used to be
          planner-only, so a `user` fell through to the branch that loads
          every project — a view-only account saw system-wide figures. */
-      const accessibleProjectIds = await getAccessibleProjects(
-        req.admin,
-      );
+      const accessibleProjectIds = await getAccessibleProjects(req.admin);
       projects = await Project.find({
         _id: { $in: accessibleProjectIds },
         status: { $ne: "Cancelled" },
@@ -432,9 +428,7 @@ router.get("/recent-activity", protect, async (req, res) => {
       /* Every non-admin is scoped the same way. This branch used to be
          planner-only, so a `user` fell through to the branch that loads
          every project — a view-only account saw system-wide figures. */
-      const accessibleProjectIds = await getAccessibleProjects(
-        req.admin,
-      );
+      const accessibleProjectIds = await getAccessibleProjects(req.admin);
       projects = await Project.find({
         _id: { $in: accessibleProjectIds },
         status: { $ne: "Cancelled" },
@@ -581,9 +575,7 @@ router.get("/governance", protect, async (req, res) => {
       projects = await Project.find({ status: { $ne: "Cancelled" } });
       projectIds = projects.map((p) => p._id);
     } else {
-      const accessibleProjectIds = await getAccessibleProjects(
-        req.admin,
-      );
+      const accessibleProjectIds = await getAccessibleProjects(req.admin);
       if (accessibleProjectIds.length === 0) {
         return sendSuccess(res, {
           governance: {
@@ -845,6 +837,7 @@ router.get("/governance", protect, async (req, res) => {
       const totActivities = sum((c) => c.stats?.totalActivities);
       const totActionsRaised = sum((c) => c.stats?.actionsTotal);
       const totActionsClosed = sum((c) => c.stats?.actionsCompleted);
+      const totActionsOverridden = sum((c) => c.stats?.actionsOverridden);
       const readiness =
         totActivities > 0 ? Math.round((totGreen / totActivities) * 100) : 0;
       const pmOverrides = cohort.filter(
@@ -884,6 +877,7 @@ router.get("/governance", protect, async (req, res) => {
           red: totRed,
           actionsTotal: totActionsRaised,
           actionsCompleted: totActionsClosed,
+          actionsOverridden: totActionsOverridden,
         },
         closeType,
         notes: `${n} project${n === 1 ? "" : "s"} completed Week ${seq}`,
@@ -1334,9 +1328,7 @@ router.get("/weekly", protect, async (req, res) => {
       /* Every non-admin is scoped the same way. This branch used to be
          planner-only, so a `user` fell through to the branch that loads
          every project — a view-only account saw system-wide figures. */
-      const accessibleProjectIds = await getAccessibleProjects(
-        req.admin,
-      );
+      const accessibleProjectIds = await getAccessibleProjects(req.admin);
       projects = await Project.find({
         _id: { $in: accessibleProjectIds },
         status: { $ne: "Cancelled" },
@@ -1800,8 +1792,16 @@ router.get("/weekly", protect, async (req, res) => {
         ? Math.round((snapStats.green / snapStats.totalActivities) * 100)
         : 0
       : greenPercentage;
+    const overriddenInWeek = actions.filter(
+      (a) => a.status === "PM Override",
+    ).length;
+    const snapClosed =
+      (snapStats.actionsCompleted || 0) +
+      (snapStats.actionsOverridden ?? overriddenInWeek);
     const outActionsClosed = completedSnapshot
-      ? snapStats.actionsCompleted || 0
+      ? snapStats.actionsTotal
+        ? Math.min(snapStats.actionsTotal, snapClosed)
+        : snapClosed
       : closedActions.length;
     const outActionsTotal = completedSnapshot
       ? snapStats.actionsTotal || 0
