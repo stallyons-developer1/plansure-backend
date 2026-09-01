@@ -2410,6 +2410,18 @@ router.patch("/:id/cycle-status", protect, adminOrPlanner, async (req, res) => {
       ]);
     }
 
+    /* Declaring a week Close-Out Eligible is a governance judgement — it says
+       the lookahead is complete and the required actions are done. SRS 10.2
+       puts that with the Planner. The rest of the lifecycle stays open to an
+       Admin; only this step is theirs to withhold. */
+    if (cycleStatus === "Close-Out Eligible" && req.admin.role === "admin") {
+      return sendError(
+        res,
+        "Only the Planner can mark a week Close-Out Eligible.",
+        403,
+      );
+    }
+
     const programme = await Programme.findById(req.params.id);
     if (!programme) {
       return sendError(res, "Programme not found", 404);
