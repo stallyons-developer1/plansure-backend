@@ -717,6 +717,122 @@ router.get("/", protect, async (req, res) => {
   }
 });
 
+/* MS-05 point 3: the Planner confirms the programme has been updated from the
+ * Planner To-Do. This is the final gate before the PM may mark the week
+ * Close-Out Eligible, and plannerOnly because it is the Planner's assertion
+ * about their own work — the PM cannot give it on their behalf.
+ *
+ * Requires the To-Do to exist first: confirming an update made against a
+ * document nobody produced would say nothing, and it is the order the closure
+ * sequence runs in. */
+router.post(
+  "/:id/confirm-programme-update",
+  protect,
+  plannerOnly,
+  async (req, res) => {
+    try {
+      const { note } = req.body;
+      const trimmedNote = typeof note === "string" ? note.trim() : "";
+
+      /* Held to the same minimum as a closure narrative. A bare tick would let
+         the gate be cleared without anyone reading the To-Do, which is the
+         objection the client raised about tick-only closure. */
+      if (!trimmedNote) {
+        return sendValidationError(res, [
+          {
+            field: "note",
+            message:
+              "Describe what you updated in the programme before confirming.",
+          },
+        ]);
+      }
+      if (trimmedNote.length < 10) {
+        return sendValidationError(res, [
+          {
+            field: "note",
+            message:
+              "Please give a fuller description (at least 10 characters).",
+          },
+        ]);
+      }
+
+      const programme = await Programme.findById(req.params.id);
+      if (!programme) {
+        return sendError(res, "Programme not found", 404);
+      }
+
+      const { hasAccess } = await checkProgrammeAccess(
+        req.admin,
+        req.params.id,
+      );
+      if (!hasAccess) {
+        return sendError(res, "Access denied", 403);
+      }
+
+      if (programme.isLocked) {
+        return sendError(res, "This week is closed and read-only.", 403);
+      }
+
+      const Export = require("../models/Export");
+      const todo = await Export.findOne({
+        programme: programme._id,
+        type: "Planner To-Do",
+      });
+      if (!todo) {
+        return sendError(
+          res,
+          "Download the Planner To-Do before confirming the programme update.",
+          400,
+        );
+      }
+
+      if (programme.programmeUpdateConfirmedAt) {
+        return sendError(
+          res,
+          "The programme update for this week has already been confirmed.",
+          400,
+        );
+      }
+
+      programme.programmeUpdateConfirmedAt = new Date();
+      programme.programmeUpdateConfirmedBy = req.admin._id;
+      programme.programmeUpdateNote = trimmedNote;
+      await programme.save();
+
+      try {
+        await auditLogger.log({
+          action: "PROGRAMME_UPDATED",
+          req,
+          user: req.admin,
+          resourceType: "Programme",
+          resourceId: programme._id,
+          resourceName: programme.name,
+          project: programme.project,
+          description: `${req.admin.name} confirmed the programme update for this week — ${trimmedNote}`,
+          metadata: { programmeUpdateNote: trimmedNote },
+        });
+      } catch (auditError) {
+        console.error(
+          "Audit log failed (confirm-programme-update):",
+          auditError,
+        );
+      }
+
+      return sendSuccess(
+        res,
+        {
+          programmeUpdateConfirmedAt: programme.programmeUpdateConfirmedAt,
+          programmeUpdateNote: programme.programmeUpdateNote,
+        },
+        "Programme update confirmed.",
+      );
+    } catch (error) {
+      console.error("Confirm programme update error:", error);
+      return sendError(res, "Server error");
+    }
+  },
+);
+
 /* Acknowledge a week closure and move the project on to the next cycle.
  *
  * Previously this was three localStorage writes in the browser that clicked
@@ -833,11 +949,18 @@ router.get("/by-project/:projectId", protect, async (req, res) => {
         });
     }
 
+    const Export = require("../models/Export");
+    const plannerTodoGenerated = !!(await Export.exists({
+      programme: programme._id,
+      type: "Planner To-Do",
+    }));
+
     const baseUrl = process.env.BACKEND_URL || "http://localhost:5000";
     const fileUrl = `${baseUrl}/api/programmes/${programme._id}/pdf`;
     const programmeWithUrl = {
       ...programmeObj,
       fileUrl,
+      plannerTodoGenerated,
     };
 
     return sendSuccess(res, { programme: programmeWithUrl });
@@ -2440,6 +2563,22 @@ router.patch("/:id/cycle-status", protect, adminOrPlanner, async (req, res) => {
         `Only the PM can move a week to "${cycleStatus}".`,
         403,
       );
+    }
+
+    /* MS-05 point 3: the Planner's confirmation is the final mandatory gate.
+       Checked on this transition rather than at close, because Close-Out
+       Eligible is the point at which the week stops being workable. */
+    if (cycleStatus === "Close-Out Eligible") {
+      const target = await Programme.findById(req.params.id).select(
+        "programmeUpdateConfirmedAt",
+      );
+      if (target && !target.programmeUpdateConfirmedAt) {
+        return sendError(
+          res,
+          "The Planner has not yet confirmed the programme update for this week.",
+          403,
+        );
+      }
     }
 
     const programme = await Programme.findById(req.params.id);

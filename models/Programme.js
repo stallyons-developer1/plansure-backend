@@ -85,6 +85,29 @@ const programmeSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    /* MS-05 point 3: the Planner's formal confirmation that the programme has
+       been updated in response to the Planner To-Do. This is the last gate
+       before the PM may mark the week Close-Out Eligible — without it a week
+       could close with no evidence the programme was ever touched.
+
+       Cleared whenever a new Planner To-Do is generated: that document carries
+       fresh closure narratives, so a confirmation given against the previous
+       one no longer says anything about it. */
+    programmeUpdateConfirmedAt: {
+      type: Date,
+      default: null,
+    },
+    programmeUpdateConfirmedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Admin",
+      default: null,
+    },
+    /* What the Planner changed. Required, and held to the same minimum as a
+       closure narrative — a bare tick tells the record nothing. */
+    programmeUpdateNote: {
+      type: String,
+      default: "",
+    },
     /* Set the first time this programme is found close-out eligible, so the
        announcement fires once rather than on every eligibility poll. Cleared
        whenever it falls back out of eligibility, so a later return to

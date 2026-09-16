@@ -54,26 +54,32 @@ const buildOwnerResolver = async (programme, activities) => {
   };
 };
 
-/* MS-05 point 4: the weekly outputs belong to the close-out, not to the week
- * being worked. They used to open at Execution — well before any governance
- * decision had been taken — so a Weekly Plan could be downloaded mid-week and
- * read as if it were the closing position.
+/* MS-05 points 3 and 4: the two outputs are gated differently because they do
+ * different jobs.
  *
- * "Close-Out Eligible" is the gate rather than "Closed": marking a week
- * eligible IS the PM's close-out decision, and the Planner To-Do has to exist
- * before the lock, since it is what the Planner works from when updating the
- * programme ahead of confirming. Gating on "Closed" would put the To-Do after
- * the step it is meant to inform.
+ * The Planner To-Do is a working document. The Planner downloads it, updates
+ * the programme from the closure narratives it carries, and confirms that
+ * update — and only then can the PM mark the week Close-Out Eligible. So it
+ * has to be available during Execution, before any close-out decision.
  *
- * "Approved" is absent deliberately — it is not a value in the cycleStatus
- * enum and never was. */
-const EXPORT_READY_STATUSES = ["Close-Out Eligible", "Closed"];
+ * The Weekly Plan is the formal record of the closing position. Rob's point 4
+ * was that it read as the closing position while the week was still being
+ * worked, so it opens at the PM's Close-Out Eligible decision.
+ *
+ * "Approved" appears in neither list deliberately — it is not a value in the
+ * cycleStatus enum and never was. */
+const TODO_READY_STATUSES = ["Execution", "Close-Out Eligible", "Closed"];
+const WEEKLY_PLAN_READY_STATUSES = ["Close-Out Eligible", "Closed"];
 
-const isExportReady = (programme) =>
-  EXPORT_READY_STATUSES.includes(programme?.cycleStatus);
+const isTodoReady = (programme) =>
+  TODO_READY_STATUSES.includes(programme?.cycleStatus);
+const isWeeklyPlanReady = (programme) =>
+  WEEKLY_PLAN_READY_STATUSES.includes(programme?.cycleStatus);
 
-const EXPORT_GATED_MESSAGE =
-  "Weekly outputs are available once the week is marked Close-Out Eligible.";
+const TODO_GATED_MESSAGE =
+  "The Planner To-Do is available once the week is in Execution.";
+const WEEKLY_PLAN_GATED_MESSAGE =
+  "The Weekly Plan is available once the week is marked Close-Out Eligible.";
 
 const exportsDir = path.join(__dirname, "../uploads/exports");
 if (!fs.existsSync(exportsDir)) {
@@ -155,7 +161,11 @@ router.get("/gating-status", protect, async (req, res) => {
     const activeProgramme = programmes[0];
     const cycleStatus = activeProgramme.cycleStatus || "Draft";
 
-    const isGated = !EXPORT_READY_STATUSES.includes(cycleStatus);
+    const weeklyPlanGated = !WEEKLY_PLAN_READY_STATUSES.includes(cycleStatus);
+    const plannerTodoGated = !TODO_READY_STATUSES.includes(cycleStatus);
+    /* Kept for callers that ask one question about both; the two flags above
+       are what the export screen reads per card. */
+    const isGated = weeklyPlanGated && plannerTodoGated;
 
     let currentWeek = "N/A";
     if (activeProgramme.lookaheadStartDate) {
@@ -173,6 +183,8 @@ router.get("/gating-status", protect, async (req, res) => {
 
     return sendSuccess(res, {
       isGated,
+      weeklyPlanGated,
+      plannerTodoGated,
       cycleStatus,
       currentWeek,
       programmeId: activeProgramme._id,
@@ -253,8 +265,8 @@ router.post("/weekly-plan", protect, async (req, res) => {
     /* Enforced here, not only in the UI: gating-status is advisory, so without
        this check the button could be greyed out while the endpoint still
        produced the file for anyone calling it directly. */
-    if (!isExportReady(activeProgramme)) {
-      return sendError(res, EXPORT_GATED_MESSAGE, 403);
+    if (!isWeeklyPlanReady(activeProgramme)) {
+      return sendError(res, WEEKLY_PLAN_GATED_MESSAGE, 403);
     }
     const activities = activeProgramme.extractedData?.activities || [];
     const today = new Date();
@@ -864,8 +876,8 @@ router.post("/planner-todo", protect, async (req, res) => {
       return sendError(res, "Programme not found", 404);
     }
 
-    if (!isExportReady(activeProgramme)) {
-      return sendError(res, EXPORT_GATED_MESSAGE, 403);
+    if (!isTodoReady(activeProgramme)) {
+      return sendError(res, TODO_GATED_MESSAGE, 403);
     }
 
     const activities = activeProgramme.extractedData?.activities || [];
@@ -1198,6 +1210,16 @@ router.post("/planner-todo", protect, async (req, res) => {
 
     // Outstanding, not the full count — this drives the "N items" figure on
     // the export history, which reports what is left to act on.
+    if (activeProgramme.programmeUpdateConfirmedAt) {
+      await Programme.findByIdAndUpdate(activeProgramme._id, {
+        $set: {
+          programmeUpdateConfirmedAt: null,
+          programmeUpdateConfirmedBy: null,
+          programmeUpdateNote: "",
+        },
+      });
+    }
+
     const totalActions =
       openActions.length + inProgressActions.length + overriddenActions.length;
     const exportRecord = await Export.create({
