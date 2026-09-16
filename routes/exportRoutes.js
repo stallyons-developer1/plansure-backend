@@ -54,6 +54,27 @@ const buildOwnerResolver = async (programme, activities) => {
   };
 };
 
+/* MS-05 point 4: the weekly outputs belong to the close-out, not to the week
+ * being worked. They used to open at Execution — well before any governance
+ * decision had been taken — so a Weekly Plan could be downloaded mid-week and
+ * read as if it were the closing position.
+ *
+ * "Close-Out Eligible" is the gate rather than "Closed": marking a week
+ * eligible IS the PM's close-out decision, and the Planner To-Do has to exist
+ * before the lock, since it is what the Planner works from when updating the
+ * programme ahead of confirming. Gating on "Closed" would put the To-Do after
+ * the step it is meant to inform.
+ *
+ * "Approved" is absent deliberately — it is not a value in the cycleStatus
+ * enum and never was. */
+const EXPORT_READY_STATUSES = ["Close-Out Eligible", "Closed"];
+
+const isExportReady = (programme) =>
+  EXPORT_READY_STATUSES.includes(programme?.cycleStatus);
+
+const EXPORT_GATED_MESSAGE =
+  "Weekly outputs are available once the week is marked Close-Out Eligible.";
+
 const exportsDir = path.join(__dirname, "../uploads/exports");
 if (!fs.existsSync(exportsDir)) {
   fs.mkdirSync(exportsDir, { recursive: true });
@@ -134,13 +155,7 @@ router.get("/gating-status", protect, async (req, res) => {
     const activeProgramme = programmes[0];
     const cycleStatus = activeProgramme.cycleStatus || "Draft";
 
-    const ungatedStatuses = [
-      "Execution",
-      "Close-Out Eligible",
-      "Approved",
-      "Closed",
-    ];
-    const isGated = !ungatedStatuses.includes(cycleStatus);
+    const isGated = !EXPORT_READY_STATUSES.includes(cycleStatus);
 
     let currentWeek = "N/A";
     if (activeProgramme.lookaheadStartDate) {
@@ -233,6 +248,13 @@ router.post("/weekly-plan", protect, async (req, res) => {
         return sendError(res, "No active programmes found", 404);
       }
       activeProgramme = programmes[0];
+    }
+
+    /* Enforced here, not only in the UI: gating-status is advisory, so without
+       this check the button could be greyed out while the endpoint still
+       produced the file for anyone calling it directly. */
+    if (!isExportReady(activeProgramme)) {
+      return sendError(res, EXPORT_GATED_MESSAGE, 403);
     }
     const activities = activeProgramme.extractedData?.activities || [];
     const today = new Date();
@@ -841,6 +863,11 @@ router.post("/planner-todo", protect, async (req, res) => {
     if (!activeProgramme) {
       return sendError(res, "Programme not found", 404);
     }
+
+    if (!isExportReady(activeProgramme)) {
+      return sendError(res, EXPORT_GATED_MESSAGE, 403);
+    }
+
     const activities = activeProgramme.extractedData?.activities || [];
 
     const parseActivityDate = (dateStr) => {

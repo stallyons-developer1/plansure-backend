@@ -9,6 +9,7 @@ const {
   protect,
   adminOnly,
   adminOrPlanner,
+  plannerOnly,
 } = require("../middleware/authMiddleware");
 const { uploadToDisk } = require("../middleware/upload");
 const {
@@ -721,64 +722,52 @@ router.get("/", protect, async (req, res) => {
  * Previously this was three localStorage writes in the browser that clicked
  * it, so the prompt stayed up for nobody else and the other accounts carried
  * on seeing the superseded programme (MS-05 B6/AC1). */
-router.post(
-  "/:id/acknowledge-close",
-  protect,
-  adminOrPlanner,
-  async (req, res) => {
-    try {
-      const programme = await Programme.findById(req.params.id);
-      if (!programme) {
-        return sendError(res, "Programme not found", 404);
-      }
-
-      const { hasAccess } = await checkProgrammeAccess(
-        req.admin,
-        req.params.id,
-      );
-      if (!hasAccess) {
-        return sendError(res, "Access denied", 403);
-      }
-
-      if (programme.pendingCloseAckWeek == null) {
-        return sendError(
-          res,
-          "No closed week is awaiting acknowledgement",
-          400,
-        );
-      }
-
-      const acknowledgedWeek = programme.pendingCloseAckWeek;
-
-      const updated = await Programme.findByIdAndUpdate(
-        req.params.id,
-        { $set: { pendingCloseAckWeek: null, awaitingNextUpload: true } },
-        { new: true },
-      );
-
-      /* The next cycle starts with its meeting unopened. Held on the project
-         because there is no programme for the new week yet. */
-      if (programme.project) {
-        const Project = require("../models/Project");
-        await Project.findByIdAndUpdate(programme.project, {
-          $set: { meetingOpen: false },
-        });
-      }
-
-      return sendSuccess(res, {
-        acknowledgedWeek,
-        programme: {
-          _id: updated._id,
-          pendingCloseAckWeek: updated.pendingCloseAckWeek,
-          awaitingNextUpload: updated.awaitingNextUpload,
-        },
-      });
-    } catch (error) {
-      console.error("Acknowledge close error:", error);
-      return sendError(res, "Server error");
+router.post("/:id/acknowledge-close", protect, adminOnly, async (req, res) => {
+  try {
+    const programme = await Programme.findById(req.params.id);
+    if (!programme) {
+      return sendError(res, "Programme not found", 404);
     }
-  },
-);
+
+    const { hasAccess } = await checkProgrammeAccess(req.admin, req.params.id);
+    if (!hasAccess) {
+      return sendError(res, "Access denied", 403);
+    }
+
+    if (programme.pendingCloseAckWeek == null) {
+      return sendError(res, "No closed week is awaiting acknowledgement", 400);
+    }
+
+    const acknowledgedWeek = programme.pendingCloseAckWeek;
+
+    const updated = await Programme.findByIdAndUpdate(
+      req.params.id,
+      { $set: { pendingCloseAckWeek: null, awaitingNextUpload: true } },
+      { new: true },
+    );
+
+    /* The next cycle starts with its meeting unopened. Held on the project
+         because there is no programme for the new week yet. */
+    if (programme.project) {
+      const Project = require("../models/Project");
+      await Project.findByIdAndUpdate(programme.project, {
+        $set: { meetingOpen: false },
+      });
+    }
+
+    return sendSuccess(res, {
+      acknowledgedWeek,
+      programme: {
+        _id: updated._id,
+        pendingCloseAckWeek: updated.pendingCloseAckWeek,
+        awaitingNextUpload: updated.awaitingNextUpload,
+      },
+    });
+  } catch (error) {
+    console.error("Acknowledge close error:", error);
+    return sendError(res, "Server error");
+  }
+});
 
 router.get("/by-project/:projectId", protect, async (req, res) => {
   try {
@@ -1440,7 +1429,7 @@ const CYCLE_TRANSITIONS = {
   Closed: [],
 };
 
-router.post("/:id/close-cycle", protect, adminOrPlanner, async (req, res) => {
+router.post("/:id/close-cycle", protect, adminOnly, async (req, res) => {
   try {
     const { closeType, notes } = req.body;
     const CycleHistory = require("../models/CycleHistory");
@@ -2435,14 +2424,20 @@ router.patch("/:id/cycle-status", protect, adminOrPlanner, async (req, res) => {
       ]);
     }
 
-    /* Declaring a week Close-Out Eligible is a governance judgement — it says
-       the lookahead is complete and the required actions are done. SRS 10.2
-       puts that with the Planner. The rest of the lifecycle stays open to an
-       Admin; only this step is theirs to withhold. */
-    if (cycleStatus === "Close-Out Eligible" && req.admin.role === "admin") {
+    /* Closing out a governance week is the PM's judgement, and the client's PM
+       is the Admin account. Marking a week Close-Out Eligible says the
+       lookahead is complete and the required actions are done; closing it
+       makes that permanent. The Planner runs the programme up to that point
+       but does not take the decision. The earlier lifecycle steps (Meeting
+       Open, Execution) stay open to either. */
+    const PM_ONLY_TRANSITIONS = ["Close-Out Eligible", "Closed"];
+    if (
+      PM_ONLY_TRANSITIONS.includes(cycleStatus) &&
+      req.admin.role !== "admin"
+    ) {
       return sendError(
         res,
-        "Only the Planner can mark a week Close-Out Eligible.",
+        `Only the PM can move a week to "${cycleStatus}".`,
         403,
       );
     }
@@ -3419,7 +3414,7 @@ router.get("/:id/weeks-status", protect, async (req, res) => {
 router.post(
   "/:id/close-week/:weekNumber",
   protect,
-  adminOrPlanner,
+  adminOnly,
   async (req, res) => {
     try {
       const { closeType, notes, isSecondOfPair } = req.body;

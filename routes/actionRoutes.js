@@ -297,19 +297,14 @@ const updateLinkedActivityStatus = async (programmeId, activityId) => {
 
 /* Who may force-close an action.
  *
- * Strictly the planner the action is assigned to. Raising an action is not
- * enough: a planner who hands work to someone else does not get to declare it
- * unachievable on their behalf. This is deliberately tighter than a normal
- * closure, which also admits the creator. The role gate is separate
- * (plannerOnly), because SRS 10.2 puts PM Override with the Planner and denies
- * it to the Admin outright. */
-const canForceClose = (admin, action) => {
-  if (!admin || admin.role !== "planner") return false;
-  return action.assignee?.toString() === admin._id.toString();
-};
+ * The PM, and the client's PM is the Admin account. A PM Override says the
+ * action could not be delivered and the week proceeds anyway — that is a
+ * governance call taken over somebody else's work, so it cannot be bound to
+ * the assignee the way a normal closure is. The Planner runs the programme
+ * and the actions; the PM decides when an outstanding one stops blocking. */
+const canForceClose = (admin) => !!admin && admin.role === "admin";
 
-const FORCE_CLOSE_DENIED =
-  "Only the planner this action is assigned to can PM Override it";
+const FORCE_CLOSE_DENIED = "Only the PM can PM Override an action";
 
 router.post("/", protect, adminOrPlanner, async (req, res) => {
   try {
@@ -812,7 +807,7 @@ router.put("/:id", protect, adminOrPlanner, async (req, res) => {
       /* This route is adminOrPlanner, which is correct for an ordinary edit
          but would otherwise let an admin, or a planner with no stake in the
          action, force-close it through the status dropdown. */
-      if (!canForceClose(req.admin, { assignee: oldAssignee })) {
+      if (!canForceClose(req.admin)) {
         return sendError(res, FORCE_CLOSE_DENIED, 403);
       }
       const reason = (overrideReason || "").trim();
@@ -1309,7 +1304,7 @@ router.patch("/:id/complete", protect, async (req, res) => {
 /* Force-close ONE action. Deliberately scoped to a single action: the previous
    behaviour closed every outstanding action in the week at once, which the
    MS-05 review rejected (B4). Reason is mandatory and the actor is recorded. */
-router.patch("/:id/override", protect, plannerOnly, async (req, res) => {
+router.patch("/:id/override", protect, adminOnly, async (req, res) => {
   try {
     const { reason } = req.body;
 
@@ -1333,7 +1328,7 @@ router.patch("/:id/override", protect, plannerOnly, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    if (!canForceClose(req.admin, action)) {
+    if (!canForceClose(req.admin)) {
       return sendError(res, FORCE_CLOSE_DENIED, 403);
     }
 
