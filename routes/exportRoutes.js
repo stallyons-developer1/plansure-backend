@@ -1147,13 +1147,21 @@ router.post("/planner-todo", protect, async (req, res) => {
         value: `${formatDate(weekStartDate)} - ${formatDate(weekEndDate)}`,
       });
     }
+    /* The total counts every action in the workbook, so the four lines under
+       it add up to it. It used to exclude Completed, which made a week with
+       one override and one completed action read "Total 1" above a breakdown
+       summing to 2. The figure the Planner actually works from is the
+       outstanding line at the bottom. */
+    const totalActionsInWeek =
+      openActions.length +
+      inProgressActions.length +
+      overriddenActions.length +
+      completedActions.length;
+
     summarySheet.addRow({ metric: "", value: "" });
     summarySheet.addRow({
       metric: "Total Actions (Current Week)",
-      value:
-        openActions.length +
-        inProgressActions.length +
-        overriddenActions.length,
+      value: totalActionsInWeek,
     });
     summarySheet.addRow({ metric: "", value: "" });
     summarySheet.addRow({ metric: "Open Actions", value: openActions.length });
@@ -1161,24 +1169,35 @@ router.post("/planner-todo", protect, async (req, res) => {
       metric: "In Progress Actions",
       value: inProgressActions.length,
     });
-    // Broken out so the total reconciles: overridden actions were counted in
-    // "Total Actions" but had no line of their own.
     summarySheet.addRow({
       metric: "PM Override Actions",
       value: overriddenActions.length,
     });
-    /* Listed separately from the total below: these are closed, so they are
-       not outstanding work — but the Planner still needs them, because their
-       closure narratives are what the programme update is based on. */
+    /* Closed, so not outstanding work — but the Planner still needs them,
+       because their closure narratives are what the programme update is
+       based on. */
     summarySheet.addRow({
       metric: "Completed Actions (with narrative)",
       value: completedActions.length,
+    });
+    summarySheet.addRow({ metric: "", value: "" });
+    /* What is left for the Planner to reflect in the programme: an override
+       counts here because the work was not done. Matches the "outstanding
+       items" figure on the Closure & Export screen. */
+    summarySheet.addRow({
+      metric: "Outstanding for Planner",
+      value:
+        openActions.length +
+        inProgressActions.length +
+        overriddenActions.length,
     });
 
     const fileName = `Planner_ToDo_${currentWeek}_${Date.now()}.xlsx`;
     const filePath = path.join(exportsDir, fileName);
     await workbook.xlsx.writeFile(filePath);
 
+    // Outstanding, not the full count — this drives the "N items" figure on
+    // the export history, which reports what is left to act on.
     const totalActions =
       openActions.length + inProgressActions.length + overriddenActions.length;
     const exportRecord = await Export.create({
