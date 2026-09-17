@@ -3904,7 +3904,7 @@ router.post(
           cycleStatus: nextCycleStatus,
           totalWeeks: calculatedTotalWeeks,
           // Everyone on the project should see the closure, not just the closer.
-          pendingCloseAckWeek: weekNumber,
+          pendingCloseAckWeek: programme.weekNumber || weekNumber,
           isLocked: true,
         },
       };
