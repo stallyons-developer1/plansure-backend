@@ -133,7 +133,7 @@ router.get("/stats", protect, async (req, res) => {
       const project = await Project.findById(projectId);
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
-    } else if (req.admin.role !== "admin") {
+    } else if (!req.admin.isSuperAdmin) {
       /* Every non-admin is scoped the same way. This branch used to be
          planner-only, so a `user` fell through to the branch that loads
          every project — a view-only account saw system-wide figures. */
@@ -331,7 +331,7 @@ router.get("/rag-distribution", protect, async (req, res) => {
       const project = await Project.findById(projectId);
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
-    } else if (req.admin.role !== "admin") {
+    } else if (!req.admin.isSuperAdmin) {
       /* Every non-admin is scoped the same way. This branch used to be
          planner-only, so a `user` fell through to the branch that loads
          every project — a view-only account saw system-wide figures. */
@@ -424,7 +424,7 @@ router.get("/recent-activity", protect, async (req, res) => {
       const project = await Project.findById(projectId);
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
-    } else if (req.admin.role !== "admin") {
+    } else if (!req.admin.isSuperAdmin) {
       /* Every non-admin is scoped the same way. This branch used to be
          planner-only, so a `user` fell through to the branch that loads
          every project — a view-only account saw system-wide figures. */
@@ -571,7 +571,7 @@ router.get("/governance", protect, async (req, res) => {
       const project = await Project.findById(projectId);
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
-    } else if (req.admin.role === "admin") {
+    } else if (req.admin.isSuperAdmin) {
       projects = await Project.find({ status: { $ne: "Cancelled" } });
       projectIds = projects.map((p) => p._id);
     } else {
@@ -1324,7 +1324,7 @@ router.get("/weekly", protect, async (req, res) => {
       const project = await Project.findById(projectId);
       projects = project ? [project] : [];
       projectIds = projects.map((p) => p._id);
-    } else if (req.admin.role !== "admin") {
+    } else if (!req.admin.isSuperAdmin) {
       /* Every non-admin is scoped the same way. This branch used to be
          planner-only, so a `user` fell through to the branch that loads
          every project — a view-only account saw system-wide figures. */

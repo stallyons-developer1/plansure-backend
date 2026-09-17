@@ -482,7 +482,7 @@ router.get("/", protect, async (req, res) => {
       users.map(async (user) => {
         let projectNames = [];
 
-        if (user.role === "admin") {
+        if (user.role === "admin" && user.isSuperAdmin) {
           return {
             _id: user._id,
             name: user.name,

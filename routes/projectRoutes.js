@@ -41,7 +41,7 @@ router.post("/", protect, adminOrPlanner, async (req, res) => {
      * they own — team membership is not consulted. Without this link the
      * creator would not see the project they just made.
      */
-    if (req.admin.role === "planner") {
+    if (req.admin.role === "planner" || !req.admin.isSuperAdmin) {
       const Admin = require("../models/Admin");
       await Admin.updateOne(
         { _id: req.admin._id },
@@ -75,7 +75,7 @@ router.get("/", protect, async (req, res) => {
     if (status) filter.status = status;
     if (phase) filter.phase = phase;
 
-    if (req.admin.role !== "admin") {
+    if (!req.admin.isSuperAdmin) {
       /*
        * A non-admin sees a project either because it was granted to them
        * directly, or because work on it was assigned to them.
@@ -529,7 +529,7 @@ router.get("/:id", protect, async (req, res) => {
       return sendError(res, "Project not found", 404);
     }
 
-    if (req.admin.role !== "admin") {
+    if (!req.admin.isSuperAdmin) {
       const allProgrammes = await Programme.find({
         project: req.params.id,
       }).select("_id");

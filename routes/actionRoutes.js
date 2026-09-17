@@ -496,7 +496,7 @@ router.get("/", protect, async (req, res) => {
       await autoOverrideOverdueActions(Action, programmeId);
     }
 
-    if (req.admin.role !== "admin") {
+    if (!req.admin.isSuperAdmin) {
       const allowed = await visibleProgrammeIds(req.admin);
       if (allowed.length === 0) return sendSuccess(res, { actions: [] });
       if (!filter.programme) filter.programme = { $in: allowed };
@@ -523,7 +523,7 @@ router.get("/programme/:programmeId", protect, async (req, res) => {
     /* Same visibility rule as the other listings: if the programme sits in a
        project they can reach, they see all of its actions. Filtering to their
        own actions here hid the assignee on every other activity. */
-    if (req.admin.role !== "admin") {
+    if (!req.admin.isSuperAdmin) {
       const allowed = await visibleProgrammeIds(req.admin);
       const canSee = allowed.some(
         (id) => id.toString() === req.params.programmeId,
@@ -551,7 +551,7 @@ router.get("/activity/:activityId", protect, async (req, res) => {
     let filter = { "linkedActivity.activityId": req.params.activityId };
     if (programmeId) filter.programme = programmeId;
 
-    if (req.admin.role !== "admin") {
+    if (!req.admin.isSuperAdmin) {
       const allowed = await visibleProgrammeIds(req.admin);
       if (allowed.length === 0) return sendSuccess(res, { actions: [] });
       if (!filter.programme) filter.programme = { $in: allowed };
@@ -584,7 +584,7 @@ router.get("/:id", protect, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    if (req.admin.role !== "admin") {
+    if (!req.admin.isSuperAdmin) {
       const isCurrentAssignee =
         action.assignee?._id?.toString() === req.admin._id.toString();
       const wasPreviouslyAssigned = action.previousAssignees?.some(
@@ -641,7 +641,7 @@ router.get("/:id/history", protect, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    if (req.admin.role !== "admin") {
+    if (!req.admin.isSuperAdmin) {
       const isCurrentAssignee =
         action.assignee?.toString() === req.admin._id.toString();
       const wasPreviouslyAssigned = action.previousAssignees?.some(
@@ -1513,7 +1513,7 @@ router.get("/stats/summary", protect, async (req, res) => {
 
     /* Counts should describe the same set the lists show, otherwise the
        summary and the table disagree. */
-    if (req.admin.role !== "admin") {
+    if (!req.admin.isSuperAdmin) {
       const allowed = await visibleProgrammeIds(req.admin);
       if (allowed.length === 0) {
         return sendSuccess(res, {

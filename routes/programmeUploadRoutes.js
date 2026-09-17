@@ -23,7 +23,10 @@ const auditLogger = require("../utils/auditLogger");
 const pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js");
 
 const checkProgrammeAccess = async (user, programmeId, projectId = null) => {
-  if (user.role === "admin") {
+  /* The Super Admin owns every project. A PM is an admin too, but governs only
+     what they were given — so they fall through to the same project check as a
+     Planner. */
+  if (user.isSuperAdmin) {
     return { hasAccess: true };
   }
 
@@ -659,7 +662,7 @@ router.get("/", protect, async (req, res) => {
   try {
     let filter = {};
 
-    if (req.admin.role !== "admin") {
+    if (!req.admin.isSuperAdmin) {
       let projectIds = [];
 
       /* Same rule for every non-admin: projects granted to them plus projects
