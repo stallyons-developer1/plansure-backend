@@ -786,6 +786,20 @@ router.post(
         );
       }
 
+      const Action = require("../models/Action");
+      const openRequired = await Action.countDocuments({
+        programme: programme._id,
+        type: "Required",
+        status: { $in: ["Open", "In Progress"] },
+      });
+      if (openRequired > 0) {
+        return sendError(
+          res,
+          `${openRequired} required action(s) are still open. Close them, download the Planner To-Do again, then confirm.`,
+          400,
+        );
+      }
+
       if (programme.programmeUpdateConfirmedAt) {
         return sendError(
           res,
@@ -815,6 +829,22 @@ router.post(
         console.error(
           "Audit log failed (confirm-programme-update):",
           auditError,
+        );
+      }
+
+      try {
+        const {
+          notifyPmOfProgrammeUpdateConfirmed,
+        } = require("../utils/plannerNotifications");
+        await notifyPmOfProgrammeUpdateConfirmed({
+          programme,
+          confirmedBy: req.admin,
+          note: trimmedNote,
+        });
+      } catch (notifyError) {
+        console.error(
+          "Programme update confirmation notification failed:",
+          notifyError,
         );
       }
 

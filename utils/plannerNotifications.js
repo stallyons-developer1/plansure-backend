@@ -589,8 +589,63 @@ const notifyUsersOfWeekClosed = async ({
   });
 };
 
+/*
+ * Tells the PM that the Planner has confirmed the programme update, which is
+ * the gate that lets the PM mark the week Close-Out Eligible (MS-05 point 3).
+ *
+ * Bell and push only, no email: this is a hand-off inside the closure
+ * sequence, and the PM is expected to be working the cycle when it arrives.
+ * The Planner who confirmed is skipped — they know.
+ *
+ * Every active admin is notified. There is no PM-to-project association in the
+ * data yet; once one exists this should narrow to that project's PM.
+ */
+const notifyPmOfProgrammeUpdateConfirmed = async ({
+  programme,
+  confirmedBy,
+  note,
+}) => {
+  if (!programme) return [];
+
+  const Admin = require("../models/Admin");
+  const Project = require("../models/Project");
+
+  const admins = await Admin.find({ role: "admin", status: "active" }).select(
+    "_id",
+  );
+  const recipients = admins
+    .map((a) => String(a._id))
+    .filter((id) => id !== String(confirmedBy?._id));
+
+  if (recipients.length === 0) return [];
+
+  const project = programme.project
+    ? await Project.findById(programme.project).select("name")
+    : null;
+
+  const actor = confirmedBy?.name || "The Planner";
+  const trimmed =
+    typeof note === "string" && note.trim().length > 140
+      ? `${note.trim().slice(0, 140)}…`
+      : (note || "").trim();
+
+  return dispatch({
+    recipients,
+    sender: confirmedBy,
+    type: "general",
+    title: "Programme Update Confirmed",
+    message: `${actor} confirmed the programme update on "${
+      project?.name || programme.name
+    }". You can now mark this week Close-Out Eligible.${
+      trimmed ? ` Note: ${trimmed}` : ""
+    }`,
+    programme,
+  });
+};
+
 module.exports = {
   notifyUsersOfExport,
+  notifyPmOfProgrammeUpdateConfirmed,
   notifyUsersOfWeekClosed,
   emailStakeholdersWeekClosed,
   emailStakeholdersMarkedCloseOutEligible,
