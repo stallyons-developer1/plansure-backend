@@ -56,6 +56,14 @@ const appUrl = () =>
 const logoTag = () =>
   `<img src="${appUrl()}/logo.png" alt="Plansure" width="150" style="display: block; margin: 0 auto 12px; max-width: 150px; height: auto;" />`;
 
+/* What the recipient should see. "admin" is the stored value; PM is what the
+   role is called everywhere a person looks at it. */
+const roleLabel = (role) => {
+  if (role === "admin") return "PM";
+  if (!role) return "";
+  return role.charAt(0).toUpperCase() + role.slice(1);
+};
+
 const mailFrom = () =>
   process.env.MAIL_FROM ||
   process.env.RESEND_FROM_EMAIL ||
@@ -98,7 +106,7 @@ const sendInviteEmail = async (options) => {
           <p>You've been invited by <strong>${options.invitedByName}</strong> to join Plansure as a team member.</p>
 
           <p><strong>Your Role:</strong></p>
-          <span class="role-badge ${options.role}">${options.role.charAt(0).toUpperCase() + options.role.slice(1)}</span>
+          <span class="role-badge ${options.role}">${roleLabel(options.role)}</span>
 
 
           <p>Click below to accept or decline this invitation:</p>
@@ -280,7 +288,7 @@ const sendRoleChangeEmail = async (options) => {
   const changes = [];
   if (options.oldRole !== options.newRole) {
     changes.push(
-      `<li>Role changed from <strong>${options.oldRole}</strong> to <strong>${options.newRole}</strong></li>`,
+      `<li>Role changed from <strong>${roleLabel(options.oldRole)}</strong> to <strong>${roleLabel(options.newRole)}</strong></li>`,
     );
   }
   if (options.oldProject !== options.newProject) {
@@ -877,10 +885,7 @@ const sendWeekClosedEmail = async (options) => {
  */
 const sendMarkedCloseOutEligibleEmail = async (options) => {
   const actor = options.markedByName || "Someone";
-  const role = options.markedByRole
-    ? options.markedByRole.charAt(0).toUpperCase() +
-      options.markedByRole.slice(1)
-    : null;
+  const role = options.markedByRole ? roleLabel(options.markedByRole) : null;
 
   const htmlContent = `
     <!DOCTYPE html>
