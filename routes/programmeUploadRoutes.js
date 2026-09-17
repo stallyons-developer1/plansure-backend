@@ -1781,7 +1781,7 @@ router.post("/:id/close-cycle", protect, adminOnly, async (req, res) => {
       } = require("../utils/plannerNotifications");
       await emailStakeholdersWeekClosed({
         programme: programme,
-        weekNumber: cycleHistory.weekNumber,
+        weekNumber: programme.weekNumber || cycleHistory.weekNumber,
         closeType: closeType || "Normal Close",
         notes: notes,
         closedBy: req.admin,
@@ -3640,6 +3640,8 @@ router.post(
         return sendError(res, "Access denied", 403);
       }
 
+      const projectWeek = programme.weekNumber || weekNumber;
+
       const closedWeeks = programme.closedWeeks || [];
       if (closedWeeks.some((w) => w.weekNumber === weekNumber)) {
         return sendError(res, `Week ${weekNumber} is already closed`, 400);
@@ -3904,7 +3906,7 @@ router.post(
           cycleStatus: nextCycleStatus,
           totalWeeks: calculatedTotalWeeks,
           // Everyone on the project should see the closure, not just the closer.
-          pendingCloseAckWeek: programme.weekNumber || weekNumber,
+          pendingCloseAckWeek: projectWeek,
           isLocked: true,
         },
       };
@@ -3940,13 +3942,13 @@ router.post(
           resourceId: updatedProgramme._id,
           resourceName: updatedProgramme.name,
           project: updatedProgramme.project,
-          description: `Closed Week ${weekNumber} for programme "${updatedProgramme.name}"${
+          description: `Closed Week ${projectWeek} for programme "${updatedProgramme.name}"${
             closeType === "PM Override"
               ? ` via PM Override. Reason: ${notes || "no reason given"}`
               : ""
           }`,
           metadata: {
-            weekNumber,
+            weekNumber: projectWeek,
             closeType: closeType || "Normal Close",
             stats: weekStats,
             resultingCycleStatus: nextCycleStatus,
@@ -3972,7 +3974,7 @@ router.post(
         } = require("../utils/plannerNotifications");
         await emailStakeholdersWeekClosed({
           programme: updatedProgramme,
-          weekNumber: weekNumber,
+          weekNumber: projectWeek,
           closeType: closeType || "Normal Close",
           notes: notes,
           closedBy: req.admin,
@@ -4001,7 +4003,7 @@ router.post(
 
       await CycleHistory.create({
         programme: req.params.id,
-        weekNumber,
+        weekNumber: projectWeek,
         weekLabel: `Week ${weekNumber}`,
         dateRange: {
           startDate: weekStartDate,
