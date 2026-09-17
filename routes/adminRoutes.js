@@ -102,6 +102,7 @@ router.post("/login", async (req, res) => {
           name: user.name,
           email: user.email,
           role: user.role,
+          isSuperAdmin: !!user.isSuperAdmin,
         },
       },
       "Login successful",
@@ -320,6 +321,7 @@ router.get("/profile", protect, async (req, res) => {
     name: req.admin.name,
     email: req.admin.email,
     role: req.admin.role,
+    isSuperAdmin: !!req.admin.isSuperAdmin,
   });
 });
 

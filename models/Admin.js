@@ -28,6 +28,14 @@ const adminSchema = new mongoose.Schema(
       enum: ["pending", "active", "inactive", "blocked"],
       default: "pending",
     },
+    /* The single owner account. Modelled as a flag on the admin role rather
+       than a fourth role: the client's PM is an admin account, and every
+       governance gate in the app already reads role === "admin". Adding a role
+       above it would silently exclude the owner from all of them. */
+    isSuperAdmin: {
+      type: Boolean,
+      default: false,
+    },
     projects: [
       {
         type: mongoose.Schema.Types.ObjectId,

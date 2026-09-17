@@ -3,7 +3,11 @@ const router = express.Router();
 const crypto = require("crypto");
 const Admin = require("../models/Admin");
 const Project = require("../models/Project");
-const { protect, adminOnly } = require("../middleware/authMiddleware");
+const {
+  protect,
+  adminOnly,
+  superAdminOnly,
+} = require("../middleware/authMiddleware");
 const {
   sendInviteEmail,
   sendWelcomeEmail,
@@ -30,7 +34,7 @@ const backendBase = () =>
 const frontendBase = () =>
   trimSlash(process.env.FRONTEND_URL) || "http://localhost:5173";
 
-router.post("/invite", protect, adminOnly, async (req, res) => {
+router.post("/invite", protect, superAdminOnly, async (req, res) => {
   try {
     const { name, email, role, projectId, projectIds } = req.body;
 
@@ -62,9 +66,9 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
 
     let projectName = "All Projects";
     if (grantedProjects.length > 0) {
-      const named = await Project.find({ _id: { $in: grantedProjects } }).select(
-        "name",
-      );
+      const named = await Project.find({
+        _id: { $in: grantedProjects },
+      }).select("name");
       if (named.length > 0) {
         projectName = named.map((p) => p.name).join(", ");
       }
@@ -484,6 +488,7 @@ router.get("/", protect, async (req, res) => {
             name: user.name,
             email: user.email,
             role: user.role,
+            isSuperAdmin: !!user.isSuperAdmin,
             status: user.status,
             projectAccess: "All Projects",
             // Admins are not scoped to projects, so they match any project filter.
@@ -542,6 +547,7 @@ router.get("/", protect, async (req, res) => {
           name: user.name,
           email: user.email,
           role: user.role,
+          isSuperAdmin: !!user.isSuperAdmin,
           status: user.status,
           projectAccess:
             projectNames.length > 0 ? projectNames.join(", ") : "No Projects",
@@ -590,7 +596,7 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.put("/:id", protect, adminOnly, async (req, res) => {
+router.put("/:id", protect, superAdminOnly, async (req, res) => {
   try {
     const { name, role, projects, status } = req.body;
 
@@ -713,7 +719,7 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.patch("/:id/block", protect, adminOnly, async (req, res) => {
+router.patch("/:id/block", protect, superAdminOnly, async (req, res) => {
   try {
     const user = await Admin.findById(req.params.id);
 
@@ -746,7 +752,7 @@ router.patch("/:id/block", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.delete("/:id", protect, adminOnly, async (req, res) => {
+router.delete("/:id", protect, superAdminOnly, async (req, res) => {
   try {
     const user = await Admin.findById(req.params.id);
 
@@ -769,7 +775,7 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.post("/:id/resend-invite", protect, adminOnly, async (req, res) => {
+router.post("/:id/resend-invite", protect, superAdminOnly, async (req, res) => {
   try {
     const user = await Admin.findById(req.params.id).populate(
       "projects",

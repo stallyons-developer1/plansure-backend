@@ -68,4 +68,23 @@ const plannerOnly = (req, res, next) => {
   }
 };
 
-module.exports = { protect, adminOnly, adminOrPlanner, plannerOnly };
+/* The owner account. Governance stays with every admin (the PMs); this guards
+   the things that sit above a project — creating accounts and reading the
+   audit trail. */
+const superAdminOnly = (req, res, next) => {
+  if (req.admin && req.admin.role === "admin" && req.admin.isSuperAdmin) {
+    next();
+  } else {
+    res.status(403).json({
+      message: "Access denied. Only the Super Admin can perform this action.",
+    });
+  }
+};
+
+module.exports = {
+  protect,
+  adminOnly,
+  adminOrPlanner,
+  plannerOnly,
+  superAdminOnly,
+};
