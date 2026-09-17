@@ -3,11 +3,30 @@ const router = express.Router();
 const crypto = require("crypto");
 const Admin = require("../models/Admin");
 const Project = require("../models/Project");
-const {
-  protect,
-  adminOnly,
-  superAdminOnly,
-} = require("../middleware/authMiddleware");
+const { protect, adminOnly } = require("../middleware/authMiddleware");
+
+/* A PM manages the people on their own projects. Two things are theirs to
+ * withhold rather than police later:
+ *   - the Super Admin account, which could otherwise be edited or deleted by
+ *     anyone holding a project
+ *   - projects they do not hold, which they must not be able to hand out
+ * The Super Admin is exempt from both.
+ */
+const canManageAccount = (actor, target) => {
+  if (actor.isSuperAdmin) return true;
+  if (target.isSuperAdmin) return false;
+  if (String(target._id) === String(actor._id)) return true;
+
+  const mine = (actor.projects || []).map((p) => p.toString());
+  const theirs = (target.projects || []).map((p) => p.toString());
+  return theirs.some((id) => mine.includes(id));
+};
+
+const limitToOwnProjects = (actor, requested) => {
+  if (actor.isSuperAdmin) return requested;
+  const mine = (actor.projects || []).map((p) => p.toString());
+  return requested.filter((id) => mine.includes(String(id)));
+};
 const {
   sendInviteEmail,
   sendWelcomeEmail,
@@ -34,7 +53,7 @@ const backendBase = () =>
 const frontendBase = () =>
   trimSlash(process.env.FRONTEND_URL) || "http://localhost:5173";
 
-router.post("/invite", protect, superAdminOnly, async (req, res) => {
+router.post("/invite", protect, adminOnly, async (req, res) => {
   try {
     const { name, email, role, projectId, projectIds } = req.body;
 
@@ -58,11 +77,20 @@ router.post("/invite", protect, superAdminOnly, async (req, res) => {
 
     /* A user can be granted several projects at invite time. projectId is
        still accepted so older callers keep working. */
-    const grantedProjects = Array.isArray(projectIds)
+    const requestedProjects = Array.isArray(projectIds)
       ? projectIds.filter(Boolean)
       : projectId
         ? [projectId]
         : [];
+
+    const grantedProjects = limitToOwnProjects(req.admin, requestedProjects);
+    if (requestedProjects.length > 0 && grantedProjects.length === 0) {
+      return sendError(
+        res,
+        "You can only grant access to projects you hold.",
+        403,
+      );
+    }
 
     let projectName = "All Projects";
     if (grantedProjects.length > 0) {
@@ -459,6 +487,21 @@ router.get("/", protect, async (req, res) => {
     const filter = {};
     if (status) filter.status = status;
     if (role) filter.role = role;
+
+    if (!req.admin.isSuperAdmin) {
+      const myProjects = (req.admin.projects || []).map((p) => p.toString());
+      if (myProjects.length === 0) {
+        return sendSuccess(res, { users: [] });
+      }
+      /* Themselves, plus anyone sharing a project with them. The Super Admin is
+         excluded — a PM has no business editing the owner account. */
+      filter.$and = [
+        { isSuperAdmin: { $ne: true } },
+        {
+          $or: [{ _id: req.admin._id }, { projects: { $in: myProjects } }],
+        },
+      ];
+    }
     if (search) {
       filter.$or = [
         { name: { $regex: search, $options: "i" } },
@@ -589,6 +632,14 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
+    if (!canManageAccount(req.admin, user)) {
+      return sendError(
+        res,
+        "You can only manage people on the projects you hold.",
+        403,
+      );
+    }
+
     return sendSuccess(res, { user });
   } catch (error) {
     console.error(error);
@@ -596,7 +647,7 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.put("/:id", protect, superAdminOnly, async (req, res) => {
+router.put("/:id", protect, adminOnly, async (req, res) => {
   try {
     const { name, role, projects, status } = req.body;
 
@@ -608,6 +659,14 @@ router.put("/:id", protect, superAdminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
+    if (!canManageAccount(req.admin, user)) {
+      return sendError(
+        res,
+        "You can only manage people on the projects you hold.",
+        403,
+      );
+    }
+
     const wasPending = user.status === "pending";
     const oldProjects = user.projects
       .map((p) => p._id.toString())
@@ -617,7 +676,17 @@ router.put("/:id", protect, superAdminOnly, async (req, res) => {
 
     if (name) user.name = name;
     if (role) user.role = role;
-    if (projects !== undefined) user.projects = projects;
+    if (projects !== undefined) {
+      const allowed = limitToOwnProjects(req.admin, projects);
+      if (projects.length > 0 && allowed.length === 0) {
+        return sendError(
+          res,
+          "You can only grant access to projects you hold.",
+          403,
+        );
+      }
+      user.projects = allowed;
+    }
     if (status) user.status = status;
 
     const newProjects = (projects || []).sort().join(",");
@@ -719,12 +788,20 @@ router.put("/:id", protect, superAdminOnly, async (req, res) => {
   }
 });
 
-router.patch("/:id/block", protect, superAdminOnly, async (req, res) => {
+router.patch("/:id/block", protect, adminOnly, async (req, res) => {
   try {
     const user = await Admin.findById(req.params.id);
 
     if (!user) {
       return sendError(res, "User not found", 404);
+    }
+
+    if (!canManageAccount(req.admin, user)) {
+      return sendError(
+        res,
+        "You can only manage people on the projects you hold.",
+        403,
+      );
     }
 
     if (user._id.toString() === req.admin._id.toString()) {
@@ -752,12 +829,20 @@ router.patch("/:id/block", protect, superAdminOnly, async (req, res) => {
   }
 });
 
-router.delete("/:id", protect, superAdminOnly, async (req, res) => {
+router.delete("/:id", protect, adminOnly, async (req, res) => {
   try {
     const user = await Admin.findById(req.params.id);
 
     if (!user) {
       return sendError(res, "User not found", 404);
+    }
+
+    if (!canManageAccount(req.admin, user)) {
+      return sendError(
+        res,
+        "You can only manage people on the projects you hold.",
+        403,
+      );
     }
 
     if (user._id.toString() === req.admin._id.toString()) {
@@ -775,7 +860,7 @@ router.delete("/:id", protect, superAdminOnly, async (req, res) => {
   }
 });
 
-router.post("/:id/resend-invite", protect, superAdminOnly, async (req, res) => {
+router.post("/:id/resend-invite", protect, adminOnly, async (req, res) => {
   try {
     const user = await Admin.findById(req.params.id).populate(
       "projects",
@@ -784,6 +869,14 @@ router.post("/:id/resend-invite", protect, superAdminOnly, async (req, res) => {
 
     if (!user) {
       return sendError(res, "User not found", 404);
+    }
+
+    if (!canManageAccount(req.admin, user)) {
+      return sendError(
+        res,
+        "You can only manage people on the projects you hold.",
+        403,
+      );
     }
 
     if (user.status !== "pending") {

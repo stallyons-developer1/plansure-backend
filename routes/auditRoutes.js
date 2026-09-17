@@ -1,10 +1,10 @@
 const express = require("express");
 const router = express.Router();
 const AuditLog = require("../models/AuditLog");
-const { protect, superAdminOnly } = require("../middleware/authMiddleware");
+const { protect, adminOnly } = require("../middleware/authMiddleware");
 const { sendError, sendSuccess } = require("../utils/errorResponse");
 
-router.get("/", protect, superAdminOnly, async (req, res) => {
+router.get("/", protect, adminOnly, async (req, res) => {
   try {
     const {
       page = 1,
@@ -20,6 +20,17 @@ router.get("/", protect, superAdminOnly, async (req, res) => {
     } = req.query;
 
     const filter = {};
+
+    if (!req.admin.isSuperAdmin) {
+      const myProjects = (req.admin.projects || []).map((p) => p.toString());
+      if (myProjects.length === 0) {
+        return sendSuccess(res, {
+          logs: [],
+          pagination: { total: 0, page: 1, pages: 0, limit: 0 },
+        });
+      }
+      filter.project = { $in: myProjects };
+    }
 
     /*
      * "Week 1" means everything that happened during that governance week, not
@@ -181,7 +192,7 @@ router.get("/", protect, superAdminOnly, async (req, res) => {
   }
 });
 
-router.get("/categories", protect, superAdminOnly, async (req, res) => {
+router.get("/categories", protect, adminOnly, async (req, res) => {
   try {
     const categories = [
       { value: "AUTH", label: "Authentication" },
@@ -202,7 +213,7 @@ router.get("/categories", protect, superAdminOnly, async (req, res) => {
   }
 });
 
-router.get("/actions", protect, superAdminOnly, async (req, res) => {
+router.get("/actions", protect, adminOnly, async (req, res) => {
   try {
     const actions = await AuditLog.distinct("action");
     return sendSuccess(res, { actions });
@@ -214,7 +225,7 @@ router.get("/actions", protect, superAdminOnly, async (req, res) => {
 
 /* Week numbers available to the filter dropdown.
    Must stay above "/:id" or Express treats "weeks" as an id. */
-router.get("/weeks", protect, superAdminOnly, async (req, res) => {
+router.get("/weeks", protect, adminOnly, async (req, res) => {
   try {
     const { projectId } = req.query;
     const Programme = require("../models/Programme");
@@ -269,7 +280,7 @@ router.get("/weeks", protect, superAdminOnly, async (req, res) => {
    options that can return rows. Names are read from the Project collection
    rather than the denormalised projectName: most call sites pass a bare
    ObjectId as `project`, so projectName is usually null on the entry. */
-router.get("/projects", protect, superAdminOnly, async (req, res) => {
+router.get("/projects", protect, adminOnly, async (req, res) => {
   try {
     const Project = require("../models/Project");
 
@@ -295,7 +306,7 @@ router.get("/projects", protect, superAdminOnly, async (req, res) => {
   }
 });
 
-router.get("/stats", protect, superAdminOnly, async (req, res) => {
+router.get("/stats", protect, adminOnly, async (req, res) => {
   try {
     const { days = 7 } = req.query;
     const startDate = new Date();
@@ -355,7 +366,7 @@ router.get("/stats", protect, superAdminOnly, async (req, res) => {
   }
 });
 
-router.get("/:id", protect, superAdminOnly, async (req, res) => {
+router.get("/:id", protect, adminOnly, async (req, res) => {
   try {
     const log = await AuditLog.findById(req.params.id)
       .populate("performedBy", "name email role")
@@ -372,7 +383,7 @@ router.get("/:id", protect, superAdminOnly, async (req, res) => {
   }
 });
 
-router.get("/resource/:type/:id", protect, superAdminOnly, async (req, res) => {
+router.get("/resource/:type/:id", protect, adminOnly, async (req, res) => {
   try {
     const { type, id } = req.params;
     const { page = 1, limit = 20 } = req.query;
