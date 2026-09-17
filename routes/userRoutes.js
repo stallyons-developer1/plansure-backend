@@ -12,14 +12,34 @@ const { protect, adminOnly } = require("../middleware/authMiddleware");
  *   - projects they do not hold, which they must not be able to hand out
  * The Super Admin is exempt from both.
  */
-const canManageAccount = (actor, target) => {
+const canManageAccount = async (actor, target) => {
   if (actor.isSuperAdmin) return true;
   if (target.isSuperAdmin) return false;
   if (String(target._id) === String(actor._id)) return true;
 
   const mine = (actor.projects || []).map((p) => p.toString());
+  if (mine.length === 0) return false;
+
   const theirs = (target.projects || []).map((p) => p.toString());
-  return theirs.some((id) => mine.includes(id));
+  if (theirs.some((id) => mine.includes(id))) return true;
+
+  /* Granted access is only half of it. A Planner usually reaches a project
+     through the actions assigned to them, so without this the PM running that
+     project could see them in the list but not act on them. */
+  const Programme = require("../models/Programme");
+  const Action = require("../models/Action");
+
+  const programmes = await Programme.find({ project: { $in: mine } }).select(
+    "_id",
+  );
+  if (programmes.length === 0) return false;
+
+  const worksHere = await Action.exists({
+    programme: { $in: programmes.map((p) => p._id) },
+    $or: [{ assignee: target._id }, { createdBy: target._id }],
+  });
+
+  return !!worksHere;
 };
 
 const limitToOwnProjects = (actor, requested) => {
@@ -493,12 +513,37 @@ router.get("/", protect, async (req, res) => {
       if (myProjects.length === 0) {
         return sendSuccess(res, { users: [] });
       }
-      /* Themselves, plus anyone sharing a project with them. The Super Admin is
-         excluded — a PM has no business editing the owner account. */
+      const myProgrammes = await Programme.find({
+        project: { $in: myProjects },
+      }).select("_id");
+
+      let workingHere = [];
+      if (myProgrammes.length > 0) {
+        const Action = require("../models/Action");
+        const actions = await Action.find({
+          programme: { $in: myProgrammes.map((p) => p._id) },
+        }).select("assignee createdBy");
+        workingHere = [
+          ...new Set(
+            actions
+              .flatMap((a) => [a.assignee, a.createdBy])
+              .filter(Boolean)
+              .map((id) => String(id)),
+          ),
+        ];
+      }
+
+      /* Themselves, anyone granted one of their projects, and anyone working on
+         one through an action. The Super Admin is excluded — a PM has no
+         business editing the owner account. */
       filter.$and = [
         { isSuperAdmin: { $ne: true } },
         {
-          $or: [{ _id: req.admin._id }, { projects: { $in: myProjects } }],
+          $or: [
+            { _id: req.admin._id },
+            { projects: { $in: myProjects } },
+            { _id: { $in: workingHere } },
+          ],
         },
       ];
     }
@@ -632,7 +677,7 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!canManageAccount(req.admin, user)) {
+    if (!(await canManageAccount(req.admin, user))) {
       return sendError(
         res,
         "You can only manage people on the projects you hold.",
@@ -659,7 +704,7 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!canManageAccount(req.admin, user)) {
+    if (!(await canManageAccount(req.admin, user))) {
       return sendError(
         res,
         "You can only manage people on the projects you hold.",
@@ -796,7 +841,7 @@ router.patch("/:id/block", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!canManageAccount(req.admin, user)) {
+    if (!(await canManageAccount(req.admin, user))) {
       return sendError(
         res,
         "You can only manage people on the projects you hold.",
@@ -837,7 +882,7 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!canManageAccount(req.admin, user)) {
+    if (!(await canManageAccount(req.admin, user))) {
       return sendError(
         res,
         "You can only manage people on the projects you hold.",
@@ -871,7 +916,7 @@ router.post("/:id/resend-invite", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!canManageAccount(req.admin, user)) {
+    if (!(await canManageAccount(req.admin, user))) {
       return sendError(
         res,
         "You can only manage people on the projects you hold.",
