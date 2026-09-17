@@ -926,12 +926,46 @@ router.get("/by-project/:projectId", protect, async (req, res) => {
       return sendError(res, "Access denied", 403);
     }
 
-    let programme = await Programme.findOne({
-      project: req.params.projectId,
-      cycleStatus: { $ne: "Closed" },
-    })
-      .populate("uploadedBy", "name email")
-      .sort({ createdAt: -1 });
+    let programme = null;
+
+    if (req.admin.role === "planner") {
+      const projectProgrammes = await Programme.find({
+        project: req.params.projectId,
+      })
+        .select("_id")
+        .sort({ createdAt: -1 });
+
+      if (projectProgrammes.length > 0) {
+        const Action = require("../models/Action");
+        const mine = await Action.find({
+          programme: { $in: projectProgrammes.map((p) => p._id) },
+          assignee: req.admin._id,
+        }).select("programme");
+
+        const carriesMyWork = new Set(mine.map((a) => String(a.programme)));
+        const newestWithMyWork = projectProgrammes.find((p) =>
+          carriesMyWork.has(String(p._id)),
+        );
+
+        if (newestWithMyWork) {
+          programme = await Programme.findById(newestWithMyWork._id).populate(
+            "uploadedBy",
+            "name email",
+          );
+        }
+      }
+    }
+
+    /* Everyone else — and a Planner with no assigned work anywhere on the
+       project — gets the current week. */
+    if (!programme) {
+      programme = await Programme.findOne({
+        project: req.params.projectId,
+        cycleStatus: { $ne: "Closed" },
+      })
+        .populate("uploadedBy", "name email")
+        .sort({ createdAt: -1 });
+    }
 
     if (!programme) {
       programme = await Programme.findOne({ project: req.params.projectId })
@@ -3868,6 +3902,7 @@ router.post(
           totalWeeks: calculatedTotalWeeks,
           // Everyone on the project should see the closure, not just the closer.
           pendingCloseAckWeek: weekNumber,
+          isLocked: true,
         },
       };
 
