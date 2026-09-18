@@ -5,48 +5,24 @@ const Admin = require("../models/Admin");
 const Project = require("../models/Project");
 const { protect, adminOnly } = require("../middleware/authMiddleware");
 
-/* A PM manages the people on their own projects. Two things are theirs to
- * withhold rather than police later:
- *   - the Super Admin account, which could otherwise be edited or deleted by
- *     anyone holding a project
- *   - projects they do not hold, which they must not be able to hand out
- * The Super Admin is exempt from both.
+/* A PM has the same reach as the Super Admin in User Management — they see and
+ * manage every account. Two things stay out of their hands:
+ *
+ *   - the Super Admin account. Anything else and a PM could edit or delete the
+ *     owner and take the system with it.
+ *   - their own project grants. Project access is scoped everywhere else, and
+ *     editing your own record would be a way around that scoping.
  */
-const canManageAccount = async (actor, target) => {
-  if (actor.isSuperAdmin) return true;
-  if (target.isSuperAdmin) return false;
-  if (String(target._id) === String(actor._id)) return true;
+const canManageAccount = (actor, target) =>
+  actor.isSuperAdmin || !target.isSuperAdmin;
 
-  const mine = (actor.projects || []).map((p) => p.toString());
-  if (mine.length === 0) return false;
+/* A PM may grant any project to anyone else — User Management is unscoped for
+   them. Their own record is the exception: raising their own grants would hand
+   them the projects, dashboards, logs and exports that are scoped everywhere
+   else in the app. */
+const canSetProjects = (actor, target) =>
+  actor.isSuperAdmin || String(target._id) !== String(actor._id);
 
-  const theirs = (target.projects || []).map((p) => p.toString());
-  if (theirs.some((id) => mine.includes(id))) return true;
-
-  /* Granted access is only half of it. A Planner usually reaches a project
-     through the actions assigned to them, so without this the PM running that
-     project could see them in the list but not act on them. */
-  const Programme = require("../models/Programme");
-  const Action = require("../models/Action");
-
-  const programmes = await Programme.find({ project: { $in: mine } }).select(
-    "_id",
-  );
-  if (programmes.length === 0) return false;
-
-  const worksHere = await Action.exists({
-    programme: { $in: programmes.map((p) => p._id) },
-    $or: [{ assignee: target._id }, { createdBy: target._id }],
-  });
-
-  return !!worksHere;
-};
-
-const limitToOwnProjects = (actor, requested) => {
-  if (actor.isSuperAdmin) return requested;
-  const mine = (actor.projects || []).map((p) => p.toString());
-  return requested.filter((id) => mine.includes(String(id)));
-};
 const {
   sendInviteEmail,
   sendWelcomeEmail,
@@ -103,14 +79,7 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
         ? [projectId]
         : [];
 
-    const grantedProjects = limitToOwnProjects(req.admin, requestedProjects);
-    if (requestedProjects.length > 0 && grantedProjects.length === 0) {
-      return sendError(
-        res,
-        "You can only grant access to projects you hold.",
-        403,
-      );
-    }
+    const grantedProjects = requestedProjects;
 
     let projectName = "All Projects";
     if (grantedProjects.length > 0) {
@@ -508,45 +477,6 @@ router.get("/", protect, async (req, res) => {
     if (status) filter.status = status;
     if (role) filter.role = role;
 
-    if (!req.admin.isSuperAdmin) {
-      const myProjects = (req.admin.projects || []).map((p) => p.toString());
-      if (myProjects.length === 0) {
-        return sendSuccess(res, { users: [] });
-      }
-      const myProgrammes = await Programme.find({
-        project: { $in: myProjects },
-      }).select("_id");
-
-      let workingHere = [];
-      if (myProgrammes.length > 0) {
-        const Action = require("../models/Action");
-        const actions = await Action.find({
-          programme: { $in: myProgrammes.map((p) => p._id) },
-        }).select("assignee createdBy");
-        workingHere = [
-          ...new Set(
-            actions
-              .flatMap((a) => [a.assignee, a.createdBy])
-              .filter(Boolean)
-              .map((id) => String(id)),
-          ),
-        ];
-      }
-
-      /* Themselves, anyone granted one of their projects, and anyone working on
-         one through an action. The Super Admin is excluded — a PM has no
-         business editing the owner account. */
-      filter.$and = [
-        { isSuperAdmin: { $ne: true } },
-        {
-          $or: [
-            { _id: req.admin._id },
-            { projects: { $in: myProjects } },
-            { _id: { $in: workingHere } },
-          ],
-        },
-      ];
-    }
     if (search) {
       filter.$or = [
         { name: { $regex: search, $options: "i" } },
@@ -677,10 +607,10 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!(await canManageAccount(req.admin, user))) {
+    if (!canManageAccount(req.admin, user)) {
       return sendError(
         res,
-        "You can only manage people on the projects you hold.",
+        "The Super Admin account cannot be changed from here.",
         403,
       );
     }
@@ -704,10 +634,10 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!(await canManageAccount(req.admin, user))) {
+    if (!canManageAccount(req.admin, user)) {
       return sendError(
         res,
-        "You can only manage people on the projects you hold.",
+        "The Super Admin account cannot be changed from here.",
         403,
       );
     }
@@ -722,15 +652,14 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
     if (name) user.name = name;
     if (role) user.role = role;
     if (projects !== undefined) {
-      const allowed = limitToOwnProjects(req.admin, projects);
-      if (projects.length > 0 && allowed.length === 0) {
+      if (!canSetProjects(req.admin, user)) {
         return sendError(
           res,
-          "You can only grant access to projects you hold.",
+          "You cannot change your own project access.",
           403,
         );
       }
-      user.projects = allowed;
+      user.projects = projects;
     }
     if (status) user.status = status;
 
@@ -841,10 +770,10 @@ router.patch("/:id/block", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!(await canManageAccount(req.admin, user))) {
+    if (!canManageAccount(req.admin, user)) {
       return sendError(
         res,
-        "You can only manage people on the projects you hold.",
+        "The Super Admin account cannot be changed from here.",
         403,
       );
     }
@@ -882,10 +811,10 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!(await canManageAccount(req.admin, user))) {
+    if (!canManageAccount(req.admin, user)) {
       return sendError(
         res,
-        "You can only manage people on the projects you hold.",
+        "The Super Admin account cannot be changed from here.",
         403,
       );
     }
@@ -916,10 +845,10 @@ router.post("/:id/resend-invite", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!(await canManageAccount(req.admin, user))) {
+    if (!canManageAccount(req.admin, user)) {
       return sendError(
         res,
-        "You can only manage people on the projects you hold.",
+        "The Super Admin account cannot be changed from here.",
         403,
       );
     }
