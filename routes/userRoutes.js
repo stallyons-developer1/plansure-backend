@@ -13,11 +13,10 @@ const { protect, adminOnly } = require("../middleware/authMiddleware");
  *   - their own project grants. Project access is scoped everywhere else, and
  *     editing your own record would be a way around that scoping.
  */
-/* A PM runs the delivery team — Planners and Users. Admin accounts, their own
- * included, belong to the Super Admin: letting a PM reach them would mean one
- * PM could edit or remove another, or the owner. */
+/* A PM manages everyone except the owner. Reaching the Super Admin account
+ * would let any PM edit or delete it and take the system with it. */
 const canManageAccount = (actor, target) =>
-  actor.isSuperAdmin || target.role !== "admin";
+  actor.isSuperAdmin || !target.isSuperAdmin;
 
 /* A PM may grant any project to anyone else — User Management is unscoped for
    them. Their own record is the exception: raising their own grants would hand
@@ -92,14 +91,6 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
       if (named.length > 0) {
         projectName = named.map((p) => p.name).join(", ");
       }
-    }
-
-    if (role === "admin" && !req.admin.isSuperAdmin) {
-      return sendError(
-        res,
-        "Only the Super Admin can create a PM account.",
-        403,
-      );
     }
 
     const user = new Admin({
@@ -488,8 +479,10 @@ router.get("/", protect, async (req, res) => {
     if (status) filter.status = status;
     if (role) filter.role = role;
 
+    /* Everyone but the owner. The list has to agree with canManageAccount, or
+       a PM sees a row they cannot act on. */
     if (!req.admin.isSuperAdmin) {
-      filter.role = role && role !== "admin" ? role : { $ne: "admin" };
+      filter.isSuperAdmin = { $ne: true };
     }
 
     if (search) {
@@ -666,14 +659,6 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
 
     if (name) user.name = name;
     if (role) user.role = role;
-    if (role === "admin" && !req.admin.isSuperAdmin) {
-      return sendError(
-        res,
-        "Only the Super Admin can make an account a PM.",
-        403,
-      );
-    }
-
     if (projects !== undefined) {
       if (!canSetProjects(req.admin, user)) {
         return sendError(
