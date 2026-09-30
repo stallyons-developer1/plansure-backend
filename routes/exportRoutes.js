@@ -504,10 +504,10 @@ router.post("/weekly-plan", protect, async (req, res) => {
         owner: ownerFor(action.linkedActivity?.activityId),
         assignee: action.assignee?.name || "-",
         dueDate: action.dueDate
-          ? new Date(action.dueDate).toLocaleDateString()
+          ? new Date(action.dueDate).toLocaleDateString("en-GB")
           : "-",
         completedDate: action.updatedAt
-          ? new Date(action.updatedAt).toLocaleDateString()
+          ? new Date(action.updatedAt).toLocaleDateString("en-GB")
           : "-",
         priority: action.priority || "-",
       });
@@ -548,7 +548,7 @@ router.post("/weekly-plan", protect, async (req, res) => {
         owner: ownerFor(action.linkedActivity?.activityId),
         assignee: action.assignee?.name || "-",
         dueDate: action.dueDate
-          ? new Date(action.dueDate).toLocaleDateString()
+          ? new Date(action.dueDate).toLocaleDateString("en-GB")
           : "-",
         daysOverdue: daysOverdue,
         priority: action.priority || "-",
@@ -590,10 +590,10 @@ router.post("/weekly-plan", protect, async (req, res) => {
         owner: ownerFor(action.linkedActivity?.activityId),
         assignee: action.assignee?.name || "-",
         dueDate: action.dueDate
-          ? new Date(action.dueDate).toLocaleDateString()
+          ? new Date(action.dueDate).toLocaleDateString("en-GB")
           : "-",
         overrideDate: action.updatedAt
-          ? new Date(action.updatedAt).toLocaleDateString()
+          ? new Date(action.updatedAt).toLocaleDateString("en-GB")
           : "-",
         priority: action.priority || "-",
       });
@@ -1005,7 +1005,7 @@ router.post("/planner-todo", protect, async (req, res) => {
           priority: action.priority || "-",
           assignee: action.assignee?.name || "-",
           dueDate: action.dueDate
-            ? new Date(action.dueDate).toLocaleDateString()
+            ? new Date(action.dueDate).toLocaleDateString("en-GB")
             : "-",
           status: action.status || "-",
           owner: ownerFor(action.linkedActivity?.activityId),
@@ -1083,14 +1083,14 @@ router.post("/planner-todo", protect, async (req, res) => {
         priority: action.priority || "-",
         assignee: action.assignee?.name || "-",
         dueDate: action.dueDate
-          ? new Date(action.dueDate).toLocaleDateString()
+          ? new Date(action.dueDate).toLocaleDateString("en-GB")
           : "-",
         status: action.status || "-",
         owner: ownerFor(action.linkedActivity?.activityId),
         overrideReason: action.overrideReason || "-",
         overriddenBy: action.overriddenBy?.name || "-",
         overriddenAt: action.overriddenAt
-          ? new Date(action.overriddenAt).toLocaleString()
+          ? new Date(action.overriddenAt).toLocaleString("en-GB")
           : "-",
       });
     });
@@ -1119,13 +1119,13 @@ router.post("/planner-todo", protect, async (req, res) => {
         priority: action.priority || "-",
         assignee: action.assignee?.name || "-",
         dueDate: action.dueDate
-          ? new Date(action.dueDate).toLocaleDateString()
+          ? new Date(action.dueDate).toLocaleDateString("en-GB")
           : "-",
         status: action.status || "-",
         owner: ownerFor(action.linkedActivity?.activityId),
         completionNote: action.completionNote || "-",
         completedAt: action.completedAt
-          ? new Date(action.completedAt).toLocaleString()
+          ? new Date(action.completedAt).toLocaleString("en-GB")
           : "-",
       });
     });
@@ -1144,7 +1144,7 @@ router.post("/planner-todo", protect, async (req, res) => {
 
     summarySheet.addRow({
       metric: "Report Generated",
-      value: new Date().toLocaleDateString(),
+      value: new Date().toLocaleDateString("en-GB"),
     });
     summarySheet.addRow({ metric: "Week", value: currentWeek });
     if (weekStartDate && weekEndDate) {
@@ -1488,7 +1488,7 @@ router.post("/activities-pdf", protect, async (req, res) => {
       .fontSize(12)
       .font("Helvetica")
       .text(`Week: ${currentWeek}`, { align: "center" });
-    doc.fontSize(10).text(`Generated: ${new Date().toLocaleDateString()}`, {
+    doc.fontSize(10).text(`Generated: ${new Date().toLocaleDateString("en-GB")}`, {
       align: "center",
     });
     doc.moveDown(0.5);
