@@ -584,14 +584,16 @@ router.get("/:id", protect, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
+    /* Same reach as the list above. This used to admit only the current or a
+       previous assignee, which left the Planner who raised an action unable to
+       open the very row they could see listed — the list counts createdBy, the
+       detail did not. One rule now answers both. */
     if (!req.admin.isSuperAdmin) {
-      const isCurrentAssignee =
-        action.assignee?._id?.toString() === req.admin._id.toString();
-      const wasPreviouslyAssigned = action.previousAssignees?.some(
-        (pa) => pa.user?._id?.toString() === req.admin._id.toString(),
+      const allowed = await visibleProgrammeIds(req.admin);
+      const programmeId = String(
+        action.programme?._id || action.programme || "",
       );
-
-      if (!isCurrentAssignee && !wasPreviouslyAssigned) {
+      if (!allowed.some((id) => String(id) === programmeId)) {
         return sendError(res, "Access denied", 403);
       }
     }
