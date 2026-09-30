@@ -1,12 +1,11 @@
 /*
  * Marks one admin account as the Super Admin.
  *
- * The flag cannot be granted through the app — inviting someone always creates
- * a plain account — so the first owner has to be set here. Run it again to
- * hand ownership to a different account; it clears the flag from everyone else
- * so there is only ever one.
+ * The first owner has to be set here, because there is nobody to invite them.
+ * After that a Super Admin can invite another from inside the app.
  *
- *   node scripts/setSuperAdmin.js admin@plansure.com
+ *   node scripts/setSuperAdmin.js admin@plansure.com          # add an owner
+ *   node scripts/setSuperAdmin.js admin@plansure.com --only   # make it the only one
  *   node scripts/setSuperAdmin.js --show
  */
 require("dotenv").config();
@@ -64,11 +63,15 @@ const run = async () => {
     return;
   }
 
-  // Only one owner: clear the flag everywhere else first.
-  await Admin.updateMany(
-    { _id: { $ne: target._id } },
-    { $set: { isSuperAdmin: false } },
-  );
+  /* There can be several owners, so this adds one rather than handing over.
+     Pass --only to clear the flag from everyone else and make this the sole
+     owner, which is how the first one was set. */
+  if (process.argv.includes("--only")) {
+    await Admin.updateMany(
+      { _id: { $ne: target._id } },
+      { $set: { isSuperAdmin: false } },
+    );
+  }
   target.isSuperAdmin = true;
   await target.save();
 

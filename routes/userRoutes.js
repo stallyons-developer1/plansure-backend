@@ -18,6 +18,27 @@ const { protect, adminOnly } = require("../middleware/authMiddleware");
 const canManageAccount = (actor, target) =>
   actor.isSuperAdmin || !target.isSuperAdmin;
 
+/* Invitation hierarchy. An account may create another at its own level or
+   below, never above: a Planner can bring in Planners and Users, a User can
+   bring in Users. Super Admin sits above PM because it is unscoped and owns
+   the other admin accounts. */
+const LEVELS = { user: 1, planner: 2, admin: 3 };
+const levelOf = (role, isSuperAdmin) =>
+  role === "admin" && isSuperAdmin ? 4 : LEVELS[role] || 0;
+const levelOfActor = (actor) => levelOf(actor.role, actor.isSuperAdmin);
+
+/* There may be several owners now, but never none: losing the last one leaves
+   nobody who can create another, and the account cannot be restored from
+   inside the app. */
+const wouldRemoveLastSuperAdmin = async (target) => {
+  if (!target.isSuperAdmin) return false;
+  const remaining = await Admin.countDocuments({
+    isSuperAdmin: true,
+    _id: { $ne: target._id },
+  });
+  return remaining === 0;
+};
+
 /* A PM may grant any project to anyone else — User Management is unscoped for
    them. Their own record is the exception: raising their own grants would hand
    them the projects, dashboards, logs and exports that are scoped everywhere
@@ -51,7 +72,7 @@ const backendBase = () =>
 const frontendBase = () =>
   trimSlash(process.env.FRONTEND_URL) || "http://localhost:5173";
 
-router.post("/invite", protect, adminOnly, async (req, res) => {
+router.post("/invite", protect, async (req, res) => {
   try {
     const { name, email, role, projectId, projectIds } = req.body;
 
@@ -64,6 +85,23 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
 
     if (errors.length > 0) {
       return sendValidationError(res, errors);
+    }
+
+    const asSuperAdmin = role === "admin" && Boolean(req.body.isSuperAdmin);
+    const inviteeLevel = levelOf(role, asSuperAdmin);
+
+    if (!inviteeLevel) {
+      return sendValidationError(res, [
+        { field: "role", message: "Unknown role" },
+      ]);
+    }
+
+    if (inviteeLevel > levelOfActor(req.admin)) {
+      return sendError(
+        res,
+        "You can only invite someone at your own level or below.",
+        403,
+      );
     }
 
     const existingUser = await Admin.findOne({ email });
@@ -81,6 +119,21 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
         ? [projectId]
         : [];
 
+    /* An admin grants any project — User Management is unscoped for them. A
+       Planner or User can only pass on access they hold themselves, so they
+       cannot widen anyone's reach beyond their own. */
+    if (req.admin.role !== "admin" && requestedProjects.length > 0) {
+      const own = (req.admin.projects || []).map((id) => String(id));
+      const beyond = requestedProjects.filter((id) => !own.includes(String(id)));
+      if (beyond.length > 0) {
+        return sendError(
+          res,
+          "You can only grant projects you have access to yourself.",
+          403,
+        );
+      }
+    }
+
     const grantedProjects = requestedProjects;
 
     let projectName = "All Projects";
@@ -97,6 +150,7 @@ router.post("/invite", protect, adminOnly, async (req, res) => {
       name,
       email,
       role,
+      isSuperAdmin: asSuperAdmin,
       status: "pending",
       projects: grantedProjects,
       invitedBy: req.admin._id,
@@ -471,7 +525,7 @@ router.get("/invite/verify/:token", async (req, res) => {
 
 router.get("/", protect, async (req, res) => {
   try {
-    const { status, role, search } = req.query;
+    const { status, role, search, managedOnly } = req.query;
     const Action = require("../models/Action");
     const Programme = require("../models/Programme");
 
@@ -479,10 +533,19 @@ router.get("/", protect, async (req, res) => {
     if (status) filter.status = status;
     if (role) filter.role = role;
 
-    /* Everyone but the owner. The list has to agree with canManageAccount, or
+    /* Everyone but an owner. The list has to agree with canManageAccount, or
        a PM sees a row they cannot act on. */
     if (!req.admin.isSuperAdmin) {
       filter.isSuperAdmin = { $ne: true };
+    }
+
+    /* managedOnly is what the User Management screen asks for: the accounts
+       this person brought in and may therefore act on. It is opt-in because
+       the same endpoint feeds the assignee dropdowns, which need the whole
+       active list regardless of who invited whom. Admins manage everyone, so
+       the narrowing only applies below them. */
+    if (managedOnly === "true" && req.admin.role !== "admin") {
+      filter.invitedBy = req.admin._id;
     }
 
     if (search) {
@@ -647,6 +710,20 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
         res,
         "The Super Admin account cannot be changed from here.",
         403,
+      );
+    }
+
+    /* Moving the last owner off the admin role would leave the system with
+       nobody who can promote another. Same reasoning as deletion. */
+    if (
+      role &&
+      role !== "admin" &&
+      (await wouldRemoveLastSuperAdmin(user))
+    ) {
+      return sendError(
+        res,
+        "This is the last Super Admin. Promote another account before changing this one's role.",
+        409,
       );
     }
 
@@ -831,6 +908,14 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
       return sendValidationError(res, [
         { field: "user", message: "You cannot delete yourself" },
       ]);
+    }
+
+    if (await wouldRemoveLastSuperAdmin(user)) {
+      return sendError(
+        res,
+        "This is the last Super Admin. Promote another account before removing this one.",
+        409,
+      );
     }
 
     /* Deleting an account that appears in the record would leave the audit
