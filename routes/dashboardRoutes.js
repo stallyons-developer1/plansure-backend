@@ -242,12 +242,26 @@ router.get("/stats", protect, async (req, res) => {
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
 
+    /* The six-week lookahead, by date — the same test the workspace applies,
+       so the dashboard and the Activities table agree on what is "in view".
+       An activity with no start date counts, exactly as it does there.
+       Counting by RAG instead would have hidden every unassigned activity,
+       which is how the card came to read 1 where the table showed 5. */
+    const sixWeekEnd = new Date(startOfToday);
+    sixWeekEnd.setDate(sixWeekEnd.getDate() + 42);
+    let lookaheadCount = 0;
+
     for (const prog of programmes) {
       const activities = prog.extractedData?.activities || [];
 
       totalActivities += activities.length;
 
       for (const activity of activities) {
+        const start = parseDate(activity.startDate);
+        if (!start || (start >= startOfToday && start < sixWeekEnd)) {
+          lookaheadCount++;
+        }
+
         const rag = storedRag(activity);
         if (rag === "Green") greenCount++;
         else if (rag === "Amber") amberCount++;
@@ -301,7 +315,7 @@ router.get("/stats", protect, async (req, res) => {
         },
         activities: {
           total: totalActivities,
-          inLookahead: greenCount + amberCount + redCount,
+          inLookahead: lookaheadCount,
           green: greenCount,
           amber: amberCount,
           red: redCount,
