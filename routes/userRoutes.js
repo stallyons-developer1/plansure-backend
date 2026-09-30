@@ -833,6 +833,34 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
       ]);
     }
 
+    /* Deleting an account that appears in the record would leave the audit
+       trail pointing at nothing — a closure would survive with no one against
+       it, and MS-05 requires those names to stay. Accounts with no history (a
+       mistyped invite, a test account) delete cleanly; the rest are refused.
+       Revoking access for someone who has worked needs a soft delete that
+       keeps the name on the record, which does not exist yet. */
+    const Action = require("../models/Action");
+    const AuditLog = require("../models/AuditLog");
+
+    const [actionCount, auditCount] = await Promise.all([
+      Action.countDocuments({
+        $or: [
+          { assignee: user._id },
+          { createdBy: user._id },
+          { overriddenBy: user._id },
+        ],
+      }),
+      AuditLog.countDocuments({ performedBy: user._id }),
+    ]);
+
+    if (actionCount > 0 || auditCount > 0) {
+      return sendError(
+        res,
+        "This user has already worked on actions or appears in the audit log. Deleting the account would leave those records pointing at no one, so it cannot be removed.",
+        409,
+      );
+    }
+
     await Admin.findByIdAndDelete(req.params.id);
 
     return sendSuccess(res, {}, "User deleted successfully");
