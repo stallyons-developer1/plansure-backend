@@ -603,6 +603,16 @@ router.get("/", protect, async (req, res) => {
       users.map(async (user) => {
         let projectNames = [];
 
+        /* Who may act on this row. An admin manages everyone; a Planner or a
+           User only the accounts they brought in themselves, so the controls
+           are greyed out on anyone else's. The Super Admin's row stays out of
+           a PM's reach, as elsewhere. */
+        const canManage =
+          canManageAccount(req.admin, user) &&
+          (req.admin.role === "admin" ||
+            String(user.invitedBy?._id || user.invitedBy || "") ===
+              String(req.admin._id));
+
         if (user.role === "admin" && user.isSuperAdmin) {
           return {
             _id: user._id,
@@ -611,6 +621,7 @@ router.get("/", protect, async (req, res) => {
             role: user.role,
             isSuperAdmin: !!user.isSuperAdmin,
             status: user.status,
+            canManage,
             projectAccess: "All Projects",
             // Admins are not scoped to projects, so they match any project filter.
             allProjects: true,
@@ -670,6 +681,7 @@ router.get("/", protect, async (req, res) => {
           role: user.role,
           isSuperAdmin: !!user.isSuperAdmin,
           status: user.status,
+          canManage,
           projectAccess:
             projectNames.length > 0 ? projectNames.join(", ") : "No Projects",
           allProjects: false,
