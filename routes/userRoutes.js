@@ -539,20 +539,52 @@ router.get("/", protect, async (req, res) => {
       filter.isSuperAdmin = { $ne: true };
     }
 
-    /* managedOnly is what the User Management screen asks for: the accounts
-       this person brought in and may therefore act on. It is opt-in because
-       the same endpoint feeds the assignee dropdowns, which need the whole
-       active list regardless of who invited whom. Admins manage everyone, so
-       the narrowing only applies below them. */
-    if (managedOnly === "true" && req.admin.role !== "admin") {
-      filter.invitedBy = req.admin._id;
+    /* managedOnly is what the User Management screen asks for. It is opt-in
+       because the same endpoint feeds the assignee dropdowns, which need the
+       whole active list.
+
+       An account is visible to you when you share a project with it. An
+       account with no project yet belongs to nobody's project, so it would
+       otherwise vanish the moment it is created — those stay visible to every
+       admin, and to whoever sent the invitation, so the person who created it
+       can still find it and grant the project. The Super Admin sees all. */
+    const visibility = [];
+    if (managedOnly === "true" && !req.admin.isSuperAdmin) {
+      const myProjects = (req.admin.projects || []).map((id) => String(id));
+
+      if (myProjects.length > 0) {
+        visibility.push({ projects: { $in: myProjects } });
+      }
+
+      if (req.admin.role === "admin") {
+        visibility.push({ projects: { $size: 0 } });
+        visibility.push({ projects: { $exists: false } });
+      }
+
+      // Whoever sent the invitation keeps sight of it, and everyone sees
+      // their own row.
+      visibility.push({ invitedBy: req.admin._id });
+      visibility.push({ _id: req.admin._id });
     }
 
-    if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: "i" } },
-        { email: { $regex: search, $options: "i" } },
-      ];
+    const searchClause = search
+      ? {
+          $or: [
+            { name: { $regex: search, $options: "i" } },
+            { email: { $regex: search, $options: "i" } },
+          ],
+        }
+      : null;
+
+    /* Two $or clauses cannot sit side by side on one object, so they are
+       combined rather than one quietly replacing the other. */
+    const clauses = [];
+    if (visibility.length > 0) clauses.push({ $or: visibility });
+    if (searchClause) clauses.push(searchClause);
+    if (clauses.length === 1) {
+      Object.assign(filter, clauses[0]);
+    } else if (clauses.length > 1) {
+      filter.$and = clauses;
     }
 
     const users = await Admin.find(filter)
