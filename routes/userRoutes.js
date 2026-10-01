@@ -3,7 +3,7 @@ const router = express.Router();
 const crypto = require("crypto");
 const Admin = require("../models/Admin");
 const Project = require("../models/Project");
-const { protect, adminOnly } = require("../middleware/authMiddleware");
+const { protect } = require("../middleware/authMiddleware");
 
 /* A PM has the same reach as the Super Admin in User Management — they see and
  * manage every account. Two things stay out of their hands:
@@ -26,6 +26,18 @@ const LEVELS = { user: 1, planner: 2, admin: 3 };
 const levelOf = (role, isSuperAdmin) =>
   role === "admin" && isSuperAdmin ? 4 : LEVELS[role] || 0;
 const levelOfActor = (actor) => levelOf(actor.role, actor.isSuperAdmin);
+
+/* Who may act on an account. An admin manages everyone; below that you manage
+   only the accounts you invited. The same test the list sends out as
+   canManage, so a control the screen offers is one the server will accept. */
+const mayManage = (actor, target) =>
+  canManageAccount(actor, target) &&
+  (actor.role === "admin" ||
+    String(target.invitedBy?._id || target.invitedBy || "") ===
+      String(actor._id));
+
+const NOT_YOURS =
+  "You can only change the accounts you invited.";
 
 /* There may be several owners now, but never none: losing the last one leaves
    nobody who can create another, and the account cannot be restored from
@@ -711,7 +723,7 @@ router.get("/", protect, async (req, res) => {
   }
 });
 
-router.get("/:id", protect, adminOnly, async (req, res) => {
+router.get("/:id", protect, async (req, res) => {
   try {
     const user = await Admin.findById(req.params.id)
       .select("-password -inviteToken -inviteTokenExpiry")
@@ -722,10 +734,12 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!canManageAccount(req.admin, user)) {
+    if (!mayManage(req.admin, user)) {
       return sendError(
         res,
-        "The Super Admin account cannot be changed from here.",
+        canManageAccount(req.admin, user)
+          ? NOT_YOURS
+          : "The Super Admin account cannot be changed from here.",
         403,
       );
     }
@@ -737,7 +751,7 @@ router.get("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.put("/:id", protect, adminOnly, async (req, res) => {
+router.put("/:id", protect, async (req, res) => {
   try {
     const { name, role, projects, status } = req.body;
 
@@ -749,10 +763,12 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!canManageAccount(req.admin, user)) {
+    if (!mayManage(req.admin, user)) {
       return sendError(
         res,
-        "The Super Admin account cannot be changed from here.",
+        canManageAccount(req.admin, user)
+          ? NOT_YOURS
+          : "The Super Admin account cannot be changed from here.",
         403,
       );
     }
@@ -769,6 +785,33 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
         "This is the last Super Admin. Promote another account before changing this one's role.",
         409,
       );
+    }
+
+    /* The same ceiling the invitation obeys: nobody may hand out a role above
+       their own, so a Planner cannot promote their invitee past themselves. */
+    if (role && levelOf(role, false) > levelOfActor(req.admin)) {
+      return sendError(
+        res,
+        "You can only set a role at your own level or below.",
+        403,
+      );
+    }
+
+    /* And nobody below an admin may widen access past their own. */
+    if (
+      projects !== undefined &&
+      req.admin.role !== "admin" &&
+      Array.isArray(projects)
+    ) {
+      const own = (req.admin.projects || []).map((id) => String(id));
+      const beyond = projects.filter((id) => !own.includes(String(id)));
+      if (beyond.length > 0) {
+        return sendError(
+          res,
+          "You can only grant projects you have access to yourself.",
+          403,
+        );
+      }
     }
 
     const wasPending = user.status === "pending";
@@ -891,7 +934,7 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.patch("/:id/block", protect, adminOnly, async (req, res) => {
+router.patch("/:id/block", protect, async (req, res) => {
   try {
     const user = await Admin.findById(req.params.id);
 
@@ -899,10 +942,12 @@ router.patch("/:id/block", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!canManageAccount(req.admin, user)) {
+    if (!mayManage(req.admin, user)) {
       return sendError(
         res,
-        "The Super Admin account cannot be changed from here.",
+        canManageAccount(req.admin, user)
+          ? NOT_YOURS
+          : "The Super Admin account cannot be changed from here.",
         403,
       );
     }
@@ -932,7 +977,7 @@ router.patch("/:id/block", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.delete("/:id", protect, adminOnly, async (req, res) => {
+router.delete("/:id", protect, async (req, res) => {
   try {
     const user = await Admin.findById(req.params.id);
 
@@ -940,10 +985,12 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!canManageAccount(req.admin, user)) {
+    if (!mayManage(req.admin, user)) {
       return sendError(
         res,
-        "The Super Admin account cannot be changed from here.",
+        canManageAccount(req.admin, user)
+          ? NOT_YOURS
+          : "The Super Admin account cannot be changed from here.",
         403,
       );
     }
@@ -971,7 +1018,7 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.post("/:id/resend-invite", protect, adminOnly, async (req, res) => {
+router.post("/:id/resend-invite", protect, async (req, res) => {
   try {
     const user = await Admin.findById(req.params.id).populate(
       "projects",
@@ -982,10 +1029,12 @@ router.post("/:id/resend-invite", protect, adminOnly, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!canManageAccount(req.admin, user)) {
+    if (!mayManage(req.admin, user)) {
       return sendError(
         res,
-        "The Super Admin account cannot be changed from here.",
+        canManageAccount(req.admin, user)
+          ? NOT_YOURS
+          : "The Super Admin account cannot be changed from here.",
         403,
       );
     }
