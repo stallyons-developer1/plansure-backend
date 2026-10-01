@@ -2588,7 +2588,7 @@ router.get("/:id/weekly-control", protect, async (req, res) => {
 const checkCloseOutEligible = (programmeId) =>
   evaluateCloseOutEligibility(programmeId);
 
-router.patch("/:id/cycle-status", protect, adminOrPlanner, async (req, res) => {
+router.patch("/:id/cycle-status", protect, async (req, res) => {
   try {
     const { cycleStatus, overrideReason } = req.body;
 
@@ -2628,6 +2628,21 @@ router.patch("/:id/cycle-status", protect, adminOrPlanner, async (req, res) => {
       return sendError(
         res,
         `Only the PM can move a week to "${cycleStatus}".`,
+        403,
+      );
+    }
+
+    /* A User owns actions rather than the programme, so the only step they
+       take is starting execution — otherwise their own work sits blocked
+       waiting for someone else. Opening and closing the week stay with the
+       Planner and the PM. */
+    if (
+      !["admin", "planner"].includes(req.admin.role) &&
+      cycleStatus !== "Execution"
+    ) {
+      return sendError(
+        res,
+        `Only the PM or the Planner can move a week to "${cycleStatus}".`,
         403,
       );
     }
