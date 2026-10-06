@@ -23,6 +23,10 @@ const run = async () => {
   const apply = process.argv.includes("--apply");
 
   await mongoose.connect(process.env.MONGO_URI);
+  /* populate needs the referenced model registered, and a script loads only
+     what it asks for — unlike the server, which pulls every model in through
+     the routes. */
+  require("../models/Project");
   const Admin = require("../models/Admin");
 
   const accounts = await Admin.find().populate("projects", "name");
