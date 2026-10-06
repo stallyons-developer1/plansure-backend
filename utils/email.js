@@ -105,8 +105,26 @@ const sendInviteEmail = async (options) => {
           <h2>Hello ${options.name},</h2>
           <p>You've been invited by <strong>${options.invitedByName}</strong> to join Plansure as a team member.</p>
 
-          <p><strong>Your Role:</strong></p>
-          <span class="role-badge ${options.role}">${roleLabel(options.role)}</span>
+          ${
+            Array.isArray(options.memberships) && options.memberships.length > 0
+              ? /* One role per project: the same person can run one programme
+                   and only watch another, so a single badge would be wrong. */
+                `<p><strong>Your Access:</strong></p>
+                 <table style="border-collapse:collapse;margin:10px 0;">
+                   ${options.memberships
+                     .map(
+                       (m) => `<tr>
+                         <td style="padding:4px 16px 4px 0;">${m.projectName}</td>
+                         <td style="padding:4px 0;">
+                           <span class="role-badge ${m.role}">${roleLabel(m.role)}</span>
+                         </td>
+                       </tr>`,
+                     )
+                     .join("")}
+                 </table>`
+              : `<p><strong>Your Role:</strong></p>
+                 <span class="role-badge ${options.role}">${roleLabel(options.role)}</span>`
+          }
 
 
           <p>Click below to accept or decline this invitation:</p>

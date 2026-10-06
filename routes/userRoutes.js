@@ -83,6 +83,20 @@ const buildMemberships = (actor, body) => {
   };
 };
 
+/* Each project with the role held on it, named, for the invitation email. */
+const namedMembershipsFor = async (user) => {
+  const rows = user.memberships || [];
+  if (rows.length === 0) return [];
+  const ids = rows.map((m) => String(m.project?._id || m.project));
+  const named = await Project.find({ _id: { $in: ids } }).select("name");
+  const nameById = new Map(named.map((p) => [String(p._id), p.name]));
+  return rows.map((m) => ({
+    projectName:
+      nameById.get(String(m.project?._id || m.project)) || "Project",
+    role: m.role,
+  }));
+};
+
 const NOT_YOURS =
   "You can only change the accounts you invited.";
 
@@ -181,6 +195,7 @@ router.post("/invite", protect, async (req, res) => {
     const grantedProjects = memberships.map((m) => m.project);
 
     let projectName = "All Projects";
+    let namedMemberships = [];
     if (grantedProjects.length > 0) {
       const named = await Project.find({
         _id: { $in: grantedProjects },
@@ -188,6 +203,13 @@ router.post("/invite", protect, async (req, res) => {
       if (named.length > 0) {
         projectName = named.map((p) => p.name).join(", ");
       }
+      /* The invitation names each project with the role held on it, because
+         one person can be the PM of one and only a User on the next. */
+      const nameById = new Map(named.map((p) => [String(p._id), p.name]));
+      namedMemberships = memberships.map((m) => ({
+        projectName: nameById.get(String(m.project)) || "Project",
+        role: m.role,
+      }));
     }
 
     const user = new Admin({
@@ -225,6 +247,7 @@ router.post("/invite", protect, async (req, res) => {
         email: user.email,
         name: user.name,
         role: user.role,
+        memberships: namedMemberships,
         projectName,
         invitedByName: req.admin.name,
         acceptUrl,
@@ -954,6 +977,7 @@ router.put("/:id", protect, async (req, res) => {
           email: user.email,
           name: user.name,
           role: user.role,
+          memberships: await namedMembershipsFor(user),
           projectName,
           invitedByName: req.admin.name,
           acceptUrl,
@@ -1161,6 +1185,7 @@ router.post("/:id/resend-invite", protect, async (req, res) => {
         email: user.email,
         name: user.name,
         role: user.role,
+        memberships: await namedMembershipsFor(user),
         projectName,
         invitedByName: req.admin.name,
         acceptUrl,
