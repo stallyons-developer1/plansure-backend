@@ -36,6 +36,29 @@ const adminSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    /* What the account holds, project by project. One person can run one
+       programme as its PM and only watch another as a User, which is how the
+       client's own teams work.
+
+       `role` and `projects` above are kept in step with this list rather than
+       set by hand: `role` is the highest membership held, used to decide where
+       a sign-in lands, and `projects` is the set of projects reached. Every
+       existing scope check reads those two, so they stay correct without being
+       rewritten. A decision about one project reads memberships directly. */
+    memberships: [
+      {
+        project: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Project",
+          required: true,
+        },
+        role: {
+          type: String,
+          enum: ["admin", "planner", "user"],
+          required: true,
+        },
+      },
+    ],
     projects: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -108,6 +131,49 @@ adminSchema.methods.generatePasswordResetToken = function () {
   this.resetPasswordTokenExpiry = Date.now() + 60 * 60 * 1000;
   return token;
 };
+
+/* Highest first, so "the strongest role this account holds" is a max. */
+const ROLE_RANK = { user: 1, planner: 2, admin: 3 };
+
+/* The role this account holds on one project. A Super Admin reaches every
+   project as an admin, which is the whole point of the flag. */
+adminSchema.methods.roleOn = function (projectId) {
+  if (this.isSuperAdmin) return "admin";
+  if (!projectId) return null;
+  const target = String(projectId);
+  const found = (this.memberships || []).find(
+    (m) => String(m.project?._id || m.project) === target,
+  );
+  return found ? found.role : null;
+};
+
+/* Keeps `role` and `projects` as a summary of the memberships, so the scope
+   checks written against them stay true. Called before every save. */
+adminSchema.methods.syncFromMemberships = function () {
+  if (!Array.isArray(this.memberships) || this.memberships.length === 0) return;
+
+  this.projects = [
+    ...new Map(
+      this.memberships.map((m) => [
+        String(m.project?._id || m.project),
+        m.project?._id || m.project,
+      ]),
+    ).values(),
+  ];
+
+  this.role = this.memberships.reduce(
+    (best, m) =>
+      (ROLE_RANK[m.role] || 0) > (ROLE_RANK[best] || 0) ? m.role : best,
+    "user",
+  );
+};
+
+adminSchema.pre("save", function (next) {
+  if (this.isModified("memberships")) {
+    this.syncFromMemberships();
+  }
+  next();
+});
 
 adminSchema.pre("save", async function () {
   if (!this.isModified("password") || !this.password) {
