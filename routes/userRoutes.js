@@ -36,6 +36,53 @@ const mayManage = (actor, target) =>
     String(target.invitedBy?._id || target.invitedBy || "") ===
       String(actor._id));
 
+/* Turns what the form sends into membership rows, and refuses anything the
+   person sending it could not grant: a role above their own, or a project they
+   do not hold themselves. Accepts the older shape — one role with a list of
+   projects — so existing callers keep working. */
+const buildMemberships = (actor, body) => {
+  const rows = Array.isArray(body.memberships)
+    ? body.memberships
+        .filter((m) => m && m.project && m.role)
+        .map((m) => ({ project: String(m.project), role: m.role }))
+    : (Array.isArray(body.projectIds)
+        ? body.projectIds
+        : body.projectId
+          ? [body.projectId]
+          : []
+      )
+        .filter(Boolean)
+        .map((id) => ({ project: String(id), role: body.role })),
+    seen = new Map();
+
+  for (const row of rows) {
+    if (!LEVELS[row.role]) {
+      return { error: `Unknown role "${row.role}".` };
+    }
+    if (levelOf(row.role, false) > levelOfActor(actor)) {
+      return { error: "You can only grant a role at your own level or below." };
+    }
+    seen.set(row.project, row.role);
+  }
+
+  /* An admin grants any project. Below that you can only pass on what you
+     already hold, so nobody widens anyone's reach beyond their own. */
+  if (actor.role !== "admin" && seen.size > 0) {
+    const own = (actor.projects || []).map((id) => String(id));
+    const beyond = [...seen.keys()].filter((id) => !own.includes(id));
+    if (beyond.length > 0) {
+      return { error: "You can only grant projects you have access to yourself." };
+    }
+  }
+
+  return {
+    memberships: [...seen.entries()].map(([project, role]) => ({
+      project,
+      role,
+    })),
+  };
+};
+
 const NOT_YOURS =
   "You can only change the accounts you invited.";
 
@@ -125,28 +172,13 @@ router.post("/invite", protect, async (req, res) => {
 
     /* A user can be granted several projects at invite time. projectId is
        still accepted so older callers keep working. */
-    const requestedProjects = Array.isArray(projectIds)
-      ? projectIds.filter(Boolean)
-      : projectId
-        ? [projectId]
-        : [];
-
-    /* An admin grants any project — User Management is unscoped for them. A
-       Planner or User can only pass on access they hold themselves, so they
-       cannot widen anyone's reach beyond their own. */
-    if (req.admin.role !== "admin" && requestedProjects.length > 0) {
-      const own = (req.admin.projects || []).map((id) => String(id));
-      const beyond = requestedProjects.filter((id) => !own.includes(String(id)));
-      if (beyond.length > 0) {
-        return sendError(
-          res,
-          "You can only grant projects you have access to yourself.",
-          403,
-        );
-      }
+    const built = buildMemberships(req.admin, req.body);
+    if (built.error) {
+      return sendError(res, built.error, 403);
     }
 
-    const grantedProjects = requestedProjects;
+    const memberships = built.memberships;
+    const grantedProjects = memberships.map((m) => m.project);
 
     let projectName = "All Projects";
     if (grantedProjects.length > 0) {
@@ -161,9 +193,13 @@ router.post("/invite", protect, async (req, res) => {
     const user = new Admin({
       name,
       email,
+      /* role and projects are a summary of the memberships; the model keeps
+         them in step on save. They are set here too so an invitation with no
+         project at all still has a role to show. */
       role,
       isSuperAdmin: asSuperAdmin,
       status: "pending",
+      memberships,
       projects: grantedProjects,
       invitedBy: req.admin._id,
     });
@@ -602,6 +638,7 @@ router.get("/", protect, async (req, res) => {
     const users = await Admin.find(filter)
       .select("-password -inviteToken -inviteTokenExpiry")
       .populate("projects", "name")
+      .populate("memberships.project", "name")
       .populate("invitedBy", "name")
       .sort({ createdAt: -1 });
 
@@ -634,6 +671,9 @@ router.get("/", protect, async (req, res) => {
             isSuperAdmin: !!user.isSuperAdmin,
             status: user.status,
             canManage,
+            /* Empty for an owner: the flag reaches every project, so there is
+               nothing per-project to list. */
+            memberships: [],
             projectAccess: "All Projects",
             // Admins are not scoped to projects, so they match any project filter.
             allProjects: true,
@@ -694,6 +734,15 @@ router.get("/", protect, async (req, res) => {
           isSuperAdmin: !!user.isSuperAdmin,
           status: user.status,
           canManage,
+          /* What the account holds, project by project — what the edit form
+             shows and sends back. */
+          memberships: (user.memberships || [])
+            .filter((m) => m.project)
+            .map((m) => ({
+              project: String(m.project._id || m.project),
+              projectName: m.project.name || "",
+              role: m.role,
+            })),
           projectAccess:
             projectNames.length > 0 ? projectNames.join(", ") : "No Projects",
           allProjects: false,
@@ -848,8 +897,13 @@ router.put("/:id", protect, async (req, res) => {
     const oldRole = user.role;
 
     if (name) user.name = name;
-    if (role) user.role = role;
-    if (projects !== undefined) {
+
+    /* Memberships are the real record now. When the form sends them, they
+       replace what was there; `role` and `projects` follow from them on save.
+       The older shape — one role with a list of projects — still works, so
+       anything still sending that keeps going. */
+    const sendsMemberships = Array.isArray(req.body.memberships);
+    if (sendsMemberships || projects !== undefined) {
       if (!canSetProjects(req.admin, user)) {
         return sendError(
           res,
@@ -857,11 +911,23 @@ router.put("/:id", protect, async (req, res) => {
           403,
         );
       }
-      user.projects = projects;
+      const built = buildMemberships(req.admin, req.body);
+      if (built.error) {
+        return sendError(res, built.error, 403);
+      }
+      user.memberships = built.memberships;
+      user.projects = built.memberships.map((m) => m.project);
+      if (built.memberships.length === 0 && role) user.role = role;
+    } else if (role) {
+      user.role = role;
     }
+
     if (status) user.status = status;
 
-    const newProjects = (projects || []).sort().join(",");
+    const newProjects = (user.projects || [])
+      .map((p) => String(p._id || p))
+      .sort()
+      .join(",");
     /* A pending invite is tied to the account, not the address, so moving the
        address would leave the link sitting in the old inbox. Reissue it. */
     const shouldResendInvite =
