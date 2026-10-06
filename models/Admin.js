@@ -168,11 +168,12 @@ adminSchema.methods.syncFromMemberships = function () {
   );
 };
 
-adminSchema.pre("save", function (next) {
+/* Promise-style, like the hashing hook below. Taking a `next` callback here
+   broke every save on the model. */
+adminSchema.pre("save", async function () {
   if (this.isModified("memberships")) {
     this.syncFromMemberships();
   }
-  next();
 });
 
 adminSchema.pre("save", async function () {
