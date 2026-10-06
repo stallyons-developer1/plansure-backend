@@ -753,7 +753,7 @@ router.get("/:id", protect, async (req, res) => {
 
 router.put("/:id", protect, async (req, res) => {
   try {
-    const { name, role, projects, status } = req.body;
+    const { name, email, role, projects, status } = req.body;
 
     const user = await Admin.findById(req.params.id).populate(
       "projects",
@@ -814,6 +814,32 @@ router.put("/:id", protect, async (req, res) => {
       }
     }
 
+    /* The form offers the address as an editable, required field, so it has to
+       be accepted here — it was being shown, typed into, and silently dropped.
+       Changing it moves the account, so the address has to stay unique. */
+    const oldEmail = user.email;
+    const emailChanged =
+      typeof email === "string" &&
+      email.trim() !== "" &&
+      email.trim().toLowerCase() !== oldEmail.toLowerCase();
+
+    if (emailChanged) {
+      const emailError = validateEmail(email);
+      if (emailError) {
+        return sendValidationError(res, [emailError]);
+      }
+      const taken = await Admin.findOne({
+        email: email.trim().toLowerCase(),
+        _id: { $ne: user._id },
+      });
+      if (taken) {
+        return sendValidationError(res, [
+          { field: "email", message: "Another user already has this email" },
+        ]);
+      }
+      user.email = email.trim().toLowerCase();
+    }
+
     const wasPending = user.status === "pending";
     const oldProjects = user.projects
       .map((p) => p._id.toString())
@@ -836,8 +862,11 @@ router.put("/:id", protect, async (req, res) => {
     if (status) user.status = status;
 
     const newProjects = (projects || []).sort().join(",");
+    /* A pending invite is tied to the account, not the address, so moving the
+       address would leave the link sitting in the old inbox. Reissue it. */
     const shouldResendInvite =
-      wasPending && (oldProjects !== newProjects || oldRole !== role);
+      wasPending &&
+      (oldProjects !== newProjects || oldRole !== role || emailChanged);
 
     if (shouldResendInvite) {
       const inviteToken = user.generateInviteToken();
