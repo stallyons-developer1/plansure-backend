@@ -940,6 +940,10 @@ router.put("/:id", protect, async (req, res) => {
       }
       user.memberships = built.memberships;
       user.projects = built.memberships.map((m) => m.project);
+      /* The save hook derives `role` and `projects` from the memberships, but
+         the notice below has to compare before and after, so bring them up to
+         date here. Running it twice costs nothing. */
+      user.syncFromMemberships();
       if (built.memberships.length === 0 && role) user.role = role;
     } else if (role) {
       user.role = role;
@@ -947,15 +951,18 @@ router.put("/:id", protect, async (req, res) => {
 
     if (status) user.status = status;
 
-    const newProjects = (user.projects || [])
-      .map((p) => String(p._id || p))
-      .sort()
-      .join(",");
+    const newProjectIds = (user.projects || []).map((p) => String(p._id || p));
+    const newProjects = [...newProjectIds].sort().join(",");
+    /* The account as it now stands, not what the form happened to send. The
+       form sends `memberships`, so `role` and `projects` arrive undefined —
+       comparing against them reported a change on every edit, and named the
+       new access "All Projects" however little had moved. */
+    const newRole = user.role;
     /* A pending invite is tied to the account, not the address, so moving the
        address would leave the link sitting in the old inbox. Reissue it. */
     const shouldResendInvite =
       wasPending &&
-      (oldProjects !== newProjects || oldRole !== role || emailChanged);
+      (oldProjects !== newProjects || oldRole !== newRole || emailChanged);
 
     if (shouldResendInvite) {
       const inviteToken = user.generateInviteToken();
@@ -963,9 +970,9 @@ router.put("/:id", protect, async (req, res) => {
 
       const Project = require("../models/Project");
       let projectName = "All Projects";
-      if (projects && projects.length > 0) {
-        const projectDocs = await Project.find({ _id: { $in: projects } });
-        projectName = projectDocs.map((p) => p.name).join(", ");
+      if (newProjectIds.length > 0) {
+        const projectDocs = await Project.find({ _id: { $in: newProjectIds } });
+        projectName = projectDocs.map((p) => p.name).join(", ") || projectName;
       }
 
       const backendUrl = backendBase();
@@ -1000,7 +1007,7 @@ router.put("/:id", protect, async (req, res) => {
 
     const wasActive = !wasPending && user.status === "active";
     const shouldNotifyActiveUser =
-      wasActive && (oldProjects !== newProjects || oldRole !== role);
+      wasActive && (oldProjects !== newProjects || oldRole !== newRole);
 
     await user.save();
 
@@ -1020,8 +1027,10 @@ router.put("/:id", protect, async (req, res) => {
       }
 
       let newProjectName = "All Projects";
-      if (projects && projects.length > 0) {
-        const newProjectDocs = await Project.find({ _id: { $in: projects } });
+      if (newProjectIds.length > 0) {
+        const newProjectDocs = await Project.find({
+          _id: { $in: newProjectIds },
+        });
         newProjectName =
           newProjectDocs.map((p) => p.name).join(", ") || "All Projects";
       }
@@ -1031,9 +1040,7 @@ router.put("/:id", protect, async (req, res) => {
           email: user.email,
           name: user.name,
           oldRole: oldRole.charAt(0).toUpperCase() + oldRole.slice(1),
-          newRole:
-            (role || oldRole).charAt(0).toUpperCase() +
-            (role || oldRole).slice(1),
+          newRole: newRole.charAt(0).toUpperCase() + newRole.slice(1),
           oldProject: oldProjectName,
           newProject: newProjectName,
         });
