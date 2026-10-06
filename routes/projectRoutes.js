@@ -77,39 +77,14 @@ router.get("/", protect, async (req, res) => {
 
     if (!req.admin.isSuperAdmin) {
       /*
-       * A non-admin sees a project either because it was granted to them
-       * directly, or because work on it was assigned to them.
-       *
-       * The granted half used to apply to planners only, so a `user` invited
-       * with projects saw nothing until an action happened to land on them.
-       * Both halves now apply to both roles.
+       * A non-admin sees exactly the projects granted to them, and nothing
+       * else. An action used to carry its own access, which meant one action
+       * landing on someone put a whole project in their list — a User given
+       * Programme Two could end up looking at every other programme too.
+       * Being assigned work is not the same as being given the project.
        */
-      const assignedProjectIds = (req.admin.projects || []).map((p) =>
-        p.toString(),
-      );
-
-      const userActions = await Action.find({
-        $or: [
-          { assignee: req.admin._id },
-          { "previousAssignees.user": req.admin._id },
-        ],
-      }).select("programme");
-
-      let actionProjectIds = [];
-      if (userActions.length > 0) {
-        const programmeIds = [
-          ...new Set(userActions.map((a) => a.programme.toString())),
-        ];
-        const programmes = await Programme.find({
-          _id: { $in: programmeIds },
-        }).select("project");
-        actionProjectIds = programmes
-          .map((p) => p.project?.toString())
-          .filter(Boolean);
-      }
-
       const projectIds = [
-        ...new Set([...assignedProjectIds, ...actionProjectIds]),
+        ...new Set((req.admin.projects || []).map((p) => p.toString())),
       ];
 
       if (projectIds.length === 0) {
