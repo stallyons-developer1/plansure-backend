@@ -5,9 +5,10 @@ const Programme = require("../models/Programme");
 const Action = require("../models/Action");
 const {
   protect,
-  adminOnly,
   adminOrPlanner,
 } = require("../middleware/authMiddleware");
+const { projectAdmin, projectAdminOrPlanner } =
+  require("../middleware/projectAccess");
 const {
   sendValidationError,
   sendError,
@@ -479,6 +480,10 @@ router.get("/", protect, async (req, res) => {
           openActions: openActionsCount,
           progress,
           governanceScore,
+          /* The role this account holds here, which is not the same everywhere:
+             the screens read it so a Planner on one programme is not offered
+             Planner controls on another they only watch. */
+          myRole: req.admin.roleOn(project._id),
         };
       }),
     );
@@ -534,7 +539,9 @@ router.get("/:id", protect, async (req, res) => {
       }
     }
 
-    return sendSuccess(res, { project });
+    return sendSuccess(res, {
+      project: { ...project.toObject(), myRole: req.admin.roleOn(project._id) },
+    });
   } catch (error) {
     console.error(error);
     return sendError(res, "Server error");
@@ -547,7 +554,10 @@ router.get("/:id", protect, async (req, res) => {
  * before a programme exists, so there is nothing else server-side to hang it
  * on, and while it lived in localStorage each account saw a different stage
  * for the same project (MS-05 B6/AC1). */
-router.patch("/:id/meeting-open", protect, adminOrPlanner, async (req, res) => {
+router.patch(
+  "/:id/meeting-open",
+  protect,
+  projectAdminOrPlanner("project"), async (req, res) => {
   try {
     const { open } = req.body;
 
@@ -574,7 +584,7 @@ router.patch("/:id/meeting-open", protect, adminOrPlanner, async (req, res) => {
   }
 });
 
-router.put("/:id", protect, adminOnly, async (req, res) => {
+router.put("/:id", protect, projectAdmin("project"), async (req, res) => {
   try {
     const { name, phase, description, startDate, endDate, status } = req.body;
 
@@ -633,7 +643,7 @@ router.put("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.delete("/:id", protect, adminOnly, async (req, res) => {
+router.delete("/:id", protect, projectAdmin("project"), async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
 
@@ -660,7 +670,7 @@ router.delete("/:id", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.post("/:id/team", protect, adminOnly, async (req, res) => {
+router.post("/:id/team", protect, projectAdmin("project"), async (req, res) => {
   try {
     const { userId, role } = req.body;
 
@@ -714,7 +724,7 @@ router.post("/:id/team", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.delete("/:id/team/:userId", protect, adminOnly, async (req, res) => {
+router.delete("/:id/team/:userId", protect, projectAdmin("project"), async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
     if (!project) {
@@ -747,7 +757,7 @@ router.delete("/:id/team/:userId", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.post("/:id/programmes", protect, adminOnly, async (req, res) => {
+router.post("/:id/programmes", protect, projectAdmin("project"), async (req, res) => {
   try {
     const { programmeId } = req.body;
 

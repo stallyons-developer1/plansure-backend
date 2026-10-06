@@ -8,9 +8,10 @@ const Action = require("../models/Action");
 const {
   protect,
   adminOnly,
-  adminOrPlanner,
   plannerOnly,
 } = require("../middleware/authMiddleware");
+const { projectAdmin, projectPlanner } =
+  require("../middleware/projectAccess");
 const { uploadToDisk } = require("../middleware/upload");
 const {
   sendValidationError,
@@ -731,7 +732,7 @@ router.get("/", protect, async (req, res) => {
 router.post(
   "/:id/confirm-programme-update",
   protect,
-  plannerOnly,
+  projectPlanner("programme"),
   async (req, res) => {
     try {
       const { note } = req.body;
@@ -871,7 +872,7 @@ router.post(
  * Previously this was three localStorage writes in the browser that clicked
  * it, so the prompt stayed up for nobody else and the other accounts carried
  * on seeing the superseded programme (MS-05 B6/AC1). */
-router.post("/:id/acknowledge-close", protect, adminOnly, async (req, res) => {
+router.post("/:id/acknowledge-close", protect, projectAdmin("programme"), async (req, res) => {
   try {
     const programme = await Programme.findById(req.params.id);
     if (!programme) {
@@ -1619,7 +1620,7 @@ const CYCLE_TRANSITIONS = {
   Closed: [],
 };
 
-router.post("/:id/close-cycle", protect, adminOnly, async (req, res) => {
+router.post("/:id/close-cycle", protect, projectAdmin("programme"), async (req, res) => {
   try {
     const { closeType, notes } = req.body;
     const CycleHistory = require("../models/CycleHistory");
@@ -2620,32 +2621,6 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
        makes that permanent. The Planner runs the programme up to that point
        but does not take the decision. The earlier lifecycle steps (Meeting
        Open, Execution) stay open to either. */
-    const PM_ONLY_TRANSITIONS = ["Close-Out Eligible", "Closed"];
-    if (
-      PM_ONLY_TRANSITIONS.includes(cycleStatus) &&
-      req.admin.role !== "admin"
-    ) {
-      return sendError(
-        res,
-        `Only the PM can move a week to "${cycleStatus}".`,
-        403,
-      );
-    }
-
-    /* A User owns actions rather than the programme, so the only step they
-       take is starting execution — otherwise their own work sits blocked
-       waiting for someone else. Opening and closing the week stay with the
-       Planner and the PM. */
-    if (
-      !["admin", "planner"].includes(req.admin.role) &&
-      cycleStatus !== "Execution"
-    ) {
-      return sendError(
-        res,
-        `Only the PM or the Planner can move a week to "${cycleStatus}".`,
-        403,
-      );
-    }
 
     /* MS-05 point 3: the Planner's confirmation is the final mandatory gate.
        Checked on this transition rather than at close, because Close-Out
@@ -2666,6 +2641,35 @@ router.patch("/:id/cycle-status", protect, async (req, res) => {
     const programme = await Programme.findById(req.params.id);
     if (!programme) {
       return sendError(res, "Programme not found", 404);
+    }
+
+    /* Decided against this programme's own project, because one account can
+       be the PM of one programme and only a User on the next. The checks wait
+       for the programme to load for that reason. */
+    const roleHere = req.admin.roleOn(programme.project);
+    if (!roleHere) {
+      return sendError(res, "You do not have access to this project.", 403);
+    }
+
+    const PM_ONLY_TRANSITIONS = ["Close-Out Eligible", "Closed"];
+    if (PM_ONLY_TRANSITIONS.includes(cycleStatus) && roleHere !== "admin") {
+      return sendError(
+        res,
+        `Only the PM can move a week to "${cycleStatus}".`,
+        403,
+      );
+    }
+
+    /* A User owns actions rather than the programme, so the only step they
+       take is starting execution — otherwise their own work sits blocked
+       waiting for someone else. Opening and closing the week stay with the
+       Planner and the PM. */
+    if (roleHere === "user" && cycleStatus !== "Execution") {
+      return sendError(
+        res,
+        `Only the PM or the Planner can move a week to "${cycleStatus}".`,
+        403,
+      );
     }
 
     if (programme.isLocked) {
@@ -3183,7 +3187,7 @@ router.post("/recalculate-rag", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.post("/:id/recalculate-rag", protect, adminOnly, async (req, res) => {
+router.post("/:id/recalculate-rag", protect, projectAdmin("programme"), async (req, res) => {
   try {
     const programme = await Programme.findById(req.params.id);
 
@@ -3298,7 +3302,7 @@ router.delete("/all", protect, adminOnly, async (req, res) => {
   }
 });
 
-router.delete("/:id", protect, adminOnly, async (req, res) => {
+router.delete("/:id", protect, projectAdmin("programme"), async (req, res) => {
   try {
     const Action = require("../models/Action");
     const programme = await Programme.findById(req.params.id);

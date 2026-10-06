@@ -6,10 +6,9 @@ const Notification = require("../models/Notification");
 const Project = require("../models/Project");
 const {
   protect,
-  adminOnly,
-  adminOrPlanner,
-  plannerOnly,
 } = require("../middleware/authMiddleware");
+const { projectAdmin, projectAdminOrPlanner } =
+  require("../middleware/projectAccess");
 const {
   sendValidationError,
   sendError,
@@ -306,7 +305,7 @@ const canForceClose = (admin) => !!admin && admin.role === "admin";
 
 const FORCE_CLOSE_DENIED = "Only the PM can PM Override an action";
 
-router.post("/", protect, adminOrPlanner, async (req, res) => {
+router.post("/", protect, projectAdminOrPlanner("bodyProgramme"), async (req, res) => {
   try {
     const {
       programmeId,
@@ -630,7 +629,7 @@ router.get("/:id", protect, async (req, res) => {
 });
 
 /* Update history for one action, drawn from the audit log. Deliberately not
-   adminOnly: the audit routes are admin-gated, but a planner viewing an action
+   the audit routes are admin-gated, but a planner viewing an action
    record needs to see how it changed. Access mirrors GET /:id. */
 router.get("/:id/history", protect, async (req, res) => {
   try {
@@ -669,7 +668,7 @@ router.get("/:id/history", protect, async (req, res) => {
   }
 });
 
-router.put("/:id", protect, adminOrPlanner, async (req, res) => {
+router.put("/:id", protect, projectAdminOrPlanner("action"), async (req, res) => {
   try {
     const {
       title,
@@ -712,8 +711,11 @@ router.put("/:id", protect, adminOrPlanner, async (req, res) => {
      *
      * Compared against the stored values rather than rejected on presence:
      * the edit form submits every field on every save, so an unchanged due
-     * date arriving with a title edit is not an attempt to change it. */
-    if (req.admin.role === "admin") {
+     * date arriving with a title edit is not an attempt to change it.
+     *
+     * Read against this action's own project: the same account can be the PM
+     * of one programme and only a Planner on the next. */
+    if (req.admin.roleOn(programme?.project) === "admin") {
       const isCreator =
         action.createdBy?.toString() === req.admin._id.toString();
 
@@ -806,7 +808,8 @@ router.put("/:id", protect, adminOrPlanner, async (req, res) => {
     const isNewOverride =
       status === "PM Override" && oldStatus !== "PM Override";
     if (isNewOverride) {
-      /* This route is adminOrPlanner, which is correct for an ordinary edit
+      /* This route is open to the PM or Planner of the project, which is
+         correct for an ordinary edit
          but would otherwise let an admin, or a planner with no stake in the
          action, force-close it through the status dropdown. */
       if (!canForceClose(req.admin)) {
@@ -1115,22 +1118,6 @@ router.patch("/:id/complete", protect, async (req, res) => {
       return sendError(res, "Action not found", 404);
     }
 
-    /* Admins aside, the action can be closed by the person it sits with or by
-       whoever raised it: a planner who assigns work to another planner still
-       owns the outcome and needs to be able to complete it. */
-    if (req.admin.role !== "admin") {
-      const actorId = req.admin._id.toString();
-      const isAssignee = action.assignee?.toString() === actorId;
-      const isCreator = action.createdBy?.toString() === actorId;
-      if (!isAssignee && !isCreator) {
-        return sendError(
-          res,
-          "Only the assignee or the person who raised this action can complete it",
-          403,
-        );
-      }
-    }
-
     const { locked, programme } = await checkProgrammeLocked(
       action.programme,
       action,
@@ -1141,6 +1128,24 @@ router.patch("/:id/complete", protect, async (req, res) => {
         "This week is closed and read-only. Cannot modify actions.",
         403,
       );
+    }
+
+    /* The PM of this action's project aside, it can be closed by the person it
+       sits with or by whoever raised it: a planner who assigns work to another
+       planner still owns the outcome and needs to be able to complete it.
+       Judged against this project, since the same account may be a PM on one
+       and a User on another — which is why it waits for the programme. */
+    if (req.admin.roleOn(programme?.project) !== "admin") {
+      const actorId = req.admin._id.toString();
+      const isAssignee = action.assignee?.toString() === actorId;
+      const isCreator = action.createdBy?.toString() === actorId;
+      if (!isAssignee && !isCreator) {
+        return sendError(
+          res,
+          "Only the assignee or the person who raised this action can complete it",
+          403,
+        );
+      }
     }
 
     /* PM Override is terminal. Reopening one is a deliberate decision made
@@ -1306,7 +1311,7 @@ router.patch("/:id/complete", protect, async (req, res) => {
 /* Force-close ONE action. Deliberately scoped to a single action: the previous
    behaviour closed every outstanding action in the week at once, which the
    MS-05 review rejected (B4). Reason is mandatory and the actor is recorded. */
-router.patch("/:id/override", protect, adminOnly, async (req, res) => {
+router.patch("/:id/override", protect, projectAdmin("action"), async (req, res) => {
   try {
     const { reason } = req.body;
 
