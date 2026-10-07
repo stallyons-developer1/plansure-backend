@@ -1192,6 +1192,39 @@ router.put("/:id", protect, async (req, res) => {
 
     await user.save();
 
+    /*
+     * A place that has been granted but never offered.
+     *
+     * The reissue above only covers accounts that are pending as a whole, and
+     * the notice below compares the projects actually taken up — so adding a
+     * project to somebody who has already signed in left it sitting pending
+     * with no link ever sent, and nobody knew there was anything to accept.
+     * Having no token is what marks it as never offered; a resend would have
+     * left one.
+     */
+    const neverOffered = [
+      ...new Set(
+        (user.memberships || [])
+          .filter((m) => m.status === "pending" && !m.inviteToken)
+          .map((m) => m.role),
+      ),
+    ];
+
+    if (neverOffered.length > 0) {
+      try {
+        await sendRoleInvites({
+          user,
+          invitedByName: req.admin.name,
+          roles: neverOffered,
+        });
+      } catch (inviteError) {
+        console.error(
+          "Failed to send the invitation for newly granted access:",
+          inviteError,
+        );
+      }
+    }
+
     if (shouldNotifyActiveUser) {
       const Project = require("../models/Project");
 
