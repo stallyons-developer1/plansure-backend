@@ -183,6 +183,13 @@ const sendRoleInvites = async ({ user, invitedByName, roles }) => {
     (a, b) => (LEVELS[b] || 0) - (LEVELS[a] || 0),
   );
 
+  /* Which roles this round is actually offering, so a missing invitation can
+     be told apart from one that was refused. */
+  console.log(
+    `[INVITE] ${user.email}: ${ordered.length} invitation(s) —`,
+    ordered.map((r) => `${r}=${tokens.get(r) ? "link" : "NO LINK"}`).join(", "),
+  );
+
   let sent = 0;
   const failed = [];
 
