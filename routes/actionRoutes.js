@@ -1196,6 +1196,70 @@ router.patch("/:id/complete", protect, async (req, res) => {
       }
     }
 
+    /*
+     * The person closing an action states when it was actually done, not when
+     * they got round to the app — Rob: "you get given an action, you close the
+     * action out by that date". Absent, it falls back to now, so older callers
+     * keep working. The audit trail stamps its own time either way, so the
+     * record of who did what and when survives whatever date is entered here.
+     *
+     * Parsed from the parts at local noon rather than through Date(string),
+     * which reads "2026-10-07" as UTC midnight and lands on the previous day
+     * for anyone west of Greenwich.
+     */
+    let statedCompletion = null;
+    const rawCompletionDate = req.body?.completionDate;
+
+    if (!wasCompleted && typeof rawCompletionDate === "string" && rawCompletionDate.trim()) {
+      const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(rawCompletionDate.trim());
+      if (!parts) {
+        return sendValidationError(res, [
+          {
+            field: "completionDate",
+            message: "Completion date is not a valid date.",
+          },
+        ]);
+      }
+
+      const [, year, month, day] = parts;
+      statedCompletion = new Date(Number(year), Number(month) - 1, Number(day), 12);
+
+      if (Number.isNaN(statedCompletion.getTime())) {
+        return sendValidationError(res, [
+          {
+            field: "completionDate",
+            message: "Completion date is not a valid date.",
+          },
+        ]);
+      }
+
+      const endOfToday = new Date();
+      endOfToday.setHours(23, 59, 59, 999);
+      if (statedCompletion > endOfToday) {
+        return sendValidationError(res, [
+          {
+            field: "completionDate",
+            message: "Completion date cannot be in the future.",
+          },
+        ]);
+      }
+
+      /* Midnight on the day it was raised, so closing an action the same day
+         it was issued is allowed. */
+      if (action.createdAt) {
+        const raised = new Date(action.createdAt);
+        raised.setHours(0, 0, 0, 0);
+        if (statedCompletion < raised) {
+          return sendValidationError(res, [
+            {
+              field: "completionDate",
+              message: "Completion date cannot be before the action was raised.",
+            },
+          ]);
+        }
+      }
+    }
+
     if (action.status === "Completed") {
       action.status = "Open";
       action.completedAt = null;
@@ -1211,7 +1275,7 @@ router.patch("/:id/complete", protect, async (req, res) => {
       }
     } else {
       action.status = "Completed";
-      action.completedAt = new Date();
+      action.completedAt = statedCompletion || new Date();
       action.completionNote = completionNote || undefined;
       if (action.linkedActivity?.activityId) {
         await updateLinkedActivityStatus(
