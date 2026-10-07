@@ -52,6 +52,19 @@ const adminSchema = new mongoose.Schema(
           ref: "Project",
           required: true,
         },
+        /*
+         * Each project's place is invited for separately, so each carries its
+         * own state and its own link. Deliberately no default: memberships
+         * written before invitations were split per project have no status at
+         * all, and those count as accepted — an absent field must never take
+         * access away from somebody who already has it.
+         */
+        status: {
+          type: String,
+          enum: ["pending", "active"],
+        },
+        inviteToken: String,
+        inviteTokenExpiry: Date,
         role: {
           type: String,
           enum: ["admin", "planner", "user"],
@@ -119,6 +132,29 @@ adminSchema.methods.generateInviteToken = function () {
   return token;
 };
 
+/*
+ * A link for one role's invitation. Every project held at that role shares it,
+ * because they are offered in a single email; opening it takes up all of them
+ * and leaves the account's other roles untouched.
+ */
+adminSchema.methods.generateMembershipInviteToken = function (role) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const hashed = crypto.createHash("sha256").update(token).digest("hex");
+  const expiry = Date.now() + 7 * 24 * 60 * 60 * 1000;
+
+  let stamped = 0;
+  (this.memberships || []).forEach((m) => {
+    if (m.role !== role || m.status !== "pending") return;
+    m.inviteToken = hashed;
+    m.inviteTokenExpiry = expiry;
+    stamped += 1;
+  });
+
+  if (stamped === 0) return null;
+  this.markModified("memberships");
+  return token;
+};
+
 /* Short-lived by design. An invite can sit in an inbox for a week because it
    is expected to; a reset link is requested and used in one sitting, and the
    longer it lives the longer a forwarded or logged URL stays usable. */
@@ -135,6 +171,10 @@ adminSchema.methods.generatePasswordResetToken = function () {
 /* Highest first, so "the strongest role this account holds" is a max. */
 const ROLE_RANK = { user: 1, planner: 2, admin: 3 };
 
+/* Anything not explicitly pending counts as taken up — see the note on the
+   field. */
+const isAccepted = (m) => m.status !== "pending";
+
 /* The role this account holds on one project. A Super Admin reaches every
    project as an admin, which is the whole point of the flag. */
 adminSchema.methods.roleOn = function (projectId) {
@@ -142,7 +182,7 @@ adminSchema.methods.roleOn = function (projectId) {
   if (!projectId) return null;
   const target = String(projectId);
   const found = (this.memberships || []).find(
-    (m) => String(m.project?._id || m.project) === target,
+    (m) => isAccepted(m) && String(m.project?._id || m.project) === target,
   );
   return found ? found.role : null;
 };
@@ -152,15 +192,19 @@ adminSchema.methods.roleOn = function (projectId) {
 adminSchema.methods.syncFromMemberships = function () {
   if (!Array.isArray(this.memberships) || this.memberships.length === 0) return;
 
+  /* Access follows the invitations actually taken up. */
   this.projects = [
     ...new Map(
-      this.memberships.map((m) => [
+      this.memberships.filter(isAccepted).map((m) => [
         String(m.project?._id || m.project),
         m.project?._id || m.project,
       ]),
     ).values(),
   ];
 
+  /* The role is what the account has been granted, accepted or not, so a
+     Planner whose invitation is still outstanding is listed as a Planner
+     rather than dropping to User. */
   this.role = this.memberships.reduce(
     (best, m) =>
       (ROLE_RANK[m.role] || 0) > (ROLE_RANK[best] || 0) ? m.role : best,

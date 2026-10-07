@@ -75,6 +75,14 @@ const isSmtp = () => {
   return useSmtp;
 };
 
+/* An account can hold more than one role, and each now gets its own
+   invitation, so the subject has to say which one this is — two messages with
+   the same subject read as a duplicate and one of them gets ignored. */
+const inviteSubject = (options) =>
+  options.role
+    ? `You've been invited to join Plansure as a ${roleLabel(options.role)}`
+    : "You've been invited to join Plansure";
+
 const sendInviteEmail = async (options) => {
   const htmlContent = `
     <!DOCTYPE html>
@@ -150,14 +158,14 @@ const sendInviteEmail = async (options) => {
       const result = await transporter.sendMail({
         from: mailFrom(),
         to: options.email,
-        subject: "You've been invited to join Plansure",
+        subject: inviteSubject(options),
         html: htmlContent,
       });
     } else {
       const result = await getResend().emails.send({
         from: mailFrom(),
         to: options.email,
-        subject: "You've been invited to join Plansure",
+        subject: inviteSubject(options),
         html: htmlContent,
       });
     }

@@ -40,7 +40,7 @@ const mayManage = (actor, target) =>
    person sending it could not grant: a role above their own, or a project they
    do not hold themselves. Accepts the older shape — one role with a list of
    projects — so existing callers keep working. */
-const buildMemberships = (actor, body) => {
+const buildMemberships = (actor, body, existing = []) => {
   const rows = Array.isArray(body.memberships)
     ? body.memberships
         .filter((m) => m && m.project && m.role)
@@ -75,15 +75,141 @@ const buildMemberships = (actor, body) => {
     }
   }
 
+  /* A place already taken up keeps its state and its link. A new project, or
+     a different role on one already held, is a fresh offer and has to be
+     invited for again. */
+  const held = new Map(
+    (existing || []).map((m) => [
+      `${String(m.project?._id || m.project)}:${m.role}`,
+      m,
+    ]),
+  );
+
   return {
-    memberships: [...seen.entries()].map(([project, role]) => ({
-      project,
-      role,
-    })),
+    memberships: [...seen.entries()].map(([project, role]) => {
+      const previous = held.get(`${project}:${role}`);
+      return previous
+        ? {
+            project,
+            role,
+            status: previous.status,
+            inviteToken: previous.inviteToken,
+            inviteTokenExpiry: previous.inviteTokenExpiry,
+          }
+        : { project, role, status: "pending" };
+    }),
   };
 };
 
 /* Each project with the role held on it, named, for the invitation email. */
+/*
+ * One invitation per role, not a single message listing them all. Somebody who
+ * plans one project and only watches another gets two emails, each naming only
+ * the projects that role covers, so neither has to be read past the part that
+ * applies. Both carry the same accept link — there is one account behind them,
+ * and accepting either activates the lot.
+ */
+/*
+ * One invitation per role, each with its own link and its own state.
+ *
+ * Somebody who plans one project and only watches another gets two emails.
+ * Opening one takes up the projects it names and leaves the other outstanding,
+ * so the View modal can say where each project's invitation got to. Every
+ * project held at the same role shares a link, because they arrive together in
+ * one message.
+ *
+ * `roles` narrows it to a single role, which is what Resend sends.
+ */
+const sendRoleInvites = async ({ user, invitedByName, roles }) => {
+  const rows = user.memberships || [];
+  const backendUrl = backendBase();
+
+  /* One link for the whole account: the shape invitations had before they were
+     split per project. */
+  const sendAccountInvite = async () => {
+    const token = user.generateInviteToken();
+    await user.save();
+    await sendInviteEmail({
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      projectName: "All Projects",
+      invitedByName,
+      acceptUrl: `${backendUrl}/api/users/invite/accept/${token}`,
+      rejectUrl: `${backendUrl}/api/users/invite/reject/${token}`,
+    });
+    return 1;
+  };
+
+  if (rows.length === 0) return sendAccountInvite();
+
+  const wanted =
+    Array.isArray(roles) && roles.length > 0 ? new Set(roles) : null;
+
+  const byRole = new Map();
+  rows.forEach((m) => {
+    if (m.status !== "pending") return;
+    if (wanted && !wanted.has(m.role)) return;
+    if (!byRole.has(m.role)) byRole.set(m.role, []);
+    byRole.get(m.role).push(m);
+  });
+
+  if (byRole.size === 0) {
+    /* An account invited before the split carries no per-project state, so
+       nothing reads as pending however long its invitation has been sitting
+       there. While it has still never been signed into, the account-level link
+       is its invitation — otherwise Resend would report success and send
+       nothing. */
+    return user.status === "pending" ? sendAccountInvite() : 0;
+  }
+
+  const ids = [...byRole.values()]
+    .flat()
+    .map((m) => String(m.project?._id || m.project));
+  const named = await Project.find({ _id: { $in: ids } }).select("name");
+  const nameById = new Map(named.map((pr) => [String(pr._id), pr.name]));
+
+  /* Stamped first and saved once, so a failure part-way through the sending
+     does not leave half the links unsaved and therefore dead. */
+  const tokens = new Map();
+  for (const role of byRole.keys()) {
+    tokens.set(role, user.generateMembershipInviteToken(role));
+  }
+  await user.save();
+
+  /* Highest role first, so the most capable invitation lands at the top of the
+     inbox rather than under the one that grants least. */
+  const ordered = [...byRole.keys()].sort(
+    (a, b) => (LEVELS[b] || 0) - (LEVELS[a] || 0),
+  );
+
+  let sent = 0;
+  for (const role of ordered) {
+    const token = tokens.get(role);
+    if (!token) continue;
+
+    const named = byRole.get(role).map((m) => ({
+      projectName:
+        nameById.get(String(m.project?._id || m.project)) || "Project",
+      role,
+    }));
+
+    await sendInviteEmail({
+      email: user.email,
+      name: user.name,
+      role,
+      memberships: named,
+      projectName: named.map((r) => r.projectName).join(", "),
+      invitedByName,
+      acceptUrl: `${backendUrl}/api/users/invite/accept/${token}`,
+      rejectUrl: `${backendUrl}/api/users/invite/reject/${token}`,
+    });
+    sent += 1;
+  }
+
+  return sent;
+};
+
 const namedMembershipsFor = async (user) => {
   const rows = user.memberships || [];
   if (rows.length === 0) return [];
@@ -194,24 +320,6 @@ router.post("/invite", protect, async (req, res) => {
     const memberships = built.memberships;
     const grantedProjects = memberships.map((m) => m.project);
 
-    let projectName = "All Projects";
-    let namedMemberships = [];
-    if (grantedProjects.length > 0) {
-      const named = await Project.find({
-        _id: { $in: grantedProjects },
-      }).select("name");
-      if (named.length > 0) {
-        projectName = named.map((p) => p.name).join(", ");
-      }
-      /* The invitation names each project with the role held on it, because
-         one person can be the PM of one and only a User on the next. */
-      const nameById = new Map(named.map((p) => [String(p._id), p.name]));
-      namedMemberships = memberships.map((m) => ({
-        projectName: nameById.get(String(m.project)) || "Project",
-        role: m.role,
-      }));
-    }
-
     const user = new Admin({
       name,
       email,
@@ -226,12 +334,7 @@ router.post("/invite", protect, async (req, res) => {
       invitedBy: req.admin._id,
     });
 
-    const inviteToken = user.generateInviteToken();
     await user.save();
-
-    const backendUrl = backendBase();
-    const acceptUrl = `${backendUrl}/api/users/invite/accept/${inviteToken}`;
-    const rejectUrl = `${backendUrl}/api/users/invite/reject/${inviteToken}`;
 
     let emailSent = true;
     let emailError = null;
@@ -243,16 +346,7 @@ router.post("/invite", protect, async (req, res) => {
         : 0,
     };
     try {
-      await sendInviteEmail({
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        memberships: namedMemberships,
-        projectName,
-        invitedByName: req.admin.name,
-        acceptUrl,
-        rejectUrl,
-      });
+      await sendRoleInvites({ user, invitedByName: req.admin.name });
     } catch (err) {
       emailSent = false;
       emailError = err.message || String(err);
@@ -381,11 +475,41 @@ router.get("/invite/accept/:token", async (req, res) => {
       .update(req.params.token)
       .digest("hex");
 
-    const user = await Admin.findOne({
-      inviteToken: hashedToken,
-      inviteTokenExpiry: { $gt: Date.now() },
-      status: "pending",
+    /* A per-project invitation first. Accounts invited before invitations were
+       split still carry a single account-level link, so that is the fallback
+       rather than a second code path. */
+    let user = await Admin.findOne({
+      memberships: {
+        $elemMatch: {
+          inviteToken: hashedToken,
+          inviteTokenExpiry: { $gt: new Date() },
+          status: "pending",
+        },
+      },
     });
+
+    let takenUp = [];
+    if (user) {
+      takenUp = (user.memberships || []).filter(
+        (m) => m.inviteToken === hashedToken && m.status === "pending",
+      );
+      takenUp.forEach((m) => {
+        m.status = "active";
+        m.inviteToken = undefined;
+        m.inviteTokenExpiry = undefined;
+      });
+      user.markModified("memberships");
+    } else {
+      user = await Admin.findOne({
+        inviteToken: hashedToken,
+        inviteTokenExpiry: { $gt: Date.now() },
+        status: "pending",
+      });
+      if (user) {
+        user.inviteToken = undefined;
+        user.inviteTokenExpiry = undefined;
+      }
+    }
 
     if (!user) {
       return res.send(
@@ -397,25 +521,47 @@ router.get("/invite/accept/:token", async (req, res) => {
       );
     }
 
-    const generatedPassword = crypto.randomBytes(4).toString("hex") + "A1!";
+    /* The password is issued once. Taking up a second role later opens those
+       projects to an account that already has credentials, so reissuing would
+       break the ones in use. */
+    const firstTimeIn = user.status === "pending";
+    let generatedPassword = null;
 
-    user.password = generatedPassword;
-    user.status = "active";
-    user.inviteToken = undefined;
-    user.inviteTokenExpiry = undefined;
+    if (firstTimeIn) {
+      generatedPassword = crypto.randomBytes(4).toString("hex") + "A1!";
+      user.password = generatedPassword;
+      user.status = "active";
+    }
 
     await user.save();
 
-    const verifyUser = await Admin.findById(user._id);
+    if (generatedPassword) {
+      try {
+        await sendWelcomeEmail({
+          email: user.email,
+          name: user.name,
+          password: generatedPassword,
+        });
+      } catch (emailError) {
+        console.error("Failed to send welcome email:", emailError);
+      }
+    }
 
-    try {
-      await sendWelcomeEmail({
-        email: user.email,
-        name: user.name,
-        password: generatedPassword,
-      });
-    } catch (emailError) {
-      console.error("Failed to send welcome email:", emailError);
+    if (!firstTimeIn) {
+      const Project = require("../models/Project");
+      const opened = await Project.find({
+        _id: { $in: takenUp.map((m) => m.project) },
+      }).select("name");
+      const names = opened.map((pr) => pr.name).join(", ");
+      return res.send(
+        renderResponsePage(
+          "Invitation Accepted",
+          names
+            ? `${names} is now open to you. Sign in with the password you already use for Plansure.`
+            : "This invitation has been accepted. Sign in with the password you already use for Plansure.",
+          "success",
+        ),
+      );
     }
 
     const frontendUrl = frontendBase();
@@ -526,8 +672,14 @@ router.get("/invite/reject/:token", async (req, res) => {
       .digest("hex");
 
     const user = await Admin.findOne({
-      inviteToken: hashedToken,
-      status: "pending",
+      $or: [
+        { inviteToken: hashedToken, status: "pending" },
+        {
+          memberships: {
+            $elemMatch: { inviteToken: hashedToken, status: "pending" },
+          },
+        },
+      ],
     });
 
     if (!user) {
@@ -540,7 +692,27 @@ router.get("/invite/reject/:token", async (req, res) => {
       );
     }
 
-    await Admin.findByIdAndDelete(user._id);
+    /* Declining one role drops only the projects that offer named. The account
+       goes only when nothing is left of it and it was never signed into — an
+       active account keeps the places it has already taken up. */
+    const declined = (user.memberships || []).filter(
+      (m) => m.inviteToken === hashedToken && m.status === "pending",
+    );
+
+    if (declined.length > 0) {
+      user.memberships = (user.memberships || []).filter(
+        (m) => !(m.inviteToken === hashedToken && m.status === "pending"),
+      );
+      user.markModified("memberships");
+
+      if (user.memberships.length === 0 && user.status === "pending") {
+        await Admin.findByIdAndDelete(user._id);
+      } else {
+        await user.save();
+      }
+    } else {
+      await Admin.findByIdAndDelete(user._id);
+    }
 
     return res.send(
       renderResponsePage(
@@ -765,6 +937,9 @@ router.get("/", protect, async (req, res) => {
               project: String(m.project._id || m.project),
               projectName: m.project.name || "",
               role: m.role,
+              /* Each project is invited for on its own, so each reports its own
+                 state. The token behind it never leaves the server. */
+              status: m.status === "pending" ? "pending" : "active",
             })),
           projectAccess:
             projectNames.length > 0 ? projectNames.join(", ") : "No Projects",
@@ -934,12 +1109,11 @@ router.put("/:id", protect, async (req, res) => {
           403,
         );
       }
-      const built = buildMemberships(req.admin, req.body);
+      const built = buildMemberships(req.admin, req.body, user.memberships);
       if (built.error) {
         return sendError(res, built.error, 403);
       }
       user.memberships = built.memberships;
-      user.projects = built.memberships.map((m) => m.project);
       /* The save hook derives `role` and `projects` from the memberships, but
          the notice below has to compare before and after, so bring them up to
          date here. Running it twice costs nothing. */
@@ -965,31 +1139,10 @@ router.put("/:id", protect, async (req, res) => {
       (oldProjects !== newProjects || oldRole !== newRole || emailChanged);
 
     if (shouldResendInvite) {
-      const inviteToken = user.generateInviteToken();
       await user.save();
 
-      const Project = require("../models/Project");
-      let projectName = "All Projects";
-      if (newProjectIds.length > 0) {
-        const projectDocs = await Project.find({ _id: { $in: newProjectIds } });
-        projectName = projectDocs.map((p) => p.name).join(", ") || projectName;
-      }
-
-      const backendUrl = backendBase();
-      const acceptUrl = `${backendUrl}/api/users/invite/accept/${inviteToken}`;
-      const rejectUrl = `${backendUrl}/api/users/invite/reject/${inviteToken}`;
-
       try {
-        await sendInviteEmail({
-          email: user.email,
-          name: user.name,
-          role: user.role,
-          memberships: await namedMembershipsFor(user),
-          projectName,
-          invitedByName: req.admin.name,
-          acceptUrl,
-          rejectUrl,
-        });
+        await sendRoleInvites({ user, invitedByName: req.admin.name });
       } catch (emailError) {
         console.error("Failed to send invite email:", emailError);
       }
@@ -1165,39 +1318,29 @@ router.post("/:id/resend-invite", protect, async (req, res) => {
       );
     }
 
-    if (user.status !== "pending") {
+    /* Since each project is invited for separately, somebody already signed in
+       can still be waiting on another role — so this asks whether anything is
+       outstanding, not whether the account is pending. */
+    const outstanding = (user.memberships || []).some(
+      (m) => m.status === "pending",
+    );
+    if (!outstanding && user.status !== "pending") {
       return sendValidationError(res, [
         {
           field: "status",
-          message: "User has already accepted the invitation",
+          message: "There is no invitation outstanding for this user",
         },
       ]);
     }
 
-    const inviteToken = user.generateInviteToken();
-    await user.save();
-
-    const backendUrl = backendBase();
-    const acceptUrl = `${backendUrl}/api/users/invite/accept/${inviteToken}`;
-    const rejectUrl = `${backendUrl}/api/users/invite/reject/${inviteToken}`;
-
-    const projectName =
-      user.projects && user.projects.length > 0
-        ? user.projects.map((p) => p.name).join(", ")
-        : "All Projects";
+    /* The modal resends one project's invitation, which is the invitation for
+       the role that project is held at. Without a role it resends every
+       outstanding one. */
+    const roles = req.body?.role ? [req.body.role] : undefined;
 
     let emailSent = true;
     try {
-      await sendInviteEmail({
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        memberships: await namedMembershipsFor(user),
-        projectName,
-        invitedByName: req.admin.name,
-        acceptUrl,
-        rejectUrl,
-      });
+      await sendRoleInvites({ user, invitedByName: req.admin.name, roles });
     } catch (emailError) {
       console.error("Failed to resend invite email:", emailError);
       emailSent = false;
