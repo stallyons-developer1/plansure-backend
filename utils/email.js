@@ -152,22 +152,40 @@ const sendInviteEmail = async (options) => {
     </html>
   `;
 
+  const subject = inviteSubject(options);
+
   try {
     if (isSmtp()) {
       const transporter = createTransporter();
       const result = await transporter.sendMail({
         from: mailFrom(),
         to: options.email,
-        subject: inviteSubject(options),
+        subject,
         html: htmlContent,
       });
+      /* What the relay actually said. An invitation that never arrives is
+         otherwise indistinguishable from one that was never sent, and when two
+         go out together only one of them turning up is exactly the case that
+         needs the per-message id and reply. */
+      console.log(
+        `[EMAIL] invite "${subject}" → ${options.email} |`,
+        `id=${result?.messageId || "?"}`,
+        `accepted=${(result?.accepted || []).length}`,
+        `rejected=${(result?.rejected || []).join(",") || "none"}`,
+        `| ${String(result?.response || "").trim()}`,
+      );
     } else {
       const result = await getResend().emails.send({
         from: mailFrom(),
         to: options.email,
-        subject: inviteSubject(options),
+        subject,
         html: htmlContent,
       });
+      console.log(
+        `[EMAIL] invite "${subject}" → ${options.email} |`,
+        `id=${result?.data?.id || "?"}`,
+        result?.error ? `error=${JSON.stringify(result.error)}` : "",
+      );
     }
   } catch (error) {
     console.error(`[EMAIL] Error sending invite email:`, error);
