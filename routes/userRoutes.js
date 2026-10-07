@@ -184,6 +184,8 @@ const sendRoleInvites = async ({ user, invitedByName, roles }) => {
   );
 
   let sent = 0;
+  const failed = [];
+
   for (const role of ordered) {
     const token = tokens.get(role);
     if (!token) continue;
@@ -194,17 +196,36 @@ const sendRoleInvites = async ({ user, invitedByName, roles }) => {
       role,
     }));
 
-    await sendInviteEmail({
-      email: user.email,
-      name: user.name,
-      role,
-      memberships: named,
-      projectName: named.map((r) => r.projectName).join(", "),
-      invitedByName,
-      acceptUrl: `${backendUrl}/api/users/invite/accept/${token}`,
-      rejectUrl: `${backendUrl}/api/users/invite/reject/${token}`,
-    });
-    sent += 1;
+    /* Caught per message. One refusal used to abort the loop and swallow the
+       reason, so only the first role — always the highest, because of the sort
+       above — ever arrived, and every invitation looked like a PM one. The
+       links are already saved, so a failure here costs nothing but the send,
+       and Resend can carry it. */
+    try {
+      await sendInviteEmail({
+        email: user.email,
+        name: user.name,
+        role,
+        memberships: named,
+        projectName: named.map((r) => r.projectName).join(", "),
+        invitedByName,
+        acceptUrl: `${backendUrl}/api/users/invite/accept/${token}`,
+        rejectUrl: `${backendUrl}/api/users/invite/reject/${token}`,
+      });
+      sent += 1;
+    } catch (error) {
+      failed.push(role);
+      console.error(
+        `[INVITE] ${user.email} — the ${role} invitation was not sent:`,
+        error?.message || error,
+      );
+    }
+  }
+
+  if (failed.length > 0 && sent === 0) {
+    throw new Error(
+      `No invitation could be sent (${failed.join(", ")}).`,
+    );
   }
 
   return sent;
