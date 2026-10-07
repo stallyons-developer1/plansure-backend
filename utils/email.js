@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const nodemailer = require("nodemailer");
 const { Resend } = require("resend");
 
@@ -75,13 +76,72 @@ const isSmtp = () => {
   return useSmtp;
 };
 
-/* An account can hold more than one role, and each now gets its own
-   invitation, so the subject has to say which one this is — two messages with
-   the same subject read as a duplicate and one of them gets ignored. */
-const inviteSubject = (options) =>
-  options.role
-    ? `You've been invited to join Plansure as a ${roleLabel(options.role)}`
-    : "You've been invited to join Plansure";
+/*
+ * An account can hold more than one role, and each gets its own invitation, so
+ * the subject says which one this is and which projects it covers.
+ *
+ * The projects are not decoration. Gmail files every message with the same
+ * subject into one conversation, and a conversation inherits whatever was done
+ * to it — a thread deleted during testing swallowed each new invitation into
+ * Trash, and one marked as Promotions keeps every later one out of the inbox.
+ * A subject that names the projects makes each round its own conversation, so
+ * nothing arrives already condemned by what happened to the last one.
+ */
+const inviteSubject = (options) => {
+  if (!options.role) return "You've been invited to join Plansure";
+
+  const base = `You've been invited to join Plansure as a ${roleLabel(options.role)}`;
+  const projects = Array.isArray(options.memberships)
+    ? [...new Set(options.memberships.map((m) => m.projectName).filter(Boolean))]
+    : [];
+
+  if (projects.length === 0) return base;
+
+  const named = projects.join(", ");
+  /* Long subjects are cut off by every client, and the point is only to keep
+     the threads apart. */
+  return named.length > 60 ? `${base} — ${projects.length} projects` : `${base} — ${named}`;
+};
+
+/*
+ * Gmail will still collapse two messages whose subjects match, which is what
+ * happens when the same invitation is sent again. A unique reference on each
+ * message stops it, so a resend arrives as its own conversation rather than
+ * joining one the recipient has already dealt with.
+ */
+const threadBreaker = () => ({
+  "X-Entity-Ref-ID": crypto.randomUUID(),
+});
+
+/* A plain-text alternative. A message with no text part looks like bulk mail
+   to the filters, which is half of why these land under Promotions. */
+const inviteText = (options) => {
+  const lines = [
+    `Hello ${options.name},`,
+    "",
+    `You've been invited by ${options.invitedByName} to join Plansure.`,
+    "",
+    "Your access:",
+  ];
+
+  if (Array.isArray(options.memberships) && options.memberships.length > 0) {
+    options.memberships.forEach((m) =>
+      lines.push(`  ${m.projectName} — ${roleLabel(m.role)}`),
+    );
+  } else {
+    lines.push(`  ${roleLabel(options.role)}`);
+  }
+
+  lines.push(
+    "",
+    `Accept:  ${options.acceptUrl}`,
+    `Decline: ${options.rejectUrl}`,
+    "",
+    "This invitation will expire in 7 days.",
+  );
+
+  return lines.join("\n");
+};
 
 const sendInviteEmail = async (options) => {
   const htmlContent = `
@@ -161,7 +221,9 @@ const sendInviteEmail = async (options) => {
         from: mailFrom(),
         to: options.email,
         subject,
+        text: inviteText(options),
         html: htmlContent,
+        headers: threadBreaker(),
       });
       /* What the relay actually said. An invitation that never arrives is
          otherwise indistinguishable from one that was never sent, and when two
@@ -179,7 +241,9 @@ const sendInviteEmail = async (options) => {
         from: mailFrom(),
         to: options.email,
         subject,
+        text: inviteText(options),
         html: htmlContent,
+        headers: threadBreaker(),
       });
       console.log(
         `[EMAIL] invite "${subject}" → ${options.email} |`,
