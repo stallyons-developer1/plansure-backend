@@ -394,15 +394,40 @@ const sendWelcomeEmail = async (options) => {
 
 const sendRoleChangeEmail = async (options) => {
   const changes = [];
-  if (options.oldRole !== options.newRole) {
-    changes.push(
-      `<li>Role changed from <strong>${roleLabel(options.oldRole)}</strong> to <strong>${roleLabel(options.newRole)}</strong></li>`,
-    );
-  }
-  if (options.oldProject !== options.newProject) {
-    changes.push(
-      `<li>Project assignment changed from <strong>${options.oldProject}</strong> to <strong>${options.newProject}</strong></li>`,
-    );
+
+  /*
+   * Said project by project, because that is how access is held. The account
+   * carries a headline role — the strongest it holds anywhere — and reporting
+   * only that said "Role changed from Admin to Planner" without naming the
+   * project whose role had actually moved, which tells the recipient nothing
+   * they can act on.
+   */
+  if (Array.isArray(options.changes) && options.changes.length > 0) {
+    options.changes.forEach((c) => {
+      if (!c.from) {
+        changes.push(
+          `<li><strong>${c.projectName}</strong> — added as <strong>${roleLabel(c.to)}</strong></li>`,
+        );
+      } else if (!c.to) {
+        changes.push(`<li><strong>${c.projectName}</strong> — removed</li>`);
+      } else {
+        changes.push(
+          `<li><strong>${c.projectName}</strong> — <strong>${roleLabel(c.from)}</strong> changed to <strong>${roleLabel(c.to)}</strong></li>`,
+        );
+      }
+    });
+  } else {
+    /* The older shape, one role across the whole account. */
+    if (options.oldRole !== options.newRole) {
+      changes.push(
+        `<li>Role changed from <strong>${roleLabel(options.oldRole)}</strong> to <strong>${roleLabel(options.newRole)}</strong></li>`,
+      );
+    }
+    if (options.oldProject !== options.newProject) {
+      changes.push(
+        `<li>Project assignment changed from <strong>${options.oldProject}</strong> to <strong>${options.newProject}</strong></li>`,
+      );
+    }
   }
 
   const htmlContent = `

@@ -1212,6 +1212,14 @@ router.put("/:id", protect, async (req, res) => {
 
     const oldProjectIds = membershipIds(user.memberships);
     const oldProjects = [...oldProjectIds].sort().join(",");
+    /* The role held on each project before the edit, so the notice can say
+       which one moved rather than only that something did. */
+    const roleWasOn = new Map(
+      (user.memberships || []).map((m) => [
+        String(m.project?._id || m.project),
+        m.role,
+      ]),
+    );
     const oldRole = user.role;
 
     if (name) user.name = name;
@@ -1318,37 +1326,44 @@ router.put("/:id", protect, async (req, res) => {
     }
 
     if (shouldNotifyActiveUser) {
-      const Project = require("../models/Project");
+      /* What actually moved, project by project. The headline role is only the
+         strongest held anywhere, so on its own it says "Admin to Planner"
+         without naming the project whose role changed — nothing the recipient
+         can act on. */
+      const roleIsOn = new Map(
+        (user.memberships || []).map((m) => [
+          String(m.project?._id || m.project),
+          m.role,
+        ]),
+      );
 
-      let oldProjectName = "All Projects";
-      if (oldProjects) {
-        const oldProjectIds = oldProjects.split(",").filter((id) => id);
-        if (oldProjectIds.length > 0) {
-          const oldProjectDocs = await Project.find({
-            _id: { $in: oldProjectIds },
-          });
-          oldProjectName =
-            oldProjectDocs.map((p) => p.name).join(", ") || "All Projects";
-        }
-      }
+      const touched = [...new Set([...roleWasOn.keys(), ...roleIsOn.keys()])]
+        .map((id) => ({
+          project: id,
+          from: roleWasOn.get(id) || null,
+          to: roleIsOn.get(id) || null,
+        }))
+        .filter((c) => c.from !== c.to);
 
-      let newProjectName = "All Projects";
-      if (newProjectIds.length > 0) {
-        const newProjectDocs = await Project.find({
-          _id: { $in: newProjectIds },
-        });
-        newProjectName =
-          newProjectDocs.map((p) => p.name).join(", ") || "All Projects";
-      }
+      const named = await Project.find({
+        _id: { $in: touched.map((c) => c.project) },
+      }).select("name");
+      const nameById = new Map(named.map((pr) => [String(pr._id), pr.name]));
 
       try {
         await sendRoleChangeEmail({
           email: user.email,
           name: user.name,
-          oldRole: oldRole.charAt(0).toUpperCase() + oldRole.slice(1),
-          newRole: newRole.charAt(0).toUpperCase() + newRole.slice(1),
-          oldProject: oldProjectName,
-          newProject: newProjectName,
+          changes: touched.map((c) => ({
+            ...c,
+            projectName: nameById.get(c.project) || "Project",
+          })),
+          /* Still sent for the older single-role shape, which the template
+             falls back to when nothing per-project moved. */
+          oldRole,
+          newRole,
+          oldProject: "",
+          newProject: "",
         });
       } catch (emailError) {
         console.error("Failed to send role change email:", emailError);
