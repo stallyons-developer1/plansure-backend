@@ -56,24 +56,35 @@ const buildMemberships = (actor, body, existing = []) => {
         .map((id) => ({ project: String(id), role: body.role })),
     seen = new Map();
 
+  /*
+   * Nobody hands out more than they hold *there*.
+   *
+   * The account's own role is the strongest it holds anywhere, so judging by
+   * it let a PM on one project hand out PM on another they only watch. What
+   * counts is the role held on the project each row names. An owner reaches
+   * every project and is bound by none of this.
+   */
   for (const row of rows) {
     if (!LEVELS[row.role]) {
       return { error: `Unknown role "${row.role}".` };
     }
-    if (levelOf(row.role, false) > levelOfActor(actor)) {
-      return { error: "You can only grant a role at your own level or below." };
-    }
-    seen.set(row.project, row.role);
-  }
 
-  /* An admin grants any project. Below that you can only pass on what you
-     already hold, so nobody widens anyone's reach beyond their own. */
-  if (actor.role !== "admin" && seen.size > 0) {
-    const own = (actor.projects || []).map((id) => String(id));
-    const beyond = [...seen.keys()].filter((id) => !own.includes(id));
-    if (beyond.length > 0) {
-      return { error: "You can only grant projects you have access to yourself." };
+    if (!actor.isSuperAdmin) {
+      const here = actor.roleOn(row.project);
+      if (!here) {
+        return {
+          error: "You can only grant projects you have access to yourself.",
+        };
+      }
+      if (levelOf(row.role, false) > levelOf(here, false)) {
+        return {
+          error:
+            "You can only grant a role at your own level or below on that project.",
+        };
+      }
     }
+
+    seen.set(row.project, row.role);
   }
 
   /* A place already taken up keeps its state and its link. A new project, or
