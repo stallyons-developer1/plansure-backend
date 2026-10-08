@@ -90,28 +90,44 @@ const buildMemberships = (actor, body, existing = []) => {
     seen.set(row.project, row.role);
   }
 
-  /* A place already taken up keeps its state and its link. A new project, or
-     a different role on one already held, is a fresh offer and has to be
-     invited for again. */
+  /*
+   * Keyed by project alone.
+   *
+   * Changing the role on a project somebody is already on changes what they
+   * may do there — it does not put the question of whether they will join back
+   * on the table. Keying this by project and role together made a changed role
+   * read as somewhere new: the place went back to pending, the project
+   * disappeared from their account until they accepted it a second time, and
+   * an invitation went out for somewhere they were already working.
+   *
+   * Only a project they do not hold at all is a fresh offer.
+   */
   const held = new Map(
-    (existing || []).map((m) => [
-      `${String(m.project?._id || m.project)}:${m.role}`,
-      m,
-    ]),
+    (existing || []).map((m) => [String(m.project?._id || m.project), m]),
   );
 
   return {
     memberships: [...seen.entries()].map(([project, role]) => {
-      const previous = held.get(`${project}:${role}`);
-      return previous
-        ? {
-            project,
-            role,
-            status: previous.status,
-            inviteToken: previous.inviteToken,
-            inviteTokenExpiry: previous.inviteTokenExpiry,
-          }
-        : { project, role, status: "pending" };
+      const previous = held.get(project);
+
+      if (!previous) return { project, role, status: "pending" };
+
+      /* Still waiting, and now for something else: the invitation sitting in
+         their inbox names the old role, so its link is dropped and a corrected
+         one goes out in its place. */
+      const restate = previous.status === "pending" && previous.role !== role;
+
+      return {
+        project,
+        role,
+        status: previous.status,
+        ...(restate
+          ? {}
+          : {
+              inviteToken: previous.inviteToken,
+              inviteTokenExpiry: previous.inviteTokenExpiry,
+            }),
+      };
     }),
   };
 };
