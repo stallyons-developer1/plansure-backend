@@ -19,6 +19,7 @@ const notificationSchema = new mongoose.Schema(
         "action_completed",
         "project_assigned",
         "planner_todo_generated",
+        "invite_declined",
         "general",
       ],
       required: true,

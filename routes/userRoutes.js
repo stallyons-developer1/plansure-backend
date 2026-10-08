@@ -3,6 +3,7 @@ const router = express.Router();
 const crypto = require("crypto");
 const Admin = require("../models/Admin");
 const Project = require("../models/Project");
+const Notification = require("../models/Notification");
 const { protect } = require("../middleware/authMiddleware");
 
 /* A PM has the same reach as the Super Admin in User Management — they see and
@@ -405,7 +406,13 @@ router.post("/invite", protect, async (req, res) => {
   }
 });
 
-const renderResponsePage = (title, message, type = "success") => {
+/*
+ * `signIn` adds a way through to the app. Offered only where it leads
+ * somewhere — a declined or expired invitation has nothing to sign in to — and
+ * it points at /login, which sends an account already signed in on to its own
+ * dashboard rather than asking for a password again.
+ */
+const renderResponsePage = (title, message, type = "success", signIn = false) => {
   const colors = {
     success: { bg: "#22c55e", icon: "✓" },
     error: { bg: "#ef4444", icon: "✕" },
@@ -474,6 +481,19 @@ const renderResponsePage = (title, message, type = "success") => {
           transition: background 0.2s;
         }
         .btn:hover { background: #2563eb; }
+        a.btn { display: inline-block; text-decoration: none; }
+        .btn.secondary {
+          background: transparent;
+          border: 1px solid #334155;
+          color: #94a3b8;
+        }
+        .btn.secondary:hover { background: #1e293b; }
+        .actions {
+          display: flex;
+          gap: 12px;
+          justify-content: center;
+          flex-wrap: wrap;
+        }
         .logo {
           color: #64748b;
           font-size: 14px;
@@ -486,9 +506,16 @@ const renderResponsePage = (title, message, type = "success") => {
         <div class="icon">${color.icon}</div>
         <h1>${title}</h1>
         <p>${message}</p>
-        <button class="btn" onclick="window.close(); setTimeout(() => { if(!window.closed) window.location.href='about:blank'; }, 100);">
-          Close Window
-        </button>
+        <div class="actions">
+          ${
+            signIn
+              ? `<a class="btn" href="${frontendBase()}/login">Sign In</a>`
+              : ""
+          }
+          <button class="btn secondary" onclick="window.close(); setTimeout(() => { if(!window.closed) window.location.href='about:blank'; }, 100);">
+            Close Window
+          </button>
+        </div>
         <div class="logo">Plansure</div>
       </div>
     </body>
@@ -588,6 +615,7 @@ router.get("/invite/accept/:token", async (req, res) => {
             ? `${names} is now open to you. Sign in with the password you already use for Plansure.`
             : "This invitation has been accepted. Sign in with the password you already use for Plansure.",
           "success",
+          true,
         ),
       );
     }
@@ -727,6 +755,21 @@ router.get("/invite/reject/:token", async (req, res) => {
       (m) => m.inviteToken === hashedToken && m.status === "pending",
     );
 
+    /* Read before anything is removed — once the rows are gone there is
+       nothing left to say which projects were turned down. */
+    const invitedBy = user.invitedBy;
+    const declinedNames = declined.length
+      ? (
+          await Project.find({
+            _id: { $in: declined.map((m) => m.project) },
+          }).select("name")
+        )
+          .map((pr) => pr.name)
+          .join(", ")
+      : "";
+
+    let accountRemoved = false;
+
     if (declined.length > 0) {
       user.memberships = (user.memberships || []).filter(
         (m) => !(m.inviteToken === hashedToken && m.status === "pending"),
@@ -735,11 +778,34 @@ router.get("/invite/reject/:token", async (req, res) => {
 
       if (user.memberships.length === 0 && user.status === "pending") {
         await Admin.findByIdAndDelete(user._id);
+        accountRemoved = true;
       } else {
         await user.save();
       }
     } else {
       await Admin.findByIdAndDelete(user._id);
+      accountRemoved = true;
+    }
+
+    /* The row simply disappears from the inviter's view, so without this
+       nobody learns the place was turned down rather than still waiting. */
+    if (invitedBy) {
+      try {
+        await Notification.create({
+          recipient: invitedBy,
+          /* Omitted when the account has just been deleted — a sender that no
+             longer exists populates as null and the notice reads as unsigned. */
+          ...(accountRemoved ? {} : { sender: user._id }),
+          type: "invite_declined",
+          title: "Invitation Declined",
+          message: declinedNames
+            ? `${user.name} declined the invitation to ${declinedNames}.`
+            : `${user.name} declined their invitation.`,
+          ...(declined.length ? { project: declined[0].project } : {}),
+        });
+      } catch (notifyError) {
+        console.error("Failed to record the declined invitation:", notifyError);
+      }
     }
 
     return res.send(
