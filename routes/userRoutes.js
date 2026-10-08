@@ -1220,6 +1220,18 @@ router.put("/:id", protect, async (req, res) => {
         m.role,
       ]),
     );
+
+    /* Project and role together. Comparing the projects alone missed a role
+       changed on one of them, and comparing the headline role missed it too —
+       somebody who is a PM on two projects is still a PM after one of them is
+       moved to Planner, so neither test saw the change the notice exists to
+       report. */
+    const accessSignature = (held) =>
+      [...held.entries()]
+        .map(([id, role]) => `${id}:${role}`)
+        .sort()
+        .join(",");
+    const oldAccess = accessSignature(roleWasOn);
     const oldRole = user.role;
 
     if (name) user.name = name;
@@ -1287,8 +1299,15 @@ router.put("/:id", protect, async (req, res) => {
     }
 
     const wasActive = !wasPending && user.status === "active";
+    const roleIsOn = new Map(
+      (user.memberships || []).map((m) => [
+        String(m.project?._id || m.project),
+        m.role,
+      ]),
+    );
+
     const shouldNotifyActiveUser =
-      wasActive && (oldProjects !== newProjects || oldRole !== newRole);
+      wasActive && accessSignature(roleIsOn) !== oldAccess;
 
     await user.save();
 
@@ -1330,13 +1349,6 @@ router.put("/:id", protect, async (req, res) => {
          strongest held anywhere, so on its own it says "Admin to Planner"
          without naming the project whose role changed — nothing the recipient
          can act on. */
-      const roleIsOn = new Map(
-        (user.memberships || []).map((m) => [
-          String(m.project?._id || m.project),
-          m.role,
-        ]),
-      );
-
       const touched = [...new Set([...roleWasOn.keys(), ...roleIsOn.keys()])]
         .map((id) => ({
           project: id,
