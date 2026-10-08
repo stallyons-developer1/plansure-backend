@@ -28,12 +28,15 @@ const levelOf = (role, isSuperAdmin) =>
   role === "admin" && isSuperAdmin ? 4 : LEVELS[role] || 0;
 const levelOfActor = (actor) => levelOf(actor.role, actor.isSuperAdmin);
 
-/* Who may act on an account. An admin manages everyone; below that you manage
-   only the accounts you invited. The same test the list sends out as
-   canManage, so a control the screen offers is one the server will accept. */
+/* Who may act on an account. The owner manages everyone; everybody else —
+   PM, Planner and User alike — manages only the accounts they brought in
+   themselves. A PM runs their projects, which is not the same as owning the
+   people on them: somebody else's invitee is somebody else's to withdraw. The
+   same test the list sends out as canManage, so a control the screen offers is
+   one the server will accept. */
 const mayManage = (actor, target) =>
   canManageAccount(actor, target) &&
-  (actor.role === "admin" ||
+  (actor.isSuperAdmin ||
     String(target.invitedBy?._id || target.invitedBy || "") ===
       String(actor._id));
 
@@ -891,22 +894,17 @@ router.get("/", protect, async (req, res) => {
        because the same endpoint feeds the assignee dropdowns, which need the
        whole active list.
 
-       An account is visible to you when you share a project with it. An
-       account with no project yet belongs to nobody's project, so it would
-       otherwise vanish the moment it is created — those stay visible to every
-       admin, and to whoever sent the invitation, so the person who created it
-       can still find it and grant the project. The Super Admin sees all. */
+       An account is visible to you when you share a project with it. One
+       whose invitation is still outstanding shares none yet — it is held by
+       nobody's project until it is accepted — so it stays visible to whoever
+       sent it, which is also the only person who may act on it. The Super
+       Admin sees all. */
     const visibility = [];
     if (managedOnly === "true" && !req.admin.isSuperAdmin) {
       const myProjects = (req.admin.projects || []).map((id) => String(id));
 
       if (myProjects.length > 0) {
         visibility.push({ projects: { $in: myProjects } });
-      }
-
-      if (req.admin.role === "admin") {
-        visibility.push({ projects: { $size: 0 } });
-        visibility.push({ projects: { $exists: false } });
       }
 
       // Whoever sent the invitation keeps sight of it, and everyone sees
@@ -952,15 +950,9 @@ router.get("/", protect, async (req, res) => {
       users.map(async (user) => {
         let projectNames = [];
 
-        /* Who may act on this row. An admin manages everyone; a Planner or a
-           User only the accounts they brought in themselves, so the controls
-           are greyed out on anyone else's. The Super Admin's row stays out of
-           a PM's reach, as elsewhere. */
-        const canManage =
-          canManageAccount(req.admin, user) &&
-          (req.admin.role === "admin" ||
-            String(user.invitedBy?._id || user.invitedBy || "") ===
-              String(req.admin._id));
+        /* Who may act on this row — the same rule as mayManage, so the
+           controls the screen offers are the ones the server will accept. */
+        const canManage = mayManage(req.admin, user);
 
         if (user.role === "admin" && user.isSuperAdmin) {
           return {
