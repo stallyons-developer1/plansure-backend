@@ -1185,10 +1185,17 @@ router.put("/:id", protect, async (req, res) => {
     }
 
     const wasPending = user.status === "pending";
-    const oldProjects = user.projects
-      .map((p) => p._id.toString())
-      .sort()
-      .join(",");
+    /* Read from the memberships, not from `projects`.
+     *
+     * `projects` holds only the places actually taken up, so a project granted
+     * but not yet accepted is not in it — and the notice, which exists to say
+     * what was just granted, found nothing there and fell back to naming them
+     * all. What was granted is what the memberships say. */
+    const membershipIds = (rows) =>
+      (rows || []).map((m) => String(m.project?._id || m.project));
+
+    const oldProjectIds = membershipIds(user.memberships);
+    const oldProjects = [...oldProjectIds].sort().join(",");
     const oldRole = user.role;
 
     if (name) user.name = name;
@@ -1222,7 +1229,7 @@ router.put("/:id", protect, async (req, res) => {
 
     if (status) user.status = status;
 
-    const newProjectIds = (user.projects || []).map((p) => String(p._id || p));
+    const newProjectIds = membershipIds(user.memberships);
     const newProjects = [...newProjectIds].sort().join(",");
     /* The account as it now stands, not what the form happened to send. The
        form sends `memberships`, so `role` and `projects` arrive undefined —
