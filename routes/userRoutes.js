@@ -164,6 +164,7 @@ const sendRoleInvites = async ({ user, invitedByName, roles }) => {
       email: user.email,
       name: user.name,
       role: user.role,
+      isSuperAdmin: !!user.isSuperAdmin,
       projectName: "All Projects",
       invitedByName,
       acceptUrl: `${backendUrl}/api/users/invite/accept/${token}`,
@@ -1261,6 +1262,35 @@ router.put("/:id", protect, async (req, res) => {
       if (built.memberships.length === 0 && role) user.role = role;
     } else if (role) {
       user.role = role;
+    }
+
+    /*
+     * Making an account an owner, or taking that away.
+     *
+     * Only an owner may do either: the flag is unscoped, so anyone who could
+     * set it on themselves or a friend would be handing out the whole system.
+     * An owner holds no per-project places — it reaches every project — so
+     * granting it clears them, and withdrawing it leaves an account with
+     * whatever projects the same edit granted, or none at all.
+     */
+    if (req.body.isSuperAdmin !== undefined && req.admin.isSuperAdmin) {
+      const makeOwner = Boolean(req.body.isSuperAdmin);
+
+      if (!makeOwner && (await wouldRemoveLastSuperAdmin(user))) {
+        return sendError(
+          res,
+          "This is the last Super Admin. Promote another account before changing this one's role.",
+          409,
+        );
+      }
+
+      if (makeOwner && !user.isSuperAdmin) {
+        user.memberships = [];
+        user.projects = [];
+        user.role = "admin";
+      }
+
+      user.isSuperAdmin = makeOwner;
     }
 
     if (status) user.status = status;

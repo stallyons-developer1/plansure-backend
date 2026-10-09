@@ -59,8 +59,10 @@ const logoTag = () =>
 
 /* What the recipient should see. "admin" is the stored value; PM is what the
    role is called everywhere a person looks at it. */
-const roleLabel = (role) => {
-  if (role === "admin") return "PM";
+const roleLabel = (role, isSuperAdmin = false) => {
+  /* The owner is stored as an admin with a flag, so the role alone reads as
+     PM — which is what every invitation to an owner said it was offering. */
+  if (role === "admin") return isSuperAdmin ? "Super Admin" : "PM";
   if (!role) return "";
   return role.charAt(0).toUpperCase() + role.slice(1);
 };
@@ -90,7 +92,7 @@ const isSmtp = () => {
 const inviteSubject = (options) => {
   if (!options.role) return "You've been invited to join Plansure";
 
-  const base = `You've been invited to join Plansure as a ${roleLabel(options.role)}`;
+  const base = `You've been invited to join Plansure as a ${roleLabel(options.role, options.isSuperAdmin)}`;
   const projects = Array.isArray(options.memberships)
     ? [...new Set(options.memberships.map((m) => m.projectName).filter(Boolean))]
     : [];
@@ -129,7 +131,7 @@ const inviteText = (options) => {
       lines.push(`  ${m.projectName} — ${roleLabel(m.role)}`),
     );
   } else {
-    lines.push(`  ${roleLabel(options.role)}`);
+    lines.push(`  ${roleLabel(options.role, options.isSuperAdmin)}`);
   }
 
   lines.push(
@@ -191,7 +193,7 @@ const sendInviteEmail = async (options) => {
                      .join("")}
                  </table>`
               : `<p><strong>Your Role:</strong></p>
-                 <span class="role-badge ${options.role}">${roleLabel(options.role)}</span>`
+                 <span class="role-badge ${options.role}">${roleLabel(options.role, options.isSuperAdmin)}</span>`
           }
 
 
