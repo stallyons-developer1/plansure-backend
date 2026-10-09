@@ -1233,6 +1233,7 @@ router.put("/:id", protect, async (req, res) => {
         .sort()
         .join(",");
     const oldAccess = accessSignature(roleWasOn);
+    const wasSuperAdmin = !!user.isSuperAdmin;
     const oldRole = user.role;
 
     if (name) user.name = name;
@@ -1336,8 +1337,17 @@ router.put("/:id", protect, async (req, res) => {
       ]),
     );
 
+    /* Granting ownership to an account that held no projects moves nothing in
+       the signature, and it is the largest change there is. */
+    const ownerChange =
+      wasSuperAdmin === !!user.isSuperAdmin
+        ? null
+        : user.isSuperAdmin
+          ? "granted"
+          : "withdrawn";
+
     const shouldNotifyActiveUser =
-      wasActive && accessSignature(roleIsOn) !== oldAccess;
+      wasActive && (ownerChange || accessSignature(roleIsOn) !== oldAccess);
 
     await user.save();
 
@@ -1396,6 +1406,7 @@ router.put("/:id", protect, async (req, res) => {
         await sendRoleChangeEmail({
           email: user.email,
           name: user.name,
+          ownerChange,
           changes: touched.map((c) => ({
             ...c,
             projectName: nameById.get(c.project) || "Project",

@@ -404,7 +404,25 @@ const sendRoleChangeEmail = async (options) => {
    * project whose role had actually moved, which tells the recipient nothing
    * they can act on.
    */
-  if (Array.isArray(options.changes) && options.changes.length > 0) {
+  /* Becoming an owner clears the per-project places, because an owner reaches
+     every project and holds a place on none. Listing those as removals read as
+     access being taken away on the very edit that granted everything, so the
+     grant is reported on its own. */
+  if (options.ownerChange === "granted") {
+    changes.push(
+      `<li>Role changed to <strong>Super Admin</strong> — you now reach every project.</li>`,
+    );
+  } else if (options.ownerChange === "withdrawn") {
+    changes.push(
+      `<li>You are no longer a <strong>Super Admin</strong>.</li>`,
+    );
+  }
+
+  if (
+    options.ownerChange !== "granted" &&
+    Array.isArray(options.changes) &&
+    options.changes.length > 0
+  ) {
     options.changes.forEach((c) => {
       if (!c.from) {
         changes.push(
@@ -418,7 +436,7 @@ const sendRoleChangeEmail = async (options) => {
         );
       }
     });
-  } else {
+  } else if (!options.ownerChange) {
     /* The older shape, one role across the whole account. */
     if (options.oldRole !== options.newRole) {
       changes.push(
