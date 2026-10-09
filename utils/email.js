@@ -410,7 +410,7 @@ const sendRoleChangeEmail = async (options) => {
      grant is reported on its own. */
   if (options.ownerChange === "granted") {
     changes.push(
-      `<li>Role changed to <strong>Super Admin</strong> — you now reach every project.</li>`,
+      `<li>Role updated to <strong>Super Admin</strong> — you now have access to all projects.</li>`,
     );
   } else if (options.ownerChange === "withdrawn") {
     changes.push(
