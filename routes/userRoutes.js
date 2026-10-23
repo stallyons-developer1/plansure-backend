@@ -860,14 +860,14 @@ router.get("/invite/reject/:token", async (req, res) => {
 });
 
 /*
- * The registration page behind a handover link.
+ * The page behind a handover link.
  *
- * Says only enough to render the page — who it is for and what it grants. The
- * email is returned because the page asks the person to confirm it: the link
- * is passed from hand to hand, and typing back the address it was issued for
- * is the first of the two things that must match.
+ * Says only enough to render it — who it is for and what it grants. Reading
+ * this takes nothing up: a link pasted into a chat window is fetched by the
+ * previewer before anyone clicks it, and an invitation that spent itself on a
+ * preview would leave the recipient holding a dead link.
  */
-router.get("/register/:token", async (req, res) => {
+router.get("/auth/:token", async (req, res) => {
   try {
     const hashedToken = crypto
       .createHash("sha256")
@@ -888,7 +888,7 @@ router.get("/register/:token", async (req, res) => {
       return sendValidationError(res, [
         {
           field: "token",
-          message: "This registration link is invalid or has expired.",
+          message: "This link is invalid or has expired.",
         },
       ]);
     }
@@ -900,16 +900,9 @@ router.get("/register/:token", async (req, res) => {
     return sendSuccess(res, {
       valid: true,
       name: user.name,
-      /* Masked. Enough to recognise the address, not enough for somebody
-         holding a forwarded link to learn it. */
-      emailHint: user.email.replace(/^(.)(.*)(@.*)$/, (_, a, b, c) =>
-        `${a}${"•".repeat(Math.min(b.length, 6))}${c}`,
-      ),
+      email: user.email,
       role: offered[0]?.role,
       projects: offered.map((m) => m.project?.name).filter(Boolean),
-      /* Whether this account has signed in before. If it has, the page asks
-         for the existing password rather than setting a new one. */
-      hasPassword: Boolean(user.password),
     });
   } catch (error) {
     console.error(error);
@@ -918,21 +911,18 @@ router.get("/register/:token", async (req, res) => {
 });
 
 /*
- * Completing registration from a handover link.
+ * Taking the place up.
  *
- * Three things have to line up: the link, the code that travelled separately,
- * and the address the invitation was issued for. The link on its own — the one
- * thing that can be forwarded — opens nothing.
+ * Deliberate, rather than on the page loading, so a link previewer cannot
+ * spend somebody's invitation for them.
  *
- * The password is set here rather than emailed. Where this path is used at all
- * it is because the recipient's mail system is holding our messages, so a
- * temporary password sent by email would be held with them and leave the
- * person no better off.
+ * The password is returned here rather than emailed. This path exists because
+ * the recipient's mail system is holding our messages, so a temporary password
+ * sent by email would be held with them and leave them no better off. It is
+ * shown once; the account carries the hash and nothing can read it back.
  */
-router.post("/register/:token", async (req, res) => {
+router.post("/auth/:token", async (req, res) => {
   try {
-    const { code, email, password } = req.body || {};
-
     const hashedToken = crypto
       .createHash("sha256")
       .update(req.params.token)
@@ -950,10 +940,7 @@ router.post("/register/:token", async (req, res) => {
 
     if (!user) {
       return sendValidationError(res, [
-        {
-          field: "token",
-          message: "This registration link is invalid or has expired.",
-        },
+        { field: "token", message: "This link is invalid or has expired." },
       ]);
     }
 
@@ -961,76 +948,20 @@ router.post("/register/:token", async (req, res) => {
       (m) => m.inviteToken === hashedToken && m.status === "pending",
     );
 
-    /* Counted across the group, since they share a link. Five wrong codes and
-       the link is spent — a six-digit code is only as good as the number of
-       guesses allowed against it. */
-    const attempts = offered[0]?.inviteCodeAttempts || 0;
-    if (attempts >= 5) {
-      offered.forEach((m) => {
-        m.inviteToken = undefined;
-        m.inviteTokenExpiry = undefined;
-        m.inviteCode = undefined;
-      });
-      user.markModified("memberships");
-      await user.save();
-      return sendValidationError(res, [
-        {
-          field: "code",
-          message:
-            "Too many incorrect codes. This link has been withdrawn — ask for a new one.",
-        },
-      ]);
-    }
-
-    const hashedCode = crypto
-      .createHash("sha256")
-      .update(String(code || ""))
-      .digest("hex");
-
-    const codeMatches = Boolean(offered[0]?.inviteCode) &&
-      hashedCode === offered[0].inviteCode;
-    const emailMatches =
-      typeof email === "string" &&
-      email.trim().toLowerCase() === user.email.toLowerCase();
-
-    /* One message for both, so a wrong guess cannot be used to work out which
-       half was right. */
-    if (!codeMatches || !emailMatches) {
-      offered.forEach((m) => {
-        m.inviteCodeAttempts = attempts + 1;
-      });
-      user.markModified("memberships");
-      await user.save();
-      return sendValidationError(res, [
-        {
-          field: "code",
-          message: "That email address and code do not match this link.",
-        },
-      ]);
-    }
-
-    /* Only when the account has never been signed into. One that has is simply
-       taking up another place and keeps the password it already uses. */
+    /* Issued once. An account taking up a second place already has
+       credentials, and replacing them would break the ones in use. */
     const firstTimeIn = !user.password;
+    let temporaryPassword = null;
+
     if (firstTimeIn) {
-      const passwordError = validatePassword(password);
-      if (passwordError) {
-        return sendValidationError(res, [passwordError]);
-      }
-      if (!password) {
-        return sendValidationError(res, [
-          { field: "password", message: "Choose a password" },
-        ]);
-      }
-      user.password = password;
+      temporaryPassword = crypto.randomBytes(4).toString("hex") + "A1!";
+      user.password = temporaryPassword;
     }
 
     offered.forEach((m) => {
       m.status = "active";
       m.inviteToken = undefined;
       m.inviteTokenExpiry = undefined;
-      m.inviteCode = undefined;
-      m.inviteCodeAttempts = 0;
     });
     user.markModified("memberships");
     user.status = "active";
@@ -1041,9 +972,13 @@ router.post("/register/:token", async (req, res) => {
 
     return sendSuccess(
       res,
-      { email: user.email, setPassword: firstTimeIn },
+      {
+        email: user.email,
+        password: temporaryPassword,
+        setPassword: firstTimeIn,
+      },
       firstTimeIn
-        ? "Registration complete. You can now sign in."
+        ? "Your account is ready."
         : "This access has been added to your existing account.",
     );
   } catch (error) {
@@ -1775,8 +1710,7 @@ router.post("/:id/registration-link", protect, async (req, res) => {
     return sendSuccess(
       res,
       {
-        url: `${frontendBase()}/register/${minted.token}`,
-        code: minted.code,
+        url: `${frontendBase()}/auth/${minted.token}`,
         expiresAt: minted.expiresAt,
         email: user.email,
         role: outstanding[0].role,

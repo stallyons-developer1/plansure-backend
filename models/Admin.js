@@ -65,15 +65,6 @@ const adminSchema = new mongoose.Schema(
         },
         inviteToken: String,
         inviteTokenExpiry: Date,
-        /*
-         * A registration link handed over by hand rather than emailed, for
-         * recipients whose mail system holds our invitations. The link alone
-         * is not enough to take the place up — a short code travels with it by
-         * a different route, so a link forwarded on its own opens nothing.
-         * Stored hashed, like the token.
-         */
-        inviteCode: String,
-        inviteCodeAttempts: { type: Number, default: 0 },
         role: {
           type: String,
           enum: ["admin", "planner", "user"],
@@ -165,36 +156,28 @@ adminSchema.methods.generateMembershipInviteToken = function (role) {
 };
 
 /*
- * A link for one role's invitation that is handed over rather than emailed,
- * and the code that goes with it.
+ * A link for one role's invitation that is handed over rather than emailed.
  *
- * Shorter-lived than an emailed invitation — a fortyeight-hour window, because
- * this one is being passed to somebody directly and is expected to be used
- * while the conversation is still happening. The code is six digits, kept
- * hashed, and the attempt counter is reset so a fresh link does not inherit a
- * previous one's failures.
+ * Shorter-lived than an emailed invitation — forty-eight hours, because this
+ * one is passed to somebody directly and is expected to be used while the
+ * conversation is still happening.
  */
 adminSchema.methods.generateHandoverInvite = function (role) {
   const token = crypto.randomBytes(32).toString("hex");
-  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0");
-
-  const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
-  const hashedCode = crypto.createHash("sha256").update(code).digest("hex");
+  const hashed = crypto.createHash("sha256").update(token).digest("hex");
   const expiry = Date.now() + 48 * 60 * 60 * 1000;
 
   let stamped = 0;
   (this.memberships || []).forEach((m) => {
     if (m.role !== role || m.status !== "pending") return;
-    m.inviteToken = hashedToken;
+    m.inviteToken = hashed;
     m.inviteTokenExpiry = expiry;
-    m.inviteCode = hashedCode;
-    m.inviteCodeAttempts = 0;
     stamped += 1;
   });
 
   if (stamped === 0) return null;
   this.markModified("memberships");
-  return { token, code, expiresAt: new Date(expiry) };
+  return { token, expiresAt: new Date(expiry) };
 };
 
 /* Short-lived by design. An invite can sit in an inbox for a week because it
