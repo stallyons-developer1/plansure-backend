@@ -133,6 +133,31 @@ const logAudit = async (options) => {
 const auditLogger = {
   log: logAudit,
 
+  /* A link handed over by hand bypasses the invitation email, so the trail has
+     to say who issued one and who used it — there is no mail record to fall
+     back on. */
+  registrationLinkIssued: (req, user, target, role) =>
+    logAudit({
+      action: "REGISTRATION_LINK_ISSUED",
+      req,
+      user,
+      resourceType: "USER",
+      resourceId: target._id,
+      resourceName: target.email,
+      description: `${user.name} issued a handover registration link for ${target.email} (${role})`,
+    }),
+
+  registrationCompleted: (req, target, role) =>
+    logAudit({
+      action: "REGISTRATION_COMPLETED",
+      req,
+      user: target,
+      resourceType: "USER",
+      resourceId: target._id,
+      resourceName: target.email,
+      description: `${target.email} completed registration through a handover link (${role})`,
+    }),
+
   loginSuccess: (req, user) =>
     logAudit({
       action: "USER_LOGIN",

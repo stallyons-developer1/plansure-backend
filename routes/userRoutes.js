@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const Admin = require("../models/Admin");
 const Project = require("../models/Project");
 const Notification = require("../models/Notification");
+const auditLogger = require("../utils/auditLogger");
 const { protect } = require("../middleware/authMiddleware");
 
 /* A PM has the same reach as the Super Admin in User Management — they see and
@@ -858,6 +859,199 @@ router.get("/invite/reject/:token", async (req, res) => {
   }
 });
 
+/*
+ * The registration page behind a handover link.
+ *
+ * Says only enough to render the page — who it is for and what it grants. The
+ * email is returned because the page asks the person to confirm it: the link
+ * is passed from hand to hand, and typing back the address it was issued for
+ * is the first of the two things that must match.
+ */
+router.get("/register/:token", async (req, res) => {
+  try {
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(req.params.token)
+      .digest("hex");
+
+    const user = await Admin.findOne({
+      memberships: {
+        $elemMatch: {
+          inviteToken: hashedToken,
+          inviteTokenExpiry: { $gt: new Date() },
+          status: "pending",
+        },
+      },
+    }).populate("memberships.project", "name");
+
+    if (!user) {
+      return sendValidationError(res, [
+        {
+          field: "token",
+          message: "This registration link is invalid or has expired.",
+        },
+      ]);
+    }
+
+    const offered = (user.memberships || []).filter(
+      (m) => m.inviteToken === hashedToken && m.status === "pending",
+    );
+
+    return sendSuccess(res, {
+      valid: true,
+      name: user.name,
+      /* Masked. Enough to recognise the address, not enough for somebody
+         holding a forwarded link to learn it. */
+      emailHint: user.email.replace(/^(.)(.*)(@.*)$/, (_, a, b, c) =>
+        `${a}${"•".repeat(Math.min(b.length, 6))}${c}`,
+      ),
+      role: offered[0]?.role,
+      projects: offered.map((m) => m.project?.name).filter(Boolean),
+      /* Whether this account has signed in before. If it has, the page asks
+         for the existing password rather than setting a new one. */
+      hasPassword: Boolean(user.password),
+    });
+  } catch (error) {
+    console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
+/*
+ * Completing registration from a handover link.
+ *
+ * Three things have to line up: the link, the code that travelled separately,
+ * and the address the invitation was issued for. The link on its own — the one
+ * thing that can be forwarded — opens nothing.
+ *
+ * The password is set here rather than emailed. Where this path is used at all
+ * it is because the recipient's mail system is holding our messages, so a
+ * temporary password sent by email would be held with them and leave the
+ * person no better off.
+ */
+router.post("/register/:token", async (req, res) => {
+  try {
+    const { code, email, password } = req.body || {};
+
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(req.params.token)
+      .digest("hex");
+
+    const user = await Admin.findOne({
+      memberships: {
+        $elemMatch: {
+          inviteToken: hashedToken,
+          inviteTokenExpiry: { $gt: new Date() },
+          status: "pending",
+        },
+      },
+    });
+
+    if (!user) {
+      return sendValidationError(res, [
+        {
+          field: "token",
+          message: "This registration link is invalid or has expired.",
+        },
+      ]);
+    }
+
+    const offered = (user.memberships || []).filter(
+      (m) => m.inviteToken === hashedToken && m.status === "pending",
+    );
+
+    /* Counted across the group, since they share a link. Five wrong codes and
+       the link is spent — a six-digit code is only as good as the number of
+       guesses allowed against it. */
+    const attempts = offered[0]?.inviteCodeAttempts || 0;
+    if (attempts >= 5) {
+      offered.forEach((m) => {
+        m.inviteToken = undefined;
+        m.inviteTokenExpiry = undefined;
+        m.inviteCode = undefined;
+      });
+      user.markModified("memberships");
+      await user.save();
+      return sendValidationError(res, [
+        {
+          field: "code",
+          message:
+            "Too many incorrect codes. This link has been withdrawn — ask for a new one.",
+        },
+      ]);
+    }
+
+    const hashedCode = crypto
+      .createHash("sha256")
+      .update(String(code || ""))
+      .digest("hex");
+
+    const codeMatches = Boolean(offered[0]?.inviteCode) &&
+      hashedCode === offered[0].inviteCode;
+    const emailMatches =
+      typeof email === "string" &&
+      email.trim().toLowerCase() === user.email.toLowerCase();
+
+    /* One message for both, so a wrong guess cannot be used to work out which
+       half was right. */
+    if (!codeMatches || !emailMatches) {
+      offered.forEach((m) => {
+        m.inviteCodeAttempts = attempts + 1;
+      });
+      user.markModified("memberships");
+      await user.save();
+      return sendValidationError(res, [
+        {
+          field: "code",
+          message: "That email address and code do not match this link.",
+        },
+      ]);
+    }
+
+    /* Only when the account has never been signed into. One that has is simply
+       taking up another place and keeps the password it already uses. */
+    const firstTimeIn = !user.password;
+    if (firstTimeIn) {
+      const passwordError = validatePassword(password);
+      if (passwordError) {
+        return sendValidationError(res, [passwordError]);
+      }
+      if (!password) {
+        return sendValidationError(res, [
+          { field: "password", message: "Choose a password" },
+        ]);
+      }
+      user.password = password;
+    }
+
+    offered.forEach((m) => {
+      m.status = "active";
+      m.inviteToken = undefined;
+      m.inviteTokenExpiry = undefined;
+      m.inviteCode = undefined;
+      m.inviteCodeAttempts = 0;
+    });
+    user.markModified("memberships");
+    user.status = "active";
+
+    await user.save();
+
+    await auditLogger.registrationCompleted(req, user, offered[0].role);
+
+    return sendSuccess(
+      res,
+      { email: user.email, setPassword: firstTimeIn },
+      firstTimeIn
+        ? "Registration complete. You can now sign in."
+        : "This access has been added to your existing account.",
+    );
+  } catch (error) {
+    console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
 router.get("/invite/verify/:token", async (req, res) => {
   try {
     const hashedToken = crypto
@@ -1512,6 +1706,83 @@ router.delete("/:id", protect, async (req, res) => {
     await Admin.findByIdAndDelete(req.params.id);
 
     return sendSuccess(res, {}, "User deleted successfully");
+  } catch (error) {
+    console.error(error);
+    return sendError(res, "Server error");
+  }
+});
+
+/*
+ * A registration link to hand over by hand.
+ *
+ * Where a recipient's mail system holds our invitations — a corporate tenant
+ * quarantining a sending domain it has no history with — the invitation never
+ * reaches them and there is nothing they can do about it from their side. This
+ * mints the same invitation as a link the administrator can pass on through
+ * whatever channel does reach them.
+ *
+ * The link alone is not enough. A six-digit code is returned with it and has
+ * to travel separately: send the link one way and the code another, and a link
+ * forwarded on its own opens nothing. Both are shown once.
+ */
+router.post("/:id/registration-link", protect, async (req, res) => {
+  try {
+    const user = await Admin.findById(req.params.id);
+
+    if (!user) {
+      return sendError(res, "User not found", 404);
+    }
+
+    if (!mayManage(req.admin, user)) {
+      return sendError(
+        res,
+        canManageAccount(req.admin, user)
+          ? NOT_YOURS
+          : "The Super Admin account cannot be changed from here.",
+        403,
+      );
+    }
+
+    /* One role's places at a time, the same unit an invitation covers. */
+    const role = req.body?.role;
+    const outstanding = (user.memberships || []).filter(
+      (m) => m.status === "pending" && (!role || m.role === role),
+    );
+
+    if (outstanding.length === 0) {
+      return sendValidationError(res, [
+        {
+          field: "role",
+          message: "There is no invitation outstanding for this user",
+        },
+      ]);
+    }
+
+    const minted = user.generateHandoverInvite(outstanding[0].role);
+    if (!minted) {
+      return sendError(res, "Could not create a registration link", 500);
+    }
+
+    await user.save();
+
+    await auditLogger.registrationLinkIssued(
+      req,
+      req.admin,
+      user,
+      outstanding[0].role,
+    );
+
+    return sendSuccess(
+      res,
+      {
+        url: `${frontendBase()}/register/${minted.token}`,
+        code: minted.code,
+        expiresAt: minted.expiresAt,
+        email: user.email,
+        role: outstanding[0].role,
+      },
+      "Registration link created",
+    );
   } catch (error) {
     console.error(error);
     return sendError(res, "Server error");
