@@ -860,61 +860,13 @@ router.get("/invite/reject/:token", async (req, res) => {
 });
 
 /*
- * The page behind a handover link.
- *
- * Says only enough to render it — who it is for and what it grants. Reading
- * this takes nothing up: a link pasted into a chat window is fetched by the
- * previewer before anyone clicks it, and an invitation that spent itself on a
- * preview would leave the recipient holding a dead link.
- */
-router.get("/auth/:token", async (req, res) => {
-  try {
-    const hashedToken = crypto
-      .createHash("sha256")
-      .update(req.params.token)
-      .digest("hex");
-
-    const user = await Admin.findOne({
-      memberships: {
-        $elemMatch: {
-          inviteToken: hashedToken,
-          inviteTokenExpiry: { $gt: new Date() },
-          status: "pending",
-        },
-      },
-    }).populate("memberships.project", "name");
-
-    if (!user) {
-      return sendValidationError(res, [
-        {
-          field: "token",
-          message: "This link is invalid or has expired.",
-        },
-      ]);
-    }
-
-    const offered = (user.memberships || []).filter(
-      (m) => m.inviteToken === hashedToken && m.status === "pending",
-    );
-
-    return sendSuccess(res, {
-      valid: true,
-      name: user.name,
-      email: user.email,
-      role: offered[0]?.role,
-      projects: offered.map((m) => m.project?.name).filter(Boolean),
-    });
-  } catch (error) {
-    console.error(error);
-    return sendError(res, "Server error");
-  }
-});
-
-/*
  * Taking the place up.
  *
- * Deliberate, rather than on the page loading, so a link previewer cannot
- * spend somebody's invitation for them.
+ * Asked for by the page's own code as it opens, not by fetching the address.
+ * A link pasted into a chat window is fetched by the previewer before anyone
+ * presses it, but a previewer reads the document and does not run it — so the
+ * invitation survives being pasted somewhere and is spent only when a person
+ * actually opens it.
  *
  * The password is returned here rather than emailed. This path exists because
  * the recipient's mail system is holding our messages, so a temporary password
@@ -936,7 +888,7 @@ router.post("/auth/:token", async (req, res) => {
           status: "pending",
         },
       },
-    });
+    }).populate("memberships.project", "name");
 
     if (!user) {
       return sendValidationError(res, [
@@ -947,6 +899,10 @@ router.post("/auth/:token", async (req, res) => {
     const offered = (user.memberships || []).filter(
       (m) => m.inviteToken === hashedToken && m.status === "pending",
     );
+
+    /* Read before the rows are cleared — the page that shows the password also
+       names what was taken up, and afterwards there is nothing left to name. */
+    const projects = offered.map((m) => m.project?.name).filter(Boolean);
 
     /* Issued once. An account taking up a second place already has
        credentials, and replacing them would break the ones in use. */
@@ -973,7 +929,9 @@ router.post("/auth/:token", async (req, res) => {
     return sendSuccess(
       res,
       {
+        name: user.name,
         email: user.email,
+        projects,
         password: temporaryPassword,
         setPassword: firstTimeIn,
       },
