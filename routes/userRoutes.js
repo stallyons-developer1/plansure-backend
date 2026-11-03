@@ -78,9 +78,12 @@ const withLegacyRows = (user) => {
    - they sit above the place on that project, e.g. a PM over a Planner. This
      also covers places saved before grantedBy was recorded.
    A place at the editor's own level that somebody else granted, such as
-   another PM on the same project, stays read only. */
-const mayEditPlace = (actor, target, m) => {
+   another PM on the same project, stays read only, unless the editor created
+   the project: its creator may set any role on it, PM included.
+   `createdByActor` is the set of project ids the editor created. */
+const mayEditPlace = (actor, target, m, createdByActor = new Set()) => {
   if (actor.isSuperAdmin) return true;
+  if (createdByActor.has(String(m.project?._id || m.project))) return true;
   const mine = actor.roleOn(m.project?._id || m.project);
   if (!mine) return false;
   const theirs = levelOf(m.role, false);
@@ -92,17 +95,25 @@ const mayEditPlace = (actor, target, m) => {
   return grantedByMe || theirs < own;
 };
 
+/* Ids of the projects this account created. */
+const projectsCreatedBy = async (actor) =>
+  new Set(
+    (await Project.find({ createdBy: actor._id }).select("_id")).map((p) =>
+      String(p._id),
+    ),
+  );
+
 /* What a non-owner's edit may touch. Places they may edit go through
    buildMemberships like anything new: a changed role is applied, a row left
    out is removed. Every other place is kept exactly as it was, whatever the
    form sends for it. */
-const splitForeignRows = (actor, body, existing, target) => {
+const splitForeignRows = (actor, body, existing, target, createdByActor) => {
   if (actor.isSuperAdmin || !Array.isArray(body.memberships)) {
     return { body, foreign: [] };
   }
   const idOf = (m) => String(m.project?._id || m.project);
   const foreign = (existing || []).filter(
-    (m) => !mayEditPlace(actor, target, m),
+    (m) => !mayEditPlace(actor, target, m, createdByActor),
   );
   const foreignIds = new Set(foreign.map(idOf));
   return {
@@ -1130,6 +1141,8 @@ router.get("/", protect, async (req, res) => {
       projectMap[p._id.toString()] = p.name;
     });
 
+    const createdByMe = await projectsCreatedBy(req.admin);
+
     const formattedUsers = await Promise.all(
       users.map(async (user) => {
         let projectNames = [];
@@ -1225,7 +1238,7 @@ router.get("/", protect, async (req, res) => {
                 "",
               role: m.role,
               /* Whether this viewer may change or remove the place. */
-              editable: mayEditPlace(req.admin, user, m),
+              editable: mayEditPlace(req.admin, user, m, createdByMe),
               /* Each project is invited for on its own, so each reports its own
                  state. The token behind it never leaves the server. */
               status: m.status === "pending" ? "pending" : "active",
@@ -1434,6 +1447,7 @@ router.put("/:id", protect, async (req, res) => {
         req.body,
         existingRows,
         user,
+        await projectsCreatedBy(req.admin),
       );
       const built = buildMemberships(req.admin, ownRows, existingRows);
       if (built.error) {
