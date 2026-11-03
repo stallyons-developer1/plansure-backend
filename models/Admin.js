@@ -65,6 +65,9 @@ const adminSchema = new mongoose.Schema(
         },
         inviteToken: String,
         inviteTokenExpiry: Date,
+        /* Who put the account on this project. That person may change the
+           role later; other non-owners see the place read only. */
+        grantedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin" },
         role: {
           type: String,
           enum: ["admin", "planner", "user"],
@@ -224,13 +227,24 @@ adminSchema.methods.roleOn = function (projectId) {
 adminSchema.methods.syncFromMemberships = function () {
   if (!Array.isArray(this.memberships) || this.memberships.length === 0) return;
 
-  /* Access follows the invitations actually taken up. */
+  /* Access follows the invitations actually taken up. A project held from
+     before memberships existed has no row at all; it is kept, or editing the
+     account (adding a pending place elsewhere) silently took that access away
+     and the account dropped out of its PM's User Management list. */
+  const rowIds = new Set(
+    this.memberships.map((m) => String(m.project?._id || m.project)),
+  );
+  const legacy = (this.projects || []).filter(
+    (p) => !rowIds.has(String(p?._id || p)),
+  );
   this.projects = [
     ...new Map(
-      this.memberships.filter(isAccepted).map((m) => [
-        String(m.project?._id || m.project),
-        m.project?._id || m.project,
-      ]),
+      [
+        ...this.memberships
+          .filter(isAccepted)
+          .map((m) => m.project?._id || m.project),
+        ...legacy.map((p) => p?._id || p),
+      ].map((id) => [String(id), id]),
     ).values(),
   ];
 

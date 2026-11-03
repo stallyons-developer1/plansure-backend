@@ -56,28 +56,47 @@ const mayRemove = (actor, target) =>
   canManageAccount(actor, target) &&
   (actor.isSuperAdmin || invitedByActor(actor, target));
 
-/* What a non-owner's edit may touch. The edit form shows a non-owner the
-   account's existing places read only and sends back only the projects being
-   added. So every existing place is kept exactly as it was and left out of
-   buildMemberships, unless the editor sends a different role for a project
-   they hold at that level or above. A place missing from what was sent is
-   kept, never removed: only the owner removes places. */
-const splitForeignRows = (actor, body, existing) => {
+/* Projects held from before memberships existed have no row, only an entry
+   in `projects`. They are given a row (at the account's role, already taken
+   up) wherever the places are listed or edited, so they show in the form and
+   go through the same rules as every other place. */
+const withLegacyRows = (user) => {
+  const rows = [...(user.memberships || [])];
+  const ids = new Set(rows.map((m) => String(m.project?._id || m.project)));
+  for (const p of user.projects || []) {
+    const id = String(p?._id || p);
+    if (ids.has(id)) continue;
+    ids.add(id);
+    rows.push({ project: p?._id || p, role: user.role, status: "active" });
+  }
+  return rows;
+};
+
+/* Whether a non-owner may change or remove this place: they put the account
+   there (or invited the account, for places from before that was recorded),
+   and they hold the project at that level or above. */
+const mayEditPlace = (actor, target, m) => {
+  if (actor.isSuperAdmin) return true;
+  const granted = m.grantedBy
+    ? String(m.grantedBy?._id || m.grantedBy) === String(actor._id)
+    : invitedByActor(actor, target);
+  if (!granted) return false;
+  const mine = actor.roleOn(m.project?._id || m.project);
+  return !!mine && levelOf(m.role, false) <= levelOf(mine, false);
+};
+
+/* What a non-owner's edit may touch. Places they may edit go through
+   buildMemberships like anything new: a changed role is applied, a row left
+   out is removed. Every other place is kept exactly as it was, whatever the
+   form sends for it. */
+const splitForeignRows = (actor, body, existing, target) => {
   if (actor.isSuperAdmin || !Array.isArray(body.memberships)) {
     return { body, foreign: [] };
   }
   const idOf = (m) => String(m.project?._id || m.project);
-  const sent = new Map(
-    body.memberships
-      .filter((m) => m && m.project)
-      .map((m) => [String(m.project), m.role]),
+  const foreign = (existing || []).filter(
+    (m) => !mayEditPlace(actor, target, m),
   );
-  const foreign = (existing || []).filter((m) => {
-    const asked = sent.get(idOf(m));
-    if (!asked || asked === m.role) return true;
-    const mine = actor.roleOn(idOf(m));
-    return !mine || levelOf(m.role, false) > levelOf(mine, false);
-  });
   const foreignIds = new Set(foreign.map(idOf));
   return {
     body: {
@@ -160,7 +179,8 @@ const buildMemberships = (actor, body, existing = []) => {
     memberships: [...seen.entries()].map(([project, role]) => {
       const previous = held.get(project);
 
-      if (!previous) return { project, role, status: "pending" };
+      if (!previous)
+        return { project, role, status: "pending", grantedBy: actor._id };
 
       /* Still waiting, and now for something else: the invitation sitting in
          their inbox names the old role, so its link is dropped and a corrected
@@ -171,6 +191,7 @@ const buildMemberships = (actor, body, existing = []) => {
         project,
         role,
         status: previous.status,
+        grantedBy: previous.grantedBy,
         ...(restate
           ? {}
           : {
@@ -1058,6 +1079,9 @@ router.get("/", protect, async (req, res) => {
 
       if (myProjects.length > 0) {
         visibility.push({ projects: { $in: myProjects } });
+        /* Somebody placed on one of my projects whose place is not yet taken
+           up holds it as a pending row only; they stay in my list. */
+        visibility.push({ "memberships.project": { $in: myProjects } });
       }
 
       // Whoever sent the invitation keeps sight of it, and everyone sees
@@ -1184,12 +1208,17 @@ router.get("/", protect, async (req, res) => {
           canDelete,
           /* What the account holds, project by project — what the edit form
              shows and sends back. */
-          memberships: (user.memberships || [])
+          memberships: withLegacyRows(user)
             .filter((m) => m.project)
             .map((m) => ({
               project: String(m.project._id || m.project),
-              projectName: m.project.name || "",
+              projectName:
+                m.project.name ||
+                projectMap[String(m.project._id || m.project)] ||
+                "",
               role: m.role,
+              /* Whether this viewer may change or remove the place. */
+              editable: mayEditPlace(req.admin, user, m),
               /* Each project is invited for on its own, so each reports its own
                  state. The token behind it never leaves the server. */
               status: m.status === "pending" ? "pending" : "active",
@@ -1390,12 +1419,16 @@ router.put("/:id", protect, async (req, res) => {
           403,
         );
       }
+      /* Older project access becomes a real row first, so it is listed,
+         kept and edited like every other place. */
+      const existingRows = withLegacyRows(user);
       const { body: ownRows, foreign } = splitForeignRows(
         req.admin,
         req.body,
-        user.memberships,
+        existingRows,
+        user,
       );
-      const built = buildMemberships(req.admin, ownRows, user.memberships);
+      const built = buildMemberships(req.admin, ownRows, existingRows);
       if (built.error) {
         return sendError(res, built.error, 403);
       }
