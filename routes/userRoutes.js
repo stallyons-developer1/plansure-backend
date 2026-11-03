@@ -72,27 +72,17 @@ const withLegacyRows = (user) => {
   return rows;
 };
 
-/* Whether a non-owner may change or remove this place. They must hold the
-   project themselves, at the place's level or above, and either:
-   - they put the account there (grantedBy), or
-   - they sit above the place on that project, e.g. a PM over a Planner. This
-     also covers places saved before grantedBy was recorded.
-   A place at the editor's own level that somebody else granted, such as
-   another PM on the same project, stays read only, unless the editor created
-   the project: its creator may set any role on it, PM included.
+/* Whether a non-owner may change or remove this place: they hold the
+   project themselves, at the place's level or above. A PM on a project can
+   therefore set any role on it, another PM's included; a Planner can change
+   Planners and Users there. The creator of a project may always edit it.
    `createdByActor` is the set of project ids the editor created. */
 const mayEditPlace = (actor, target, m, createdByActor = new Set()) => {
   if (actor.isSuperAdmin) return true;
   if (createdByActor.has(String(m.project?._id || m.project))) return true;
   const mine = actor.roleOn(m.project?._id || m.project);
   if (!mine) return false;
-  const theirs = levelOf(m.role, false);
-  const own = levelOf(mine, false);
-  if (theirs > own) return false;
-  const grantedByMe = m.grantedBy
-    ? String(m.grantedBy?._id || m.grantedBy) === String(actor._id)
-    : invitedByActor(actor, target);
-  return grantedByMe || theirs < own;
+  return levelOf(m.role, false) <= levelOf(mine, false);
 };
 
 /* Ids of the projects this account created. */
