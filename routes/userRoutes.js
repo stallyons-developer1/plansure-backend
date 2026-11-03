@@ -72,17 +72,24 @@ const withLegacyRows = (user) => {
   return rows;
 };
 
-/* Whether a non-owner may change or remove this place: they put the account
-   there (or invited the account, for places from before that was recorded),
-   and they hold the project at that level or above. */
+/* Whether a non-owner may change or remove this place. They must hold the
+   project themselves, at the place's level or above, and either:
+   - they put the account there (grantedBy), or
+   - they sit above the place on that project, e.g. a PM over a Planner. This
+     also covers places saved before grantedBy was recorded.
+   A place at the editor's own level that somebody else granted, such as
+   another PM on the same project, stays read only. */
 const mayEditPlace = (actor, target, m) => {
   if (actor.isSuperAdmin) return true;
-  const granted = m.grantedBy
+  const mine = actor.roleOn(m.project?._id || m.project);
+  if (!mine) return false;
+  const theirs = levelOf(m.role, false);
+  const own = levelOf(mine, false);
+  if (theirs > own) return false;
+  const grantedByMe = m.grantedBy
     ? String(m.grantedBy?._id || m.grantedBy) === String(actor._id)
     : invitedByActor(actor, target);
-  if (!granted) return false;
-  const mine = actor.roleOn(m.project?._id || m.project);
-  return !!mine && levelOf(m.role, false) <= levelOf(mine, false);
+  return grantedByMe || theirs < own;
 };
 
 /* What a non-owner's edit may touch. Places they may edit go through
