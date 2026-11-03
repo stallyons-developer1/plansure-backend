@@ -17,6 +17,27 @@ const {
 } = require("../utils/errorResponse");
 const { sendPushForNotification } = require("../services/fcmService");
 const auditLogger = require("../utils/auditLogger");
+
+/* Who may hand an action to whom, by the role each holds on the project:
+     Super Admin / PM -> PM, Planner, User
+     Planner          -> Planner, User
+     User             -> User
+   The assignee's role there must be at the assigner's level or below.
+   Returns the refusal message, or null when the assignment is allowed. An
+   assignee with no role on the project is left to the existing checks. */
+const ASSIGN_LEVEL = { user: 1, planner: 2, admin: 3 };
+const assigneeRefusal = async (actor, assigneeId, projectId) => {
+  if (actor.isSuperAdmin || !assigneeId || !projectId) return null;
+  const Admin = require("../models/Admin");
+  const target = await Admin.findById(assigneeId);
+  if (!target) return null;
+  const theirs = target.roleOn(projectId);
+  if (!theirs) return null;
+  const mine = actor.roleOn(projectId);
+  return (ASSIGN_LEVEL[theirs] || 0) > (ASSIGN_LEVEL[mine] || 0)
+    ? "You can only assign actions to people at your level or below on this project."
+    : null;
+};
 const {
   computeGovernanceStatus,
   getCycleEndDate,
@@ -356,6 +377,9 @@ router.post("/", protect, projectAdminOrPlanner("bodyProgramme"), async (req, re
         400,
       );
     }
+
+    const refusal = await assigneeRefusal(req.admin, assignee, programme.project);
+    if (refusal) return sendError(res, refusal, 403);
 
     const Admin = require("../models/Admin");
     const assigneeUser = await Admin.findById(assignee).select("name");
@@ -702,6 +726,15 @@ router.put("/:id", protect, projectAdminOrPlanner("action"), async (req, res) =>
         "This week is closed and read-only. Cannot update actions.",
         403,
       );
+    }
+
+    if (assignee && String(assignee) !== oldAssignee) {
+      const refusal = await assigneeRefusal(
+        req.admin,
+        assignee,
+        programme?.project,
+      );
+      if (refusal) return sendError(res, refusal, 403);
     }
 
     /* MS-05 F1: an Admin must not be able to rewrite the substance of an
