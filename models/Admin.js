@@ -209,7 +209,14 @@ adminSchema.methods.roleOn = function (projectId) {
   const found = (this.memberships || []).find(
     (m) => isAccepted(m) && String(m.project?._id || m.project) === target,
   );
-  return found ? found.role : null;
+  if (found) return found.role;
+  /* A project the account created is put in `projects` without a membership
+     row, so it would read as no role at all: the creator's own project offered
+     no role to hand out. Access without a row is held at the account's role. */
+  const held = (this.projects || []).some(
+    (p) => String(p?._id || p) === target,
+  );
+  return held ? this.role : null;
 };
 
 /* Keeps `role` and `projects` as a summary of the memberships, so the scope
