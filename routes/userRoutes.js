@@ -56,25 +56,27 @@ const mayRemove = (actor, target) =>
   canManageAccount(actor, target) &&
   (actor.isSuperAdmin || invitedByActor(actor, target));
 
-/* What a non-owner's edit may touch. The form sends back every row the target
-   holds. A row is kept exactly as it was, and left out of buildMemberships,
-   when the editor cannot change it: a project they hold no place on, or one
-   where the target sits above them. An unchanged row is kept as it was too,
-   so saving someone who is PM on a project where the editor is only a Planner
-   does not trip the "your own level or below" check. */
+/* What a non-owner's edit may touch. The edit form shows a non-owner the
+   account's existing places read only and sends back only the projects being
+   added. So every existing place is kept exactly as it was and left out of
+   buildMemberships, unless the editor sends a different role for a project
+   they hold at that level or above. A place missing from what was sent is
+   kept, never removed: only the owner removes places. */
 const splitForeignRows = (actor, body, existing) => {
   if (actor.isSuperAdmin || !Array.isArray(body.memberships)) {
     return { body, foreign: [] };
   }
   const idOf = (m) => String(m.project?._id || m.project);
   const sent = new Map(
-    body.memberships.filter((m) => m && m.project).map((m) => [String(m.project), m.role]),
+    body.memberships
+      .filter((m) => m && m.project)
+      .map((m) => [String(m.project), m.role]),
   );
   const foreign = (existing || []).filter((m) => {
+    const asked = sent.get(idOf(m));
+    if (!asked || asked === m.role) return true;
     const mine = actor.roleOn(idOf(m));
-    if (!mine) return true;
-    if (levelOf(m.role, false) > levelOf(mine, false)) return true;
-    return sent.get(idOf(m)) === m.role;
+    return !mine || levelOf(m.role, false) > levelOf(mine, false);
   });
   const foreignIds = new Set(foreign.map(idOf));
   return {
@@ -1402,7 +1404,9 @@ router.put("/:id", protect, async (req, res) => {
          the notice below has to compare before and after, so bring them up to
          date here. Running it twice costs nothing. */
       user.syncFromMemberships();
-      if (built.memberships.length === 0 && role) user.role = role;
+      /* Kept places count: a non-owner who adds nothing still leaves the
+         account's places, and its role follows from them, not from the form. */
+      if (user.memberships.length === 0 && role) user.role = role;
     } else if (role) {
       user.role = role;
     }
