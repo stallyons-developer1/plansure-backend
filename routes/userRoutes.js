@@ -33,30 +33,21 @@ const levelOfActor = (actor) => levelOf(actor.role, actor.isSuperAdmin);
 const invitedByActor = (actor, target) =>
   String(target.invitedBy?._id || target.invitedBy || "") === String(actor._id);
 
-/* Projects the actor runs as PM. */
-const pmProjectsOf = (actor) =>
-  new Set(
-    (actor.memberships || [])
-      .filter((m) => m.status !== "pending" && m.role === "admin")
-      .map((m) => String(m.project?._id || m.project)),
-  );
-
 /* Who may edit an account, resend its invitation or hand it a link. The owner
-   manages everyone. Anyone else manages the accounts they invited, and a PM
-   also manages everybody placed on a project they run as PM. Their changes are
-   still held to those projects: buildMemberships refuses a project they do not
-   hold, and editPayloadFor keeps the target's other places untouched. The same
-   test the list sends out as canManage, so a control the screen offers is one
-   the server will accept. */
-const mayManage = (actor, target) => {
-  if (!canManageAccount(actor, target)) return false;
-  if (actor.isSuperAdmin || invitedByActor(actor, target)) return true;
-  const mine = pmProjectsOf(actor);
-  if (mine.size === 0) return false;
-  return (target.memberships || []).some((m) =>
-    mine.has(String(m.project?._id || m.project)),
-  );
-};
+   manages everyone, and so does a PM (an "admin" account role means PM on at
+   least one project). Anyone else manages only the accounts they invited.
+
+   A PM's edits are still held to their own projects: splitForeignRows keeps
+   every place they cannot change exactly as it was, and buildMemberships
+   refuses a project they do not hold or a role above theirs there. So a PM
+   can add anybody to a project they are on, but cannot touch what that person
+   holds elsewhere. The same test the list sends out as canManage, so a
+   control the screen offers is one the server will accept. */
+const mayManage = (actor, target) =>
+  canManageAccount(actor, target) &&
+  (actor.isSuperAdmin ||
+    actor.role === "admin" ||
+    invitedByActor(actor, target));
 
 /* Deleting or blocking reaches the whole account, including projects run by
    somebody else, so it stays with the owner and with whoever invited it. Sent
@@ -66,19 +57,26 @@ const mayRemove = (actor, target) =>
   (actor.isSuperAdmin || invitedByActor(actor, target));
 
 /* What a non-owner's edit may touch. The form sends back every row the target
-   holds, including projects the editor has no place on; those rows are kept
-   exactly as they were instead of being refused or dropped, and only the
-   rows on the editor's own projects go through buildMemberships. */
+   holds. A row is kept exactly as it was, and left out of buildMemberships,
+   when the editor cannot change it: a project they hold no place on, or one
+   where the target sits above them. An unchanged row is kept as it was too,
+   so saving someone who is PM on a project where the editor is only a Planner
+   does not trip the "your own level or below" check. */
 const splitForeignRows = (actor, body, existing) => {
   if (actor.isSuperAdmin || !Array.isArray(body.memberships)) {
     return { body, foreign: [] };
   }
-  const foreign = (existing || []).filter(
-    (m) => !actor.roleOn(m.project?._id || m.project),
+  const idOf = (m) => String(m.project?._id || m.project);
+  const sent = new Map(
+    body.memberships.filter((m) => m && m.project).map((m) => [String(m.project), m.role]),
   );
-  const foreignIds = new Set(
-    foreign.map((m) => String(m.project?._id || m.project)),
-  );
+  const foreign = (existing || []).filter((m) => {
+    const mine = actor.roleOn(idOf(m));
+    if (!mine) return true;
+    if (levelOf(m.role, false) > levelOf(mine, false)) return true;
+    return sent.get(idOf(m)) === m.role;
+  });
+  const foreignIds = new Set(foreign.map(idOf));
   return {
     body: {
       ...body,
