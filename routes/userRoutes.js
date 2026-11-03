@@ -29,17 +29,66 @@ const levelOf = (role, isSuperAdmin) =>
   role === "admin" && isSuperAdmin ? 4 : LEVELS[role] || 0;
 const levelOfActor = (actor) => levelOf(actor.role, actor.isSuperAdmin);
 
-/* Who may act on an account. The owner manages everyone; everybody else —
-   PM, Planner and User alike — manages only the accounts they brought in
-   themselves. A PM runs their projects, which is not the same as owning the
-   people on them: somebody else's invitee is somebody else's to withdraw. The
-   same test the list sends out as canManage, so a control the screen offers is
-   one the server will accept. */
-const mayManage = (actor, target) =>
+/* Whether this account brought the target in. */
+const invitedByActor = (actor, target) =>
+  String(target.invitedBy?._id || target.invitedBy || "") === String(actor._id);
+
+/* Projects the actor runs as PM. */
+const pmProjectsOf = (actor) =>
+  new Set(
+    (actor.memberships || [])
+      .filter((m) => m.status !== "pending" && m.role === "admin")
+      .map((m) => String(m.project?._id || m.project)),
+  );
+
+/* Who may edit an account, resend its invitation or hand it a link. The owner
+   manages everyone. Anyone else manages the accounts they invited, and a PM
+   also manages everybody placed on a project they run as PM. Their changes are
+   still held to those projects: buildMemberships refuses a project they do not
+   hold, and editPayloadFor keeps the target's other places untouched. The same
+   test the list sends out as canManage, so a control the screen offers is one
+   the server will accept. */
+const mayManage = (actor, target) => {
+  if (!canManageAccount(actor, target)) return false;
+  if (actor.isSuperAdmin || invitedByActor(actor, target)) return true;
+  const mine = pmProjectsOf(actor);
+  if (mine.size === 0) return false;
+  return (target.memberships || []).some((m) =>
+    mine.has(String(m.project?._id || m.project)),
+  );
+};
+
+/* Deleting or blocking reaches the whole account, including projects run by
+   somebody else, so it stays with the owner and with whoever invited it. Sent
+   to the list as canDelete. */
+const mayRemove = (actor, target) =>
   canManageAccount(actor, target) &&
-  (actor.isSuperAdmin ||
-    String(target.invitedBy?._id || target.invitedBy || "") ===
-      String(actor._id));
+  (actor.isSuperAdmin || invitedByActor(actor, target));
+
+/* What a non-owner's edit may touch. The form sends back every row the target
+   holds, including projects the editor has no place on; those rows are kept
+   exactly as they were instead of being refused or dropped, and only the
+   rows on the editor's own projects go through buildMemberships. */
+const splitForeignRows = (actor, body, existing) => {
+  if (actor.isSuperAdmin || !Array.isArray(body.memberships)) {
+    return { body, foreign: [] };
+  }
+  const foreign = (existing || []).filter(
+    (m) => !actor.roleOn(m.project?._id || m.project),
+  );
+  const foreignIds = new Set(
+    foreign.map((m) => String(m.project?._id || m.project)),
+  );
+  return {
+    body: {
+      ...body,
+      memberships: body.memberships.filter(
+        (m) => m && !foreignIds.has(String(m.project)),
+      ),
+    },
+    foreign,
+  };
+};
 
 /* Turns what the form sends into membership rows, and refuses anything the
    person sending it could not grant: a role above their own, or a project they
@@ -1057,6 +1106,7 @@ router.get("/", protect, async (req, res) => {
         /* Who may act on this row — the same rule as mayManage, so the
            controls the screen offers are the ones the server will accept. */
         const canManage = mayManage(req.admin, user);
+        const canDelete = mayRemove(req.admin, user);
 
         if (user.role === "admin" && user.isSuperAdmin) {
           return {
@@ -1067,6 +1117,7 @@ router.get("/", protect, async (req, res) => {
             isSuperAdmin: !!user.isSuperAdmin,
             status: user.status,
             canManage,
+            canDelete,
             /* Empty for an owner: the flag reaches every project, so there is
                nothing per-project to list. */
             memberships: [],
@@ -1130,6 +1181,7 @@ router.get("/", protect, async (req, res) => {
           isSuperAdmin: !!user.isSuperAdmin,
           status: user.status,
           canManage,
+          canDelete,
           /* What the account holds, project by project — what the edit form
              shows and sends back. */
           memberships: (user.memberships || [])
@@ -1338,11 +1390,16 @@ router.put("/:id", protect, async (req, res) => {
           403,
         );
       }
-      const built = buildMemberships(req.admin, req.body, user.memberships);
+      const { body: ownRows, foreign } = splitForeignRows(
+        req.admin,
+        req.body,
+        user.memberships,
+      );
+      const built = buildMemberships(req.admin, ownRows, user.memberships);
       if (built.error) {
         return sendError(res, built.error, 403);
       }
-      user.memberships = built.memberships;
+      user.memberships = [...foreign, ...built.memberships];
       /* The save hook derives `role` and `projects` from the memberships, but
          the notice below has to compare before and after, so bring them up to
          date here. Running it twice costs nothing. */
@@ -1529,7 +1586,7 @@ router.patch("/:id/block", protect, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!mayManage(req.admin, user)) {
+    if (!mayRemove(req.admin, user)) {
       return sendError(
         res,
         canManageAccount(req.admin, user)
@@ -1572,7 +1629,7 @@ router.delete("/:id", protect, async (req, res) => {
       return sendError(res, "User not found", 404);
     }
 
-    if (!mayManage(req.admin, user)) {
+    if (!mayRemove(req.admin, user)) {
       return sendError(
         res,
         canManageAccount(req.admin, user)
