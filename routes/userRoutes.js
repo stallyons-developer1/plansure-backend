@@ -121,7 +121,9 @@ const splitForeignRows = (actor, body, existing, target, createdByActor) => {
    person sending it could not grant: a role above their own, or a project they
    do not hold themselves. Accepts the older shape — one role with a list of
    projects — so existing callers keep working. */
-const buildMemberships = (actor, body, existing = []) => {
+/* `grantActive`: the account is already active on PlanSure, so a project
+   added to it is taken up straight away, with no invitation to accept. */
+const buildMemberships = (actor, body, existing = [], { grantActive } = {}) => {
   const rows = Array.isArray(body.memberships)
     ? body.memberships
         .filter((m) => m && m.project && m.role)
@@ -188,7 +190,12 @@ const buildMemberships = (actor, body, existing = []) => {
       const previous = held.get(project);
 
       if (!previous)
-        return { project, role, status: "pending", grantedBy: actor._id };
+        return {
+          project,
+          role,
+          status: grantActive ? "active" : "pending",
+          grantedBy: actor._id,
+        };
 
       /* Still waiting, and now for something else: the invitation sitting in
          their inbox names the old role, so its link is dropped and a corrected
@@ -1439,7 +1446,9 @@ router.put("/:id", protect, async (req, res) => {
         user,
         await projectsCreatedBy(req.admin),
       );
-      const built = buildMemberships(req.admin, ownRows, existingRows);
+      const built = buildMemberships(req.admin, ownRows, existingRows, {
+        grantActive: user.status === "active",
+      });
       if (built.error) {
         return sendError(res, built.error, 403);
       }
@@ -1586,6 +1595,21 @@ router.put("/:id", protect, async (req, res) => {
           to: roleIsOn.get(id) || null,
         }))
         .filter((c) => c.from !== c.to);
+
+      /* A project simply added to an active account needs no email: it is
+         granted directly and shows in their list. Only a changed or removed
+         role, or an ownership change, is mailed. */
+      const mailWorthy = touched.filter((c) => c.from !== null);
+      if (!ownerChange && mailWorthy.length === 0) {
+        const updatedUser = await Admin.findById(user._id)
+          .select("-password -inviteToken -inviteTokenExpiry")
+          .populate("projects", "name");
+        return sendSuccess(
+          res,
+          { user: updatedUser },
+          "User updated successfully",
+        );
+      }
 
       const named = await Project.find({
         _id: { $in: touched.map((c) => c.project) },
